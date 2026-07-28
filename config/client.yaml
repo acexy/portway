@@ -1,0 +1,50 @@
+# Portway client configuration.
+
+# Minimum log severity.
+# Available values: trace, debug, info, warn, error.
+# Use trace for detailed protocol and lifecycle diagnostics, including heartbeats.
+log_level: info
+
+# Optional stable identifier for this client.
+# Leave empty to generate a random ID once for the current process. Configure
+# an explicit value when the identity must survive a process restart.
+# Allowed characters: letters, digits, dots, underscores, and hyphens.
+client_id: ""
+
+# Public server address that the client connects to.
+server_address: gateway.example.com:7000
+
+authentication:
+  # Authentication and encryption mode.
+  # Available values:
+  #   token - currently supported. The same static token must be configured
+  #           on both the client and server.
+  #   tls   - reserved for mutual TLS and not implemented yet.
+  mode: token
+
+  # Required only when mode is "token".
+  # Use a high-entropy random value of at least 32 bytes. This example is a
+  # placeholder; never commit a real token to version control.
+  token: CHANGE_ME_TO_A_RANDOM_TOKEN
+
+  # Required only when mode is "tls" (not implemented yet).
+  # Uncomment this block after TLS support is implemented.
+  # tls:
+  #   # CA certificate used to verify the server certificate.
+  #   ca_file: ./certs/ca.crt
+  #   # Client certificate and private key used by the server to authenticate
+  #   # this client.
+  #   cert_file: ./certs/client.crt
+  #   key_file: ./certs/client.key
+  #   # Expected DNS name in the server certificate.
+  #   server_name: gateway.example.com
+
+proxies:
+  # "tcp" is currently the only supported value.
+  - name: ssh
+    type: tcp
+    # Optional. Defaults to 127.0.0.1 and may point to another machine that
+    # is reachable from the Portway client.
+    local_ip: 127.0.0.1
+    local_port: 22
+    remote_port: 22022

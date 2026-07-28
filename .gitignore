@@ -3,3 +3,7 @@
 AGENTS.md
 .codex
 docs
+CLAUDE.md
+.claude
+/client.yaml
+/server.yaml

@@ -1,0 +1,34 @@
+# Portway server configuration.
+
+# Minimum log severity.
+# Available values: trace, debug, info, warn, error.
+# Use trace for detailed per-session protocol diagnostics, including heartbeats.
+log_level: info
+
+# Address used by the server for client control and data connections.
+listen_address: 0.0.0.0:7000
+
+# IP used for public TCP proxy listeners. Clients only choose the remote port.
+proxy_bind_ip: 0.0.0.0
+
+authentication:
+  # Authentication and encryption mode.
+  # Available values:
+  #   token - currently supported. The same static token must be configured
+  #           on both the client and server.
+  #   tls   - reserved for mutual TLS and not implemented yet.
+  mode: token
+
+  # Used only when mode is "token".
+  # Leave empty to generate a high-entropy token at startup and print it once
+  # in the server log. Set the same generated value in the client configuration.
+  token: ""
+
+  # Required only when mode is "tls" (not implemented yet).
+  # Uncomment this block after TLS support is implemented.
+  # tls:
+  #   # Server certificate and private key presented to clients.
+  #   cert_file: ./certs/server.crt
+  #   key_file: ./certs/server.key
+  #   # CA certificate used to verify client certificates.
+  #   client_ca_file: ./certs/client-ca.crt
