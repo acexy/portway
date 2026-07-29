@@ -11,6 +11,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -212,7 +214,7 @@ func (s *Service) runControlSession(
 			transport.ErrProtocol,
 		)
 	}
-	if !containsCapability(serverHello.Capabilities, "json-control") {
+	if !coll.SliceContains(serverHello.Capabilities, "json-control") {
 		return "", false, fmt.Errorf(
 			"%w: server did not negotiate json-control capability",
 			transport.ErrProtocol,
@@ -241,15 +243,6 @@ func (s *Service) runControlSession(
 		writer,
 		transportSession,
 	)
-}
-
-func containsCapability(capabilities []string, expected string) bool {
-	for _, capability := range capabilities {
-		if capability == expected {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Service) runControlLoop(

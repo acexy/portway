@@ -14,6 +14,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
@@ -102,7 +104,7 @@ func serverTokenHandshake(
 	if err := validateHandshakeHeader(clientHello, role); err != nil {
 		return nil, protocol.RoleUnknown, err
 	}
-	if !roleAllowed(role, allowedRoles) {
+	if len(allowedRoles) > 0 && !coll.SliceContains(allowedRoles, role) {
 		return nil, protocol.RoleUnknown, fmt.Errorf("%w: unsupported connection role %d", ErrProtocol, role)
 	}
 
@@ -134,18 +136,6 @@ func serverTokenHandshake(
 		return nil, protocol.RoleUnknown, err
 	}
 	return secureConnection, role, nil
-}
-
-func roleAllowed(role protocol.Role, allowedRoles []protocol.Role) bool {
-	if len(allowedRoles) == 0 {
-		return true
-	}
-	for _, allowedRole := range allowedRoles {
-		if role == allowedRole {
-			return true
-		}
-	}
-	return false
 }
 
 func makeHandshakeHeader(role protocol.Role) []byte {
@@ -225,13 +215,5 @@ func writeFull(writer io.Writer, data []byte) error {
 }
 
 func joinBytes(parts ...[]byte) []byte {
-	totalLength := 0
-	for _, part := range parts {
-		totalLength += len(part)
-	}
-	joined := make([]byte, 0, totalLength)
-	for _, part := range parts {
-		joined = append(joined, part...)
-	}
-	return joined
+	return coll.SliceFlat(parts)
 }

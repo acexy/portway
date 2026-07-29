@@ -13,12 +13,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
+	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
 	transportfactory "github.com/acexy/portway/internal/transport/factory"
@@ -57,10 +60,21 @@ func (s *Service) Run(ctx context.Context) error {
 	)
 	defer s.logger.Info("server stopped")
 
+	sourceFilter, err := ipfilter.New(
+		ctx,
+		s.logger,
+		s.configuration.Security.IPDenyFile,
+	)
+	if err != nil {
+		return err
+	}
+	defer sourceFilter.Close()
+
 	transportServer, err := transportfactory.NewServer(
 		ctx,
 		s.configuration,
 		maxConcurrentConnections,
+		sourceFilter,
 	)
 	if err != nil {
 		return err
@@ -80,6 +94,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.linkBroker,
 		s.configuration.Tunnel.HTTPListenAddress != "",
 		s.configuration.HTTP,
+		sourceFilter,
 	)
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
@@ -97,14 +112,22 @@ func (s *Service) Run(ctx context.Context) error {
 				listenError,
 			)
 		}
+		if s.configuration.Security.HTTPClientIPHeader == "" {
+			httpListener = ipfilter.WrapListener(httpListener, sourceFilter)
+		}
 		httpProtocols := new(http.Protocols)
 		httpProtocols.SetHTTP1(true)
 		httpProtocols.SetUnencryptedHTTP2(true)
 		httpServer := &http.Server{
-			Handler:           s.proxyRegistry,
+			Handler: ipfilter.HTTPHandler(
+				sourceFilter,
+				s.configuration.Security.HTTPClientIPHeader,
+				s.proxyRegistry,
+			),
 			ReadHeaderTimeout: s.configuration.HTTP.ReadHeaderTimeout,
 			MaxHeaderBytes:    s.configuration.HTTP.MaxHeaderBytes,
 			Protocols:         httpProtocols,
+			ConnContext:       ipfilter.HTTPConnectionContext,
 		}
 		sessions.Add(1)
 		go func() {
@@ -192,7 +215,7 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 	if err := protocol.DecodePayload(envelope, &clientHello); err != nil {
 		return err
 	}
-	if !hasCapability(clientHello.Capabilities, "json-control") {
+		if !coll.SliceContains(clientHello.Capabilities, "json-control") {
 		return errors.New("client does not support json-control capability")
 	}
 	if err := config.ValidateClientID(clientHello.ClientID); err != nil {
@@ -352,7 +375,10 @@ func (s *Service) serveControlMessages(
 				return false, err
 			}
 			for _, declaration := range request.Proxies {
-				if !hasCapability(negotiatedCapabilities, string(declaration.Type)) {
+				if !coll.SliceContains(
+					negotiatedCapabilities,
+					string(declaration.Type),
+				) {
 					return false, fmt.Errorf("%s proxy registration requires a negotiated capability", declaration.Type)
 				}
 			}
@@ -384,7 +410,7 @@ func (s *Service) serveControlMessages(
 				result.Revision,
 			)
 		case protocol.MessageLinkFailed:
-			if !hasCapability(negotiatedCapabilities, "tcp") {
+			if !coll.SliceContains(negotiatedCapabilities, "tcp") {
 				return false, errors.New("TCP link failure requires negotiated tcp capability")
 			}
 			var failure protocol.LinkFailed
@@ -460,26 +486,21 @@ func writeSessionError(connection net.Conn, sessionError protocol.SessionError) 
 	return protocol.WriteControl(connection, protocol.MessageSessionError, sessionError)
 }
 
-func hasCapability(capabilities []string, expected string) bool {
-	for _, capability := range capabilities {
-		if capability == expected {
-			return true
-		}
-	}
-	return false
-}
-
 func negotiateCapabilities(clientCapabilities []string) []string {
 	supported := map[string]struct{}{
 		"tcp":          {},
 		"http":         {},
 		"json-control": {},
 	}
-	negotiated := make([]string, 0, len(clientCapabilities))
-	for _, capability := range clientCapabilities {
-		if _, ok := supported[capability]; ok {
-			negotiated = append(negotiated, capability)
-		}
+	negotiated := coll.SliceFilter(
+		clientCapabilities,
+		func(capability string) bool {
+			_, supportedCapability := supported[capability]
+			return supportedCapability
+		},
+	)
+	if negotiated == nil {
+		return []string{}
 	}
 	return negotiated
 }

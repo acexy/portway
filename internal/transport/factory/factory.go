@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/transport"
 	transportquic "github.com/acexy/portway/internal/transport/quic"
 	transporttoken "github.com/acexy/portway/internal/transport/tcp/token"
@@ -39,6 +40,7 @@ func NewServer(
 	ctx context.Context,
 	configuration config.ServerConfig,
 	maxConcurrentConnections int,
+	sourceFilter *ipfilter.Filter,
 ) (transport.Server, error) {
 	switch configuration.Transport.Type {
 	case transport.TypeTCP:
@@ -47,6 +49,7 @@ func NewServer(
 			configuration.Transport.ListenAddress,
 			configuration.Authentication.Token,
 			maxConcurrentConnections,
+			sourceFilter,
 		)
 	case transport.TypeQUIC:
 		return transportquic.NewServer(
@@ -58,6 +61,7 @@ func NewServer(
 				Token:    configuration.Authentication.Token,
 			},
 			maxConcurrentConnections,
+			sourceFilter,
 		)
 	default:
 		return nil, fmt.Errorf(

@@ -11,6 +11,7 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
+	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
@@ -41,6 +42,7 @@ type Server struct {
 	nextGeneration atomic.Uint64
 	mutex          sync.Mutex
 	connections    map[*quicgo.Conn]struct{}
+	sourceFilter   *ipfilter.Filter
 	closeOnce      sync.Once
 	closeError     error
 	waitGroup      sync.WaitGroup
@@ -51,6 +53,7 @@ func NewServer(
 	ctx context.Context,
 	configuration ServerConfig,
 	maxConcurrentConnections int,
+	sourceFilters ...*ipfilter.Filter,
 ) (*Server, error) {
 	certificate, err := tls.LoadX509KeyPair(
 		configuration.CertFile,
@@ -73,6 +76,10 @@ func NewServer(
 	}
 	serverContext, cancel := context.WithCancel(ctx)
 	resultCapacity := max(maxConcurrentConnections*2, 1)
+	var sourceFilter *ipfilter.Filter
+	if len(sourceFilters) > 0 {
+		sourceFilter = sourceFilters[0]
+	}
 	server := &Server{
 		listener:       listener,
 		token:          configuration.Token,
@@ -81,6 +88,7 @@ func NewServer(
 		connectionSlot: make(chan struct{}, maxConcurrentConnections),
 		results:        make(chan acceptResult, resultCapacity),
 		connections:    make(map[*quicgo.Conn]struct{}),
+		sourceFilter:   sourceFilter,
 	}
 	server.waitGroup.Add(1)
 	go server.acceptConnections()
@@ -99,9 +107,42 @@ func (server *Server) acceptConnections() {
 			}
 			return
 		}
+		var releaseSource func()
+		if server.sourceFilter.Enabled() {
+			address, parseError := ipfilter.ParseRemoteAddress(
+				connection.RemoteAddr(),
+			)
+			if parseError != nil {
+				connection.CloseWithError(
+					applicationErrorShutdown,
+					"source address rejected",
+				)
+				continue
+			}
+			var allowed bool
+			releaseSource, allowed = server.sourceFilter.Register(
+				address,
+				func() {
+					connection.CloseWithError(
+						applicationErrorShutdown,
+						"source address denied",
+					)
+				},
+			)
+			if !allowed {
+				connection.CloseWithError(
+					applicationErrorShutdown,
+					"source address denied",
+				)
+				continue
+			}
+		}
 		select {
 		case server.connectionSlot <- struct{}{}:
 		default:
+			if releaseSource != nil {
+				releaseSource()
+			}
 			connection.CloseWithError(
 				applicationErrorShutdown,
 				"QUIC connection capacity reached",
@@ -110,13 +151,19 @@ func (server *Server) acceptConnections() {
 		}
 		server.addConnection(connection)
 		server.waitGroup.Add(1)
-		go server.handleConnection(connection)
+		go server.handleConnection(connection, releaseSource)
 	}
 }
 
-func (server *Server) handleConnection(connection *quicgo.Conn) {
+func (server *Server) handleConnection(
+	connection *quicgo.Conn,
+	releaseSource func(),
+) {
 	defer server.waitGroup.Done()
 	defer func() {
+		if releaseSource != nil {
+			releaseSource()
+		}
 		server.removeConnection(connection)
 		<-server.connectionSlot
 	}()

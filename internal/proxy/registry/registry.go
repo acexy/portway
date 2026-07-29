@@ -20,6 +20,7 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	proxyhttp "github.com/acexy/portway/internal/proxy/http"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
+	"github.com/acexy/portway/internal/security/ipfilter"
 )
 
 var tcpProxyNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -40,6 +41,7 @@ type Registry struct {
 	httpDomains         map[string]*httpProxyBinding
 	httpActiveRequests  int
 	httpActiveUpgrades  int
+	sourceFilter         *ipfilter.Filter
 	closed              bool
 }
 
@@ -80,7 +82,12 @@ func New(
 	broker *link.Broker,
 	httpEnabled bool,
 	httpConfiguration config.HTTPConfig,
+	sourceFilters ...*ipfilter.Filter,
 ) *Registry {
+	var sourceFilter *ipfilter.Filter
+	if len(sourceFilters) > 0 {
+		sourceFilter = sourceFilters[0]
+	}
 	return &Registry{
 		logger:        logger,
 		proxyBindIP:   proxyBindIP,
@@ -88,6 +95,7 @@ func New(
 		linkBroker:    broker,
 		httpEnabled:   httpEnabled,
 		httpConfiguration: httpConfiguration,
+		sourceFilter: sourceFilter,
 		httpDomains:   make(map[string]*httpProxyBinding),
 		clients:       make(map[string]*clientState),
 		endpoints:     make(map[uint16]*proxytcp.Endpoint),
@@ -300,7 +308,12 @@ func (manager *Registry) Sync(
 			continue
 		}
 		listenAddress := net.JoinHostPort(manager.proxyBindIP, strconv.Itoa(int(declaration.RemotePort)))
-		endpoint, err := proxytcp.Listen(manager.context, manager.logger, listenAddress)
+		endpoint, err := proxytcp.Listen(
+			manager.context,
+			manager.logger,
+			listenAddress,
+			manager.sourceFilter,
+		)
 		if err != nil {
 			closeTCPEndpoints(newEndpoints)
 			return rejectedSyncResult(

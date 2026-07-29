@@ -20,11 +20,54 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
+	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/transport"
 )
 
 const testToken = "test-token-with-at-least-32-random-bytes"
+
+func TestQUICServerRejectsDeniedSource(t *testing.T) {
+	certificateFile, keyFile := writeTestCertificate(t)
+	rulesPath := filepath.Join(t.TempDir(), "deny.txt")
+	if err := os.WriteFile(rulesPath, []byte("127.0.0.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sourceFilter, err := ipfilter.New(
+		ctx,
+		logging.New("quic-filter-test"),
+		rulesPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sourceFilter.Close()
+	server, err := NewServer(ctx, ServerConfig{
+		Address:  "127.0.0.1:0",
+		CertFile: certificateFile,
+		KeyFile:  keyFile,
+		Token:    testToken,
+	}, 8, sourceFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		Address:    server.listener.Addr().String(),
+		ServerName: "localhost",
+		CAFile:     certificateFile,
+		Token:      testToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Connect(ctx); err == nil {
+		t.Fatal("Connect() succeeded for a denied source")
+	}
+}
 
 func TestQUICControlAndDataStreams(t *testing.T) {
 	certificateFile, keyFile := writeTestCertificate(t)

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -38,10 +39,14 @@ func NewServer(
 	address string,
 	token string,
 	maxConcurrentConnections int,
+	sourceFilters ...*ipfilter.Filter,
 ) (*Server, error) {
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %q: %w", address, err)
+	}
+	if len(sourceFilters) > 0 {
+		listener = ipfilter.WrapListener(listener, sourceFilters[0])
 	}
 	serverContext, cancel := context.WithCancel(ctx)
 	server := &Server{

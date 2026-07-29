@@ -6,10 +6,53 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/security/ipfilter"
 )
+
+func TestTCPServerRejectsDeniedSourceBeforeAuthentication(t *testing.T) {
+	rulesPath := filepath.Join(t.TempDir(), "deny.txt")
+	if err := os.WriteFile(rulesPath, []byte("127.0.0.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sourceFilter, err := ipfilter.New(
+		ctx,
+		logging.New("tcp-filter-test"),
+		rulesPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sourceFilter.Close()
+	server, err := NewServer(
+		ctx,
+		"127.0.0.1:0",
+		"test-token-with-at-least-32-random-bytes",
+		8,
+		sourceFilter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	if _, err := DialToken(
+		ctx,
+		server.listener.Addr().String(),
+		"test-token-with-at-least-32-random-bytes",
+		protocol.RoleControl,
+	); err == nil {
+		t.Fatal("DialToken() succeeded for a denied source")
+	}
+}
 
 func TestTokenHandshakeAndEncryptedExchange(t *testing.T) {
 	t.Parallel()

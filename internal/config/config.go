@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/acexy/portway/internal/transport"
 	"gopkg.in/yaml.v3"
@@ -38,6 +39,9 @@ const (
 
 var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 var proxyNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+var httpHeaderNamePattern = regexp.MustCompile(
+	"^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$",
+)
 
 // AuthenticationConfig configures the shared Token identity proof.
 type AuthenticationConfig struct {
@@ -95,6 +99,12 @@ type TunnelConfig struct {
 	HTTPListenAddress string `yaml:"http_listen_address"`
 }
 
+// SecurityConfig configures server-side source filtering.
+type SecurityConfig struct {
+	IPDenyFile        string `yaml:"ip_deny_file"`
+	HTTPClientIPHeader string `yaml:"http_client_ip_header"`
+}
+
 // EnsureClientID generates a process-scoped client ID when none is configured.
 func EnsureClientID(configuration *ClientConfig) (string, bool, error) {
 	if configuration.ClientID != "" {
@@ -116,6 +126,7 @@ type ServerConfig struct {
 	Transport      ServerTransportConfig `yaml:"transport"`
 	Tunnel         TunnelConfig          `yaml:"tunnel"`
 	HTTP           HTTPConfig            `yaml:"http"`
+	Security       SecurityConfig        `yaml:"security"`
 	LogLevel       LogLevel              `yaml:"log_level"`
 	Authentication AuthenticationConfig  `yaml:"authentication"`
 }
@@ -303,6 +314,31 @@ func validateServer(configuration ServerConfig) error {
 	}
 	if err := validateHTTPConfig(configuration.HTTP); err != nil {
 		return err
+	}
+	if strings.TrimSpace(configuration.Security.HTTPClientIPHeader) !=
+		configuration.Security.HTTPClientIPHeader {
+		return errors.New(
+			"security.http_client_ip_header must not contain surrounding whitespace",
+		)
+	}
+	if configuration.Security.HTTPClientIPHeader != "" {
+		if configuration.Security.IPDenyFile == "" {
+			return errors.New(
+				"security.http_client_ip_header requires security.ip_deny_file",
+			)
+		}
+		if !httpHeaderNamePattern.MatchString(
+			configuration.Security.HTTPClientIPHeader,
+		) {
+			return errors.New(
+				"security.http_client_ip_header must be a valid HTTP header name",
+			)
+		}
+		if configuration.Tunnel.HTTPListenAddress == "" {
+			return errors.New(
+				"security.http_client_ip_header requires tunnel.http_listen_address",
+			)
+		}
 	}
 	if configuration.Tunnel.BindIP == "" {
 		return errors.New("tunnel.bind_ip is required")

@@ -10,6 +10,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/acexy/portway/internal/transport"
@@ -159,13 +160,5 @@ func writeFull(writer io.Writer, data []byte) error {
 }
 
 func joinBytes(parts ...[]byte) []byte {
-	totalLength := 0
-	for _, part := range parts {
-		totalLength += len(part)
-	}
-	joined := make([]byte, 0, totalLength)
-	for _, part := range parts {
-		joined = append(joined, part...)
-	}
-	return joined
+	return coll.SliceFlat(parts)
 }

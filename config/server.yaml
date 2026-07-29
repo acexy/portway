@@ -97,6 +97,23 @@ http:
   # Hard maximum: 256.
   max_concurrent_http2_streams: 128
 
+# Optional. Server-wide source IP security controls.
+security:
+  # Optional. IPv4/IPv6 deny-list file. Defaults to empty, which disables
+  # source IP filtering. Relative paths are resolved from the working
+  # directory. The configured file must exist and be valid at startup.
+  # Each non-comment line may contain one IP address or CIDR prefix.
+  ip_deny_file: ""
+
+  # Optional. HTTP-only trusted source IP header. Defaults to empty, which
+  # uses the HTTP socket peer address. When configured, ip_deny_file and
+  # tunnel.http_listen_address are required. The upstream proxy must overwrite
+  # this header. Multiple header lines and comma-separated IPv4/IPv6 addresses
+  # are supported. If any address is denied, the connection is closed. Missing,
+  # empty, or partially invalid values are logged and close the connection.
+  # Never enable this when clients can bypass the trusted upstream proxy.
+  http_client_ip_header: ""
+
 # Optional on the server. Shared by TCP and QUIC.
 authentication:
   # Optional. Leave empty to generate a cryptographically random 32-byte Token

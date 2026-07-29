@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/acexy/golang-toolkit/util/coll"
 )
 
 const (
@@ -336,11 +338,9 @@ func removeCreatedFiles(paths []string) {
 }
 
 func cloneIPAddresses(addresses []net.IP) []net.IP {
-	cloned := make([]net.IP, 0, len(addresses))
-	for _, address := range addresses {
-		cloned = append(cloned, append(net.IP(nil), address...))
-	}
-	return cloned
+	return coll.SliceCollect(addresses, func(address net.IP) net.IP {
+		return append(net.IP(nil), address...)
+	})
 }
 
 func validDNSName(name string) bool {

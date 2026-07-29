@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/security/ipfilter"
 )
 
 // Endpoint owns one public TCP listener and its visitor accept loop.
@@ -26,11 +27,13 @@ func Listen(
 	ctx context.Context,
 	logger *logging.Logger,
 	address string,
+	sourceFilter *ipfilter.Filter,
 ) (*Endpoint, error) {
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
 	if err != nil {
 		return nil, err
 	}
+	listener = ipfilter.WrapListener(listener, sourceFilter)
 	return &Endpoint{context: ctx, logger: logger, listener: listener}, nil
 }
 

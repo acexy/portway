@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -272,13 +274,13 @@ func (manager *linkManager) findProxy(
 	name string,
 	proxyType protocol.ProxyType,
 ) (config.ProxyConfig, bool) {
-	for _, proxyConfiguration := range manager.configuration.Proxies {
-		if proxyConfiguration.Name == name &&
-			proxyConfiguration.Type == string(proxyType) {
-			return proxyConfiguration, true
-		}
-	}
-	return config.ProxyConfig{}, false
+	return coll.SliceFind(
+		manager.configuration.Proxies,
+		func(proxyConfiguration config.ProxyConfig) bool {
+			return proxyConfiguration.Name == name &&
+				proxyConfiguration.Type == string(proxyType)
+		},
+	)
 }
 
 func (manager *linkManager) reportFailure(
