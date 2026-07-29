@@ -186,8 +186,8 @@ https://github.com/acexy/portway/releases
 
 ## Public documentation
 
-- [Technical overview](TECHNICAL_OVERVIEW.md)
-- [Security](SECURITY.md)
+- [Technical overview](assets/docs/technical/README.md)
+- [Security](assets/docs/security/README.md)
 - Fully annotated configuration examples:
   [client](config/client.yaml) and [server](config/server.yaml)
 
