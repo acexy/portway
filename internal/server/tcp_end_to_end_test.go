@@ -11,6 +11,7 @@ import (
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/transport"
 )
 
 func TestTCPProxyEndToEnd(t *testing.T) {
@@ -32,11 +33,15 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 	serverContext, cancelServer := context.WithCancel(context.Background())
 	serverErrors := make(chan error, 1)
 	serverService := NewService(logging.New("test-server"), config.ServerConfig{
-		ListenAddress: serverAddress.String(),
-		ProxyBindIP:   "127.0.0.1",
+		Transport: config.ServerTransportConfig{
+			Type:          transport.TypeTCP,
+			ListenAddress: serverAddress.String(),
+		},
+		Tunnel: config.TunnelConfig{
+			BindIP: "127.0.0.1",
+		},
 		LogLevel:      config.LogLevelInfo,
 		Authentication: config.AuthenticationConfig{
-			Mode:  config.AuthenticationModeToken,
 			Token: token,
 		},
 	})
@@ -47,11 +52,13 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)
 	clientService := client.NewService(logging.New("test-client"), config.ClientConfig{
-		ClientID:      "end-to-end-client",
-		ServerAddress: serverAddress.String(),
-		LogLevel:      config.LogLevelInfo,
+		ClientID: "end-to-end-client",
+		Transport: config.ClientTransportConfig{
+			Type:          transport.TypeTCP,
+			ServerAddress: serverAddress.String(),
+		},
+		LogLevel: config.LogLevelInfo,
 		Authentication: config.AuthenticationConfig{
-			Mode:  config.AuthenticationModeToken,
 			Token: token,
 		},
 		Proxies: []config.ProxyConfig{

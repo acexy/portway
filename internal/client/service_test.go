@@ -3,19 +3,20 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
-	"github.com/acexy/portway/internal/consts"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/transport"
 )
 
 func TestReconnectDelayWithJitterStaysWithinConfiguredRange(t *testing.T) {
 	t.Parallel()
 
 	baseDelay := 20 * time.Second
-	minimumDelay := baseDelay * (100 - consts.ClientReconnectJitterPercent) / 100
-	maximumDelay := baseDelay * (100 + consts.ClientReconnectJitterPercent) / 100
+	minimumDelay := baseDelay * (100 - reconnectJitterPercent) / 100
+	maximumDelay := baseDelay * (100 + reconnectJitterPercent) / 100
 
 	for range 100 {
 		delay := reconnectDelayWithJitter(baseDelay)
@@ -27,6 +28,24 @@ func TestReconnectDelayWithJitterStaysWithinConfiguredRange(t *testing.T) {
 				maximumDelay,
 			)
 		}
+	}
+}
+
+func TestClassifyControlProtocolError(t *testing.T) {
+	t.Parallel()
+
+	invalidMessage := fmt.Errorf(
+		"%w: unsupported control version",
+		protocol.ErrInvalidControlMessage,
+	)
+	classified := classifyControlProtocolError(invalidMessage)
+	if !errors.Is(classified, transport.ErrProtocol) {
+		t.Fatalf("classified error = %v, want transport.ErrProtocol", classified)
+	}
+
+	networkError := errors.New("network unavailable")
+	if classified := classifyControlProtocolError(networkError); classified != networkError {
+		t.Fatalf("network error changed to %v", classified)
 	}
 }
 

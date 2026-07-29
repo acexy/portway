@@ -15,6 +15,10 @@ const (
 	maxControlPayloadBytes = 1024 * 1024
 )
 
+// ErrInvalidControlMessage indicates malformed framing or message content from
+// a peer. I/O failures are not wrapped with this error.
+var ErrInvalidControlMessage = errors.New("invalid control message")
+
 // MessageType identifies a control protocol message.
 type MessageType string
 
@@ -165,21 +169,36 @@ func ReadControl(reader io.Reader) (Envelope, error) {
 		return Envelope{}, err
 	}
 	if string(header[:4]) != Magic {
-		return Envelope{}, errors.New("invalid control frame magic")
+		return Envelope{}, fmt.Errorf("%w: invalid control frame magic", ErrInvalidControlMessage)
 	}
 	if header[4] != MajorVersion {
-		return Envelope{}, fmt.Errorf("unsupported control protocol version %d", header[4])
+		return Envelope{}, fmt.Errorf(
+			"%w: unsupported control protocol version %d",
+			ErrInvalidControlMessage,
+			header[4],
+		)
 	}
 	if header[5] != controlEncodingJSON {
-		return Envelope{}, fmt.Errorf("unsupported control encoding %d", header[5])
+		return Envelope{}, fmt.Errorf(
+			"%w: unsupported control encoding %d",
+			ErrInvalidControlMessage,
+			header[5],
+		)
 	}
 	if binary.BigEndian.Uint16(header[6:8]) != 0 {
-		return Envelope{}, errors.New("unsupported control frame flags")
+		return Envelope{}, fmt.Errorf(
+			"%w: unsupported control frame flags",
+			ErrInvalidControlMessage,
+		)
 	}
 
 	payloadLength := binary.BigEndian.Uint32(header[8:])
 	if payloadLength == 0 || payloadLength > maxControlPayloadBytes {
-		return Envelope{}, fmt.Errorf("invalid control payload length %d", payloadLength)
+		return Envelope{}, fmt.Errorf(
+			"%w: invalid control payload length %d",
+			ErrInvalidControlMessage,
+			payloadLength,
+		)
 	}
 	payload := make([]byte, payloadLength)
 	if _, err := io.ReadFull(reader, payload); err != nil {
@@ -190,17 +209,31 @@ func ReadControl(reader io.Reader) (Envelope, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&envelope); err != nil {
-		return Envelope{}, fmt.Errorf("decode control envelope: %w", err)
+		return Envelope{}, fmt.Errorf(
+			"%w: decode control envelope: %v",
+			ErrInvalidControlMessage,
+			err,
+		)
 	}
 	var trailingValue any
 	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return Envelope{}, errors.New("decode control envelope: trailing JSON value")
+			return Envelope{}, fmt.Errorf(
+				"%w: decode control envelope: trailing JSON value",
+				ErrInvalidControlMessage,
+			)
 		}
-		return Envelope{}, fmt.Errorf("decode control envelope: %w", err)
+		return Envelope{}, fmt.Errorf(
+			"%w: decode control envelope: %v",
+			ErrInvalidControlMessage,
+			err,
+		)
 	}
 	if envelope.Type == "" {
-		return Envelope{}, errors.New("control message type is required")
+		return Envelope{}, fmt.Errorf(
+			"%w: control message type is required",
+			ErrInvalidControlMessage,
+		)
 	}
 	return envelope, nil
 }
@@ -208,19 +241,36 @@ func ReadControl(reader io.Reader) (Envelope, error) {
 // DecodePayload strictly decodes a control message payload.
 func DecodePayload(envelope Envelope, destination any) error {
 	if len(envelope.Payload) == 0 {
-		return errors.New("control message payload is required")
+		return fmt.Errorf(
+			"%w: control message payload is required",
+			ErrInvalidControlMessage,
+		)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(envelope.Payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
-		return fmt.Errorf("decode %s payload: %w", envelope.Type, err)
+		return fmt.Errorf(
+			"%w: decode %s payload: %v",
+			ErrInvalidControlMessage,
+			envelope.Type,
+			err,
+		)
 	}
 	var trailingValue any
 	if err := decoder.Decode(&trailingValue); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return fmt.Errorf("decode %s payload: trailing JSON value", envelope.Type)
+			return fmt.Errorf(
+				"%w: decode %s payload: trailing JSON value",
+				ErrInvalidControlMessage,
+				envelope.Type,
+			)
 		}
-		return fmt.Errorf("decode %s payload: %w", envelope.Type, err)
+		return fmt.Errorf(
+			"%w: decode %s payload: %v",
+			ErrInvalidControlMessage,
+			envelope.Type,
+			err,
+		)
 	}
 	return nil
 }

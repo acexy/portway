@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -43,6 +44,22 @@ func TestDecodePayloadRejectsUnknownFields(t *testing.T) {
 	err := DecodePayload(envelope, &heartbeat)
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("expected unknown field error, got %v", err)
+	}
+	if !errors.Is(err, ErrInvalidControlMessage) {
+		t.Fatalf("error = %v, want ErrInvalidControlMessage", err)
+	}
+}
+
+func TestReadControlClassifiesInvalidFrame(t *testing.T) {
+	t.Parallel()
+
+	frame := make([]byte, controlHeaderSize)
+	copy(frame, "NOPE")
+	if _, err := ReadControl(bytes.NewReader(frame)); !errors.Is(
+		err,
+		ErrInvalidControlMessage,
+	) {
+		t.Fatalf("ReadControl() error = %v, want ErrInvalidControlMessage", err)
 	}
 }
 

@@ -14,10 +14,14 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
-	"github.com/acexy/portway/internal/consts"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
+	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
+	transportfactory "github.com/acexy/portway/internal/transport/factory"
 )
 
 var errProxyRegistrationRejected = errors.New("proxy registration rejected")
@@ -29,9 +33,10 @@ var errProxyRegistrationRejected = errors.New("proxy registration rejected")
 type Service struct {
 	logger         *logging.Logger
 	configuration  config.ServerConfig
-	clientRegistry *clientRegistry
-	tcpProxyManager *tcpProxyManager
-	linkBroker      *linkBroker
+	clientRegistry *session.Registry
+	proxyRegistry  *proxyregistry.Registry
+	linkBroker      *link.Broker
+	transportServer transport.Server
 }
 
 // NewService creates a server service.
@@ -39,52 +44,64 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 	return &Service{
 		logger:         logger,
 		configuration:  configuration,
-		clientRegistry: newClientRegistry(),
+		clientRegistry: session.NewRegistry(),
 	}
 }
 
 // Run runs the server until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
-	s.logger.InfoWithField("server started", "listen_address", s.configuration.ListenAddress)
+	s.logger.InfoWithField(
+		"server started",
+		"listen_address",
+		s.configuration.Transport.ListenAddress,
+	)
 	defer s.logger.Info("server stopped")
 
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", s.configuration.ListenAddress)
+	transportServer, err := transportfactory.NewServer(
+		ctx,
+		s.configuration,
+		maxConcurrentConnections,
+	)
 	if err != nil {
-		return fmt.Errorf("listen on %q: %w", s.configuration.ListenAddress, err)
+		return err
 	}
-	defer listener.Close()
-
-	stopContextClose := context.AfterFunc(ctx, func() {
-		listener.Close()
-	})
-	defer stopContextClose()
+	s.transportServer = transportServer
+	defer transportServer.Close()
 
 	var sessions sync.WaitGroup
 	defer sessions.Wait()
 	sessionContext, cancelSessions := context.WithCancel(ctx)
-	s.linkBroker = newLinkBroker(sessionContext)
-	defer s.linkBroker.close()
-	s.tcpProxyManager = newTCPProxyManager(
+	s.linkBroker = link.NewBroker(sessionContext)
+	defer s.linkBroker.Close()
+	s.proxyRegistry = proxyregistry.New(
 		sessionContext,
 		s.logger,
-		s.configuration.ProxyBindIP,
+		s.configuration.Tunnel.BindIP,
 		s.linkBroker,
-		s.configuration.HTTPListenAddress != "",
+		s.configuration.Tunnel.HTTPListenAddress != "",
 		s.configuration.HTTP,
 	)
-	defer s.tcpProxyManager.close()
+	defer s.proxyRegistry.Close()
 	defer cancelSessions()
 	httpErrors := make(chan error, 1)
-	if s.configuration.HTTPListenAddress != "" {
-		httpListener, listenError := (&net.ListenConfig{}).Listen(ctx, "tcp", s.configuration.HTTPListenAddress)
+	if s.configuration.Tunnel.HTTPListenAddress != "" {
+		httpListener, listenError := (&net.ListenConfig{}).Listen(
+			ctx,
+			"tcp",
+			s.configuration.Tunnel.HTTPListenAddress,
+		)
 		if listenError != nil {
-			return fmt.Errorf("listen for HTTP proxy requests on %q: %w", s.configuration.HTTPListenAddress, listenError)
+			return fmt.Errorf(
+				"listen for HTTP proxy requests on %q: %w",
+				s.configuration.Tunnel.HTTPListenAddress,
+				listenError,
+			)
 		}
 		httpProtocols := new(http.Protocols)
 		httpProtocols.SetHTTP1(true)
 		httpProtocols.SetUnencryptedHTTP2(true)
 		httpServer := &http.Server{
-			Handler:           s.tcpProxyManager,
+			Handler:           s.proxyRegistry,
 			ReadHeaderTimeout: s.configuration.HTTP.ReadHeaderTimeout,
 			MaxHeaderBytes:    s.configuration.HTTP.MaxHeaderBytes,
 			Protocols:         httpProtocols,
@@ -95,7 +112,7 @@ func (s *Service) Run(ctx context.Context) error {
 			serveError := httpServer.Serve(httpListener)
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				httpErrors <- serveError
-				listener.Close()
+				transportServer.Close()
 			}
 		}()
 		defer func() {
@@ -107,8 +124,6 @@ func (s *Service) Run(ctx context.Context) error {
 			_ = httpServer.Shutdown(shutdownContext)
 		}()
 	}
-	connectionSlots := make(chan struct{}, consts.ServerMaxConcurrentConnections)
-
 	sessions.Add(1)
 	go func() {
 		defer sessions.Done()
@@ -116,7 +131,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 
 	for {
-		rawConnection, err := listener.Accept()
+		inbound, err := transportServer.Accept(ctx)
 		if err != nil {
 			select {
 			case httpError := <-httpErrors:
@@ -126,62 +141,43 @@ func (s *Service) Run(ctx context.Context) error {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return fmt.Errorf("accept client connection: %w", err)
+			return err
 		}
 		s.logger.TraceWithField(
-			"client TCP connection accepted",
+			"client transport stream accepted",
 			"remote_address",
-			rawConnection.RemoteAddr().String(),
+			inbound.RemoteAddress,
 		)
 
-		select {
-		case connectionSlots <- struct{}{}:
-		default:
-			rawConnection.Close()
-			continue
-		}
-
 		sessions.Add(1)
-		go func(connection net.Conn) {
+		go func(accepted transport.Inbound) {
 			defer sessions.Done()
-			defer func() {
-				<-connectionSlots
-			}()
-			if err := s.handleConnection(sessionContext, connection); err != nil &&
+			if err := s.handleConnection(sessionContext, accepted); err != nil &&
 				!errors.Is(err, io.EOF) &&
 				!errors.Is(err, net.ErrClosed) &&
 				sessionContext.Err() == nil {
 				s.logger.Error("client connection ended", err)
 			}
-		}(rawConnection)
+		}(inbound)
 	}
 }
 
-func (s *Service) handleConnection(ctx context.Context, rawConnection net.Conn) error {
-	defer rawConnection.Close()
+func (s *Service) handleConnection(ctx context.Context, inbound transport.Inbound) error {
+	connection := inbound.Stream
+	defer connection.Close()
 
 	stopContextClose := context.AfterFunc(ctx, func() {
-		rawConnection.Close()
+		connection.Close()
 	})
 	defer stopContextClose()
 
-	connection, role, err := transport.AcceptToken(
-		ctx,
-		rawConnection,
-		s.configuration.Authentication.Token,
-		protocol.RoleControl,
-		protocol.RoleData,
-	)
-	if err != nil {
-		return err
-	}
-	if role == protocol.RoleData {
+	if inbound.Role == protocol.RoleData {
 		return s.handleDataConnection(ctx, connection)
 	}
-	if role != protocol.RoleControl {
-		return fmt.Errorf("unsupported connection role %d", role)
+	if inbound.Role != protocol.RoleControl {
+		return fmt.Errorf("unsupported connection role %d", inbound.Role)
 	}
-	if err := connection.SetDeadline(time.Now().Add(consts.ServerControlHelloTimeout)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 		return fmt.Errorf("set control hello deadline: %w", err)
 	}
 
@@ -218,9 +214,9 @@ func (s *Service) handleConnection(ctx context.Context, rawConnection net.Conn) 
 	})
 	sessionLogger.TraceWithFields("client hello received", map[string]any{
 		"resume":            clientHello.ResumeSessionID != "",
-		"remote_address":    rawConnection.RemoteAddr().String(),
+		"remote_address":    inbound.RemoteAddress,
 	})
-	resumed, created, previousConnection, sessionError := s.clientRegistry.register(
+	resumed, created, previousConnection, sessionError := s.clientRegistry.Register(
 		clientHello.ClientID,
 		clientHello.ResumeSessionID,
 		sessionID,
@@ -247,9 +243,9 @@ func (s *Service) handleConnection(ctx context.Context, rawConnection net.Conn) 
 		Capabilities: negotiatedCapabilities,
 	}); err != nil {
 		if created {
-			s.clientRegistry.remove(clientHello.ClientID, sessionID)
+			s.clientRegistry.Remove(clientHello.ClientID, sessionID)
 		} else {
-			s.clientRegistry.disconnect(clientHello.ClientID, sessionID, time.Now())
+			s.clientRegistry.Disconnect(clientHello.ClientID, sessionID, time.Now())
 		}
 		sessionLogger.Error("failed to send server hello", err)
 		return nil
@@ -257,11 +253,11 @@ func (s *Service) handleConnection(ctx context.Context, rawConnection net.Conn) 
 	if previousConnection != nil {
 		previousConnection.Close()
 	}
-	writer := newControlWriter(connection)
-	s.tcpProxyManager.attach(clientHello.ClientID, sessionID, writer)
+	writer := control.NewWriter(connection)
+	s.proxyRegistry.Attach(clientHello.ClientID, sessionID, writer)
 	defer func() {
-		s.clientRegistry.disconnect(clientHello.ClientID, sessionID, time.Now())
-		s.tcpProxyManager.suspend(clientHello.ClientID, sessionID)
+		s.clientRegistry.Disconnect(clientHello.ClientID, sessionID, time.Now())
+		s.proxyRegistry.Suspend(clientHello.ClientID, sessionID)
 	}()
 
 	if err := connection.SetDeadline(time.Time{}); err != nil {
@@ -278,13 +274,13 @@ func (s *Service) handleConnection(ctx context.Context, rawConnection net.Conn) 
 		negotiatedCapabilities,
 	)
 	if gracefullyClosed {
-		s.tcpProxyManager.remove(clientHello.ClientID, sessionID)
-		s.clientRegistry.remove(clientHello.ClientID, sessionID)
+		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)
+		s.clientRegistry.Remove(clientHello.ClientID, sessionID)
 		sessionLogger.Info("control session closed by client")
 	}
 	if errors.Is(err, errProxyRegistrationRejected) {
-		s.tcpProxyManager.remove(clientHello.ClientID, sessionID)
-		s.clientRegistry.remove(clientHello.ClientID, sessionID)
+		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)
+		s.clientRegistry.Remove(clientHello.ClientID, sessionID)
 	}
 	if err != nil &&
 		!errors.Is(err, io.EOF) &&
@@ -300,7 +296,7 @@ func (s *Service) serveControlMessages(
 	clientID string,
 	sessionID string,
 	sessionLogger *logging.Logger,
-	writer *controlWriter,
+	writer *control.Writer,
 	negotiatedCapabilities []string,
 ) (gracefullyClosed bool, err error) {
 	for {
@@ -314,7 +310,7 @@ func (s *Service) serveControlMessages(
 			if err := protocol.DecodePayload(envelope, &heartbeat); err != nil {
 				return false, err
 			}
-			if !s.clientRegistry.heartbeat(clientID, sessionID, time.Now()) {
+			if !s.clientRegistry.Heartbeat(clientID, sessionID, time.Now()) {
 				return false, errors.New("control session is no longer current")
 			}
 			sessionLogger.TraceWithField(
@@ -322,7 +318,7 @@ func (s *Service) serveControlMessages(
 				"sequence",
 				heartbeat.Sequence,
 			)
-			if err := writer.write(protocol.MessagePong, heartbeat); err != nil {
+			if err := writer.Write(protocol.MessagePong, heartbeat); err != nil {
 				return false, err
 			}
 			sessionLogger.TraceWithField(
@@ -343,7 +339,7 @@ func (s *Service) serveControlMessages(
 				"reason",
 				closeSession.Reason,
 			)
-			if err := writer.write(protocol.MessageCloseAck, protocol.CloseAck{
+			if err := writer.Write(protocol.MessageCloseAck, protocol.CloseAck{
 				SessionID: sessionID,
 			}); err != nil {
 				return true, err
@@ -360,13 +356,13 @@ func (s *Service) serveControlMessages(
 					return false, fmt.Errorf("%s proxy registration requires a negotiated capability", declaration.Type)
 				}
 			}
-			result := s.tcpProxyManager.syncProxies(
+			result := s.proxyRegistry.Sync(
 				clientID,
 				sessionID,
 				envelope.RequestID,
 				request,
 			)
-			if err := writer.writeResponse(
+			if err := writer.WriteResponse(
 				protocol.MessageSyncResult,
 				envelope.RequestID,
 				result,
@@ -381,7 +377,7 @@ func (s *Service) serveControlMessages(
 				)
 				return false, errProxyRegistrationRejected
 			}
-			s.tcpProxyManager.activate(clientID, sessionID)
+			s.proxyRegistry.Activate(clientID, sessionID)
 			sessionLogger.InfoWithField(
 				"proxy registration applied",
 				"revision",
@@ -395,7 +391,7 @@ func (s *Service) serveControlMessages(
 			if err := protocol.DecodePayload(envelope, &failure); err != nil {
 				return false, err
 			}
-			s.linkBroker.reportFailure(clientID, sessionID, failure)
+			s.linkBroker.ReportFailure(clientID, sessionID, failure)
 			sessionLogger.WithField("link_id", failure.LinkID).TraceWithField(
 				"TCP link setup failed",
 				"error_code",
@@ -408,7 +404,7 @@ func (s *Service) serveControlMessages(
 }
 
 func (s *Service) monitorClients(ctx context.Context) {
-	ticker := time.NewTicker(consts.ServerClientMonitorInterval)
+	ticker := time.NewTicker(clientMonitorInterval)
 	defer ticker.Stop()
 
 	for {
@@ -416,26 +412,26 @@ func (s *Service) monitorClients(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			suspendedClients, expiredClients := s.clientRegistry.sweep(
+			suspendedClients, expiredClients := s.clientRegistry.Sweep(
 				now,
-				consts.ServerControlHeartbeatTimeout,
-				consts.ServerClientRecoveryWindow,
+				controlHeartbeatTimeout,
+				clientRecoveryWindow,
 			)
 			for _, suspended := range suspendedClients {
-				s.tcpProxyManager.suspend(suspended.clientID, suspended.sessionID)
+				s.proxyRegistry.Suspend(suspended.ClientID, suspended.SessionID)
 				s.logger.WithFields(map[string]any{
-					"client_id":  suspended.clientID,
-					"session_id": suspended.sessionID,
+					"client_id":  suspended.ClientID,
+					"session_id": suspended.SessionID,
 				}).Info("client suspended")
 			}
 			for _, expired := range expiredClients {
-				s.tcpProxyManager.remove(expired.clientID, expired.sessionID)
-				if expired.connection != nil {
-					expired.connection.Close()
+				s.proxyRegistry.Remove(expired.ClientID, expired.SessionID)
+				if expired.Connection != nil {
+					expired.Connection.Close()
 				}
 				s.logger.WithFields(map[string]any{
-					"client_id":  expired.clientID,
-					"session_id": expired.sessionID,
+					"client_id":  expired.ClientID,
+					"session_id": expired.SessionID,
 				}).Info("client expired")
 			}
 		}
@@ -443,7 +439,7 @@ func (s *Service) monitorClients(ctx context.Context) {
 }
 
 func (s *Service) handleDataConnection(ctx context.Context, connection net.Conn) error {
-	if err := connection.SetDeadline(time.Now().Add(consts.TCPDataBindTimeout)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(dataBindTimeout)); err != nil {
 		return fmt.Errorf("set TCP data bind deadline: %w", err)
 	}
 	envelope, err := protocol.ReadControl(connection)
@@ -457,7 +453,7 @@ func (s *Service) handleDataConnection(ctx context.Context, connection net.Conn)
 	if err := protocol.DecodePayload(envelope, &binding); err != nil {
 		return err
 	}
-	return s.linkBroker.bind(ctx, connection, binding)
+	return s.linkBroker.Bind(ctx, connection, binding)
 }
 
 func writeSessionError(connection net.Conn, sessionError protocol.SessionError) error {

@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
-	"github.com/acexy/portway/internal/consts"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
+	transportfactory "github.com/acexy/portway/internal/transport/factory"
 )
 
 type remoteSessionError struct {
@@ -50,6 +51,7 @@ func (sessionError *remoteSessionError) Error() string {
 type Service struct {
 	logger        *logging.Logger
 	configuration config.ClientConfig
+	transport     transport.Client
 }
 
 // NewService creates a client service.
@@ -62,10 +64,19 @@ func NewService(logger *logging.Logger, configuration config.ClientConfig) *Serv
 
 // Run runs the client until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
-	s.logger.InfoWithField("client started", "server_address", s.configuration.ServerAddress)
+	transportClient, err := transportfactory.NewClient(s.configuration)
+	if err != nil {
+		return err
+	}
+	s.transport = transportClient
+	s.logger.InfoWithField(
+		"client started",
+		"server_address",
+		s.configuration.Transport.ServerAddress,
+	)
 	defer s.logger.Info("client stopped")
 
-	reconnectDelay := consts.ClientInitialReconnectDelay
+	reconnectDelay := initialReconnectDelay
 	sessionID := ""
 	var disconnectedAt time.Time
 
@@ -82,7 +93,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 		if sessionID != "" &&
 			!disconnectedAt.IsZero() &&
-			time.Since(disconnectedAt) >= consts.ClientSessionRecoveryWindow {
+			time.Since(disconnectedAt) >= sessionRecoveryWindow {
 			s.logger.InfoWithField("client session recovery window expired", "session_id", sessionID)
 			sessionID = ""
 			disconnectedAt = time.Time{}
@@ -92,7 +103,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if errors.Is(err, transport.ErrAuthentication) {
+		if transport.IsPermanent(err) {
 			return err
 		}
 		var registrationError *proxyRegistrationError
@@ -102,7 +113,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if established {
 			sessionID = establishedSessionID
 			disconnectedAt = time.Now()
-			reconnectDelay = consts.ClientInitialReconnectDelay
+			reconnectDelay = initialReconnectDelay
 		}
 
 		var sessionError *remoteSessionError
@@ -111,7 +122,7 @@ func (s *Service) Run(ctx context.Context) error {
 			case protocol.SessionErrorSessionExpired:
 				sessionID = ""
 				disconnectedAt = time.Time{}
-				reconnectDelay = consts.ClientInitialReconnectDelay
+				reconnectDelay = initialReconnectDelay
 				continue
 			case protocol.SessionErrorResumeSessionMismatch,
 				protocol.SessionErrorInvalidClientID:
@@ -132,7 +143,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if !waitForRetry(ctx, actualReconnectDelay) {
 			return nil
 		}
-		reconnectDelay = min(reconnectDelay*2, consts.ClientMaximumReconnectDelay)
+		reconnectDelay = min(reconnectDelay*2, maximumReconnectDelay)
 	}
 }
 
@@ -140,23 +151,19 @@ func (s *Service) runControlSession(
 	ctx context.Context,
 	resumeSessionID string,
 ) (sessionID string, established bool, err error) {
-	connection, err := transport.DialToken(
-		ctx,
-		s.configuration.ServerAddress,
-		s.configuration.Authentication.Token,
-		protocol.RoleControl,
-	)
+	transportSession, err := s.transport.Connect(ctx)
 	if err != nil {
 		return "", false, err
 	}
-	defer connection.Close()
+	defer transportSession.Close()
+	connection := transportSession.ControlStream()
 
 	stopHelloContextClose := context.AfterFunc(ctx, func() {
 		connection.Close()
 	})
 	defer stopHelloContextClose()
 
-	if err := connection.SetDeadline(time.Now().Add(consts.ClientControlHelloTimeout)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 		return "", false, fmt.Errorf("set control hello deadline: %w", err)
 	}
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
@@ -174,33 +181,45 @@ func (s *Service) runControlSession(
 
 	envelope, err := protocol.ReadControl(connection)
 	if err != nil {
-		return "", false, err
+		return "", false, classifyControlProtocolError(err)
 	}
 	if envelope.Type == protocol.MessageSessionError {
 		return "", false, decodeRemoteSessionError(envelope)
 	}
 	if envelope.Type != protocol.MessageServerHello {
-		return "", false, fmt.Errorf("expected %s, got %s", protocol.MessageServerHello, envelope.Type)
+		return "", false, fmt.Errorf(
+			"%w: expected %s, got %s",
+			transport.ErrProtocol,
+			protocol.MessageServerHello,
+			envelope.Type,
+		)
 	}
 	var serverHello protocol.ServerHello
 	if err := protocol.DecodePayload(envelope, &serverHello); err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
 	}
 	if serverHello.ClientID != s.configuration.ClientID {
 		return "", false, fmt.Errorf(
-			"server returned unexpected client ID: expected %q, got %q",
+			"%w: server returned unexpected client ID: expected %q, got %q",
+			transport.ErrProtocol,
 			s.configuration.ClientID,
 			serverHello.ClientID,
 		)
 	}
 	if serverHello.SessionID == "" {
-		return "", false, errors.New("server returned an empty session ID")
+		return "", false, fmt.Errorf(
+			"%w: server returned an empty session ID",
+			transport.ErrProtocol,
+		)
 	}
 	if !containsCapability(serverHello.Capabilities, "json-control") {
-		return "", false, errors.New("server did not negotiate json-control capability")
+		return "", false, fmt.Errorf(
+			"%w: server did not negotiate json-control capability",
+			transport.ErrProtocol,
+		)
 	}
-	writer := newControlWriter(connection)
-	if err := connection.SetDeadline(time.Now().Add(consts.ClientControlHelloTimeout)); err != nil {
+	writer := control.NewWriter(connection)
+	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 		return "", false, fmt.Errorf("set proxy registration deadline: %w", err)
 	}
 	if err := s.syncProxies(connection, writer); err != nil {
@@ -220,6 +239,7 @@ func (s *Service) runControlSession(
 		serverHello.SessionID,
 		sessionLogger,
 		writer,
+		transportSession,
 	)
 }
 
@@ -237,7 +257,8 @@ func (s *Service) runControlLoop(
 	connection net.Conn,
 	sessionID string,
 	sessionLogger *logging.Logger,
-	writer *controlWriter,
+	writer *control.Writer,
+	transportSession transport.ClientSession,
 ) error {
 	sessionContext, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
@@ -249,18 +270,19 @@ func (s *Service) runControlLoop(
 	messages := make(chan protocol.Envelope)
 	readErrors := make(chan error, 1)
 	go readControlMessages(readerContext, connection, messages, readErrors)
-	linkManager := newClientTCPLinkManager(
+	linkManager := newLinkManager(
 		sessionContext,
 		sessionLogger,
 		s.configuration,
 		sessionID,
 		writer,
+		transportSession,
 	)
 	defer linkManager.close()
 
-	heartbeatTicker := time.NewTicker(consts.ClientHeartbeatInterval)
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
-	watchdogTicker := time.NewTicker(consts.ClientHeartbeatCheckInterval)
+	watchdogTicker := time.NewTicker(heartbeatCheckInterval)
 	defer watchdogTicker.Stop()
 
 	lastPongAt := time.Now()
@@ -289,10 +311,14 @@ func (s *Service) runControlLoop(
 			case protocol.MessagePong:
 				var heartbeat protocol.Heartbeat
 				if err := protocol.DecodePayload(envelope, &heartbeat); err != nil {
-					return err
+					return classifyControlProtocolError(err)
 				}
 				if heartbeat.Sequence <= acknowledgedSequence || heartbeat.Sequence > sentSequence {
-					return fmt.Errorf("unexpected heartbeat sequence %d", heartbeat.Sequence)
+					return fmt.Errorf(
+						"%w: unexpected heartbeat sequence %d",
+						transport.ErrProtocol,
+						heartbeat.Sequence,
+					)
 				}
 				acknowledgedSequence = heartbeat.Sequence
 				lastPongAt = time.Now()
@@ -306,7 +332,7 @@ func (s *Service) runControlLoop(
 			case protocol.MessageOpenLink:
 				var request protocol.OpenLink
 				if err := protocol.DecodePayload(envelope, &request); err != nil {
-					return err
+					return classifyControlProtocolError(err)
 				}
 				linkManager.open(request)
 				sessionLogger.WithField("link_id", request.LinkID).Trace(
@@ -315,28 +341,32 @@ func (s *Service) runControlLoop(
 			case protocol.MessageCancelLink:
 				var cancellation protocol.CancelLink
 				if err := protocol.DecodePayload(envelope, &cancellation); err != nil {
-					return err
+					return classifyControlProtocolError(err)
 				}
 				linkManager.cancelLink(cancellation.LinkID)
 			default:
-				return fmt.Errorf("unsupported control message %q", envelope.Type)
+				return fmt.Errorf(
+					"%w: unsupported control message %q",
+					transport.ErrProtocol,
+					envelope.Type,
+				)
 			}
 		case <-heartbeatTicker.C:
 			if sentSequence == math.MaxUint64 {
 				return errors.New("heartbeat sequence exhausted")
 			}
 			sentSequence++
-			if err := writer.write(protocol.MessagePing, protocol.Heartbeat{
+			if err := writer.Write(protocol.MessagePing, protocol.Heartbeat{
 				Sequence: sentSequence,
 			}); err != nil {
 				return err
 			}
 			sessionLogger.TraceWithField("heartbeat ping sent", "sequence", sentSequence)
 		case <-watchdogTicker.C:
-			if time.Since(lastPongAt) >= consts.ClientHeartbeatTimeout {
+			if time.Since(lastPongAt) >= heartbeatTimeout {
 				return fmt.Errorf(
 					"server heartbeat timed out after %s",
-					consts.ClientHeartbeatTimeout,
+					heartbeatTimeout,
 				)
 			}
 		}
@@ -349,13 +379,13 @@ func (s *Service) closeControlSession(
 	readErrors <-chan error,
 	sessionID string,
 	sessionLogger *logging.Logger,
-	writer *controlWriter,
+	writer *control.Writer,
 ) {
-	if err := connection.SetDeadline(time.Now().Add(consts.ClientGracefulCloseTimeout)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(gracefulCloseTimeout)); err != nil {
 		sessionLogger.Error("failed to set graceful close deadline", err)
 		return
 	}
-	if err := writer.write(protocol.MessageCloseSession, protocol.CloseSession{
+	if err := writer.Write(protocol.MessageCloseSession, protocol.CloseSession{
 		SessionID: sessionID,
 		Reason:    protocol.CloseReasonClientShutdown,
 	}); err != nil {
@@ -364,7 +394,7 @@ func (s *Service) closeControlSession(
 	}
 	sessionLogger.Trace("close session sent")
 
-	timer := time.NewTimer(consts.ClientGracefulCloseTimeout)
+	timer := time.NewTimer(gracefulCloseTimeout)
 	defer timer.Stop()
 	for {
 		select {
@@ -398,7 +428,7 @@ func (s *Service) closeControlSession(
 
 func (s *Service) syncProxies(
 	connection net.Conn,
-	writer *controlWriter,
+	writer *control.Writer,
 ) error {
 	requestID, err := newRequestID()
 	if err != nil {
@@ -413,7 +443,7 @@ func (s *Service) syncProxies(
 			Domain:     proxyConfiguration.Domain,
 		})
 	}
-	if err := writer.writeRequest(
+	if err := writer.WriteRequest(
 		protocol.MessageSyncProxies,
 		requestID,
 		protocol.SyncProxies{
@@ -425,22 +455,26 @@ func (s *Service) syncProxies(
 	}
 	envelope, err := protocol.ReadControl(connection)
 	if err != nil {
-		return err
+		return classifyControlProtocolError(err)
 	}
 	if envelope.Type != protocol.MessageSyncResult || envelope.RequestID != requestID {
 		return fmt.Errorf(
-			"expected %s response for request %q",
+			"%w: expected %s response for request %q",
+			transport.ErrProtocol,
 			protocol.MessageSyncResult,
 			requestID,
 		)
 	}
 	var result protocol.SyncResult
 	if err := protocol.DecodePayload(envelope, &result); err != nil {
-		return err
+		return classifyControlProtocolError(err)
 	}
 	if result.Status != protocol.ProxySyncStatusApplied {
 		if result.Error == nil {
-			return errors.New("TCP proxy registration rejected without an error")
+			return fmt.Errorf(
+				"%w: proxy registration rejected without an error",
+				transport.ErrProtocol,
+			)
 		}
 		return &proxyRegistrationError{
 			code:      result.Error.Code,
@@ -472,7 +506,7 @@ func readControlMessages(
 		envelope, err := protocol.ReadControl(connection)
 		if err != nil {
 			select {
-			case readErrors <- err:
+			case readErrors <- classifyControlProtocolError(err):
 			case <-ctx.Done():
 			}
 			return
@@ -488,13 +522,20 @@ func readControlMessages(
 func decodeRemoteSessionError(envelope protocol.Envelope) error {
 	var response protocol.SessionError
 	if err := protocol.DecodePayload(envelope, &response); err != nil {
-		return err
+		return classifyControlProtocolError(err)
 	}
 	return &remoteSessionError{
 		code:      response.Code,
 		message:   response.Message,
 		retryable: response.Retryable,
 	}
+}
+
+func classifyControlProtocolError(err error) error {
+	if errors.Is(err, protocol.ErrInvalidControlMessage) {
+		return fmt.Errorf("%w: %w", transport.ErrProtocol, err)
+	}
+	return err
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) bool {
@@ -515,7 +556,7 @@ func reconnectDelayWithJitter(delay time.Duration) time.Duration {
 		return delay
 	}
 
-	jitterRange := 2*consts.ClientReconnectJitterPercent + 1
-	jitterPercent := int(randomByte[0])%jitterRange - consts.ClientReconnectJitterPercent
+	jitterRange := 2*reconnectJitterPercent + 1
+	jitterPercent := int(randomByte[0])%jitterRange - reconnectJitterPercent
 	return delay + delay*time.Duration(jitterPercent)/100
 }

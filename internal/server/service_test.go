@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -21,7 +22,7 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 	}
 	results := make(chan serverResult, 1)
 	service := &Service{}
-	writer := newControlWriter(serverConnection)
+	writer := control.NewWriter(serverConnection)
 	go func() {
 		gracefullyClosed, err := service.serveControlMessages(
 			serverConnection,
@@ -88,7 +89,7 @@ func TestServeControlMessagesRejectsTCPMessageWithoutCapability(t *testing.T) {
 			"client-one",
 			"session-one",
 			logging.New("test"),
-			newControlWriter(serverConnection),
+			control.NewWriter(serverConnection),
 			[]string{"json-control"},
 		)
 		results <- err

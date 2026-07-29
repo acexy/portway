@@ -10,26 +10,13 @@ import (
 	"net"
 	"os"
 	"regexp"
-	"strings"
-	"time"
 
+	"github.com/acexy/portway/internal/transport"
 	"gopkg.in/yaml.v3"
-
-	"github.com/acexy/portway/internal/consts"
 )
-
-// AuthenticationMode selects how client and server connections are protected.
-type AuthenticationMode string
 
 // LogLevel selects the minimum severity emitted by the process logger.
 type LogLevel string
-
-const (
-	// AuthenticationModeToken uses a shared static token.
-	AuthenticationModeToken AuthenticationMode = "token"
-	// AuthenticationModeTLS reserves mutual TLS for a future implementation.
-	AuthenticationModeTLS AuthenticationMode = "tls"
-)
 
 const (
 	// LogLevelTrace enables detailed protocol and lifecycle diagnostics.
@@ -52,20 +39,35 @@ const (
 var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 var proxyNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// TLSConfig contains the certificate files required by either endpoint.
-type TLSConfig struct {
-	CAFile       string `yaml:"ca_file"`
-	CertFile     string `yaml:"cert_file"`
-	KeyFile      string `yaml:"key_file"`
-	ServerName   string `yaml:"server_name"`
-	ClientCAFile string `yaml:"client_ca_file"`
+// AuthenticationConfig configures the shared Token identity proof.
+type AuthenticationConfig struct {
+	Token string `yaml:"token"`
 }
 
-// AuthenticationConfig configures connection authentication and encryption.
-type AuthenticationConfig struct {
-	Mode  AuthenticationMode `yaml:"mode"`
-	Token string             `yaml:"token"`
-	TLS   *TLSConfig         `yaml:"tls"`
+// QUICClientTransportConfig configures the client side of the QUIC transport.
+type QUICClientTransportConfig struct {
+	ServerName string `yaml:"server_name"`
+	CAFile     string `yaml:"ca_file"`
+}
+
+// ClientTransportConfig selects and configures one client transport.
+type ClientTransportConfig struct {
+	Type          transport.Type            `yaml:"type"`
+	ServerAddress string                    `yaml:"server_address"`
+	QUIC          QUICClientTransportConfig `yaml:"quic"`
+}
+
+// QUICServerTransportConfig configures the server side of the QUIC transport.
+type QUICServerTransportConfig struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+// ServerTransportConfig selects and configures one server transport.
+type ServerTransportConfig struct {
+	Type          transport.Type            `yaml:"type"`
+	ListenAddress string                    `yaml:"listen_address"`
+	QUIC          QUICServerTransportConfig `yaml:"quic"`
 }
 
 // ProxyConfig describes one client-side proxy.
@@ -81,28 +83,16 @@ type ProxyConfig struct {
 // ClientConfig contains the complete client configuration.
 type ClientConfig struct {
 	ClientID       string               `yaml:"client_id"`
-	ServerAddress  string               `yaml:"server_address"`
+	Transport      ClientTransportConfig `yaml:"transport"`
 	LogLevel       LogLevel             `yaml:"log_level"`
 	Authentication AuthenticationConfig `yaml:"authentication"`
 	Proxies        []ProxyConfig        `yaml:"proxies"`
 }
 
-// HTTPConfig configures the public HTTP server and its bounded resources.
-type HTTPConfig struct {
-	ReadHeaderTimeout                time.Duration `yaml:"read_header_timeout"`
-	GracefulShutdownTimeout          time.Duration `yaml:"graceful_shutdown_timeout"`
-	IdleConnectionTimeout            time.Duration `yaml:"idle_connection_timeout"`
-	ResponseHeaderTimeout            time.Duration `yaml:"response_header_timeout"`
-	MaxHeaderBytes                   int           `yaml:"max_header_bytes"`
-	MaxConcurrentRequests            int           `yaml:"max_concurrent_requests"`
-	MaxConcurrentRequestsPerClient   int           `yaml:"max_concurrent_requests_per_client"`
-	MaxConcurrentRequestsPerDomain   int           `yaml:"max_concurrent_requests_per_domain"`
-	MaxIdleConnections               int           `yaml:"max_idle_connections"`
-	MaxIdleConnectionsPerDomain      int           `yaml:"max_idle_connections_per_domain"`
-	MaxUpgradeConnections            int           `yaml:"max_upgrade_connections"`
-	MaxUpgradeConnectionsPerClient   int           `yaml:"max_upgrade_connections_per_client"`
-	MaxUpgradeConnectionsPerDomain   int           `yaml:"max_upgrade_connections_per_domain"`
-	MaxConcurrentHTTP2Streams        int           `yaml:"max_concurrent_http2_streams"`
+// TunnelConfig configures public proxy listeners owned by the server.
+type TunnelConfig struct {
+	BindIP            string `yaml:"bind_ip"`
+	HTTPListenAddress string `yaml:"http_listen_address"`
 }
 
 // EnsureClientID generates a process-scoped client ID when none is configured.
@@ -123,47 +113,48 @@ func EnsureClientID(configuration *ClientConfig) (string, bool, error) {
 
 // ServerConfig contains the complete server configuration.
 type ServerConfig struct {
-	ListenAddress  string               `yaml:"listen_address"`
-	HTTPListenAddress string            `yaml:"http_listen_address"`
-	HTTP               HTTPConfig       `yaml:"http"`
-	ProxyBindIP    string               `yaml:"proxy_bind_ip"`
-	LogLevel       LogLevel             `yaml:"log_level"`
-	Authentication AuthenticationConfig `yaml:"authentication"`
+	Transport      ServerTransportConfig `yaml:"transport"`
+	Tunnel         TunnelConfig          `yaml:"tunnel"`
+	HTTP           HTTPConfig            `yaml:"http"`
+	LogLevel       LogLevel              `yaml:"log_level"`
+	Authentication AuthenticationConfig  `yaml:"authentication"`
 }
 
 // DefaultClient returns the client configuration used when no file exists.
 func DefaultClient() ClientConfig {
 	return ClientConfig{
-		ServerAddress: "127.0.0.1:7000",
-		LogLevel:      LogLevelInfo,
-		Authentication: AuthenticationConfig{
-			Mode: AuthenticationModeToken,
+		Transport: ClientTransportConfig{
+			Type:          transport.TypeTCP,
+			ServerAddress: "127.0.0.1:7000",
 		},
+		LogLevel: LogLevelInfo,
 	}
 }
 
 // DefaultServer returns the server configuration used when no file exists.
 func DefaultServer() ServerConfig {
 	return ServerConfig{
-		ListenAddress: "0.0.0.0:7000",
-		ProxyBindIP:   "0.0.0.0",
-		LogLevel:      LogLevelInfo,
-		HTTP: HTTPConfig{
-			ReadHeaderTimeout:               consts.HTTPDefaultReadHeaderTimeout,
-			GracefulShutdownTimeout:         consts.HTTPDefaultGracefulShutdownTimeout,
-			MaxHeaderBytes:                  consts.HTTPDefaultMaxHeaderBytes,
-			MaxConcurrentRequests:           consts.HTTPDefaultMaxConcurrentRequests,
-			MaxConcurrentRequestsPerClient:  consts.HTTPDefaultMaxConcurrentRequestsPerClient,
-			MaxConcurrentRequestsPerDomain:  consts.HTTPDefaultMaxConcurrentRequestsPerDomain,
-			MaxIdleConnections:              consts.HTTPDefaultMaxIdleConnections,
-			MaxIdleConnectionsPerDomain:     consts.HTTPDefaultMaxIdleConnectionsPerDomain,
-			MaxUpgradeConnections:           consts.HTTPDefaultMaxUpgradeConnections,
-			MaxUpgradeConnectionsPerClient:  consts.HTTPDefaultMaxUpgradeConnectionsPerClient,
-			MaxUpgradeConnectionsPerDomain:  consts.HTTPDefaultMaxUpgradeConnectionsPerDomain,
-			MaxConcurrentHTTP2Streams:       consts.HTTPDefaultMaxConcurrentHTTP2Streams,
+		Transport: ServerTransportConfig{
+			Type:          transport.TypeTCP,
+			ListenAddress: "0.0.0.0:7000",
 		},
-		Authentication: AuthenticationConfig{
-			Mode: AuthenticationModeToken,
+		Tunnel: TunnelConfig{
+			BindIP: "0.0.0.0",
+		},
+		LogLevel: LogLevelInfo,
+		HTTP: HTTPConfig{
+			ReadHeaderTimeout:               httpDefaultReadHeaderTimeout,
+			GracefulShutdownTimeout:         httpDefaultGracefulShutdownTimeout,
+			MaxHeaderBytes:                  httpDefaultMaxHeaderBytes,
+			MaxConcurrentRequests:           httpDefaultMaxConcurrentRequests,
+			MaxConcurrentRequestsPerClient:  httpDefaultMaxConcurrentRequestsPerClient,
+			MaxConcurrentRequestsPerDomain:  httpDefaultMaxConcurrentRequestsPerDomain,
+			MaxIdleConnections:              httpDefaultMaxIdleConnections,
+			MaxIdleConnectionsPerDomain:     httpDefaultMaxIdleConnectionsPerDomain,
+			MaxUpgradeConnections:           httpDefaultMaxUpgradeConnections,
+			MaxUpgradeConnectionsPerClient:  httpDefaultMaxUpgradeConnectionsPerClient,
+			MaxUpgradeConnectionsPerDomain:  httpDefaultMaxUpgradeConnectionsPerDomain,
+			MaxConcurrentHTTP2Streams:       httpDefaultMaxConcurrentHTTP2Streams,
 		},
 	}
 }
@@ -194,8 +185,7 @@ func LoadServer(path string, allowMissing bool) (ServerConfig, error) {
 
 // EnsureServerToken generates a token when token mode has no configured value.
 func EnsureServerToken(configuration *ServerConfig) (string, bool, error) {
-	if configuration.Authentication.Mode != AuthenticationModeToken ||
-		configuration.Authentication.Token != "" {
+	if configuration.Authentication.Token != "" {
 		return configuration.Authentication.Token, false, nil
 	}
 
@@ -244,8 +234,8 @@ func validateClient(configuration ClientConfig) error {
 			return err
 		}
 	}
-	if configuration.ServerAddress == "" {
-		return errors.New("server_address is required")
+	if err := validateClientTransport(configuration.Transport); err != nil {
+		return err
 	}
 	if err := validateAuthentication(configuration.Authentication, false); err != nil {
 		return err
@@ -304,95 +294,66 @@ func validateServer(configuration ServerConfig) error {
 	if err := validateLogLevel(configuration.LogLevel); err != nil {
 		return err
 	}
-	if configuration.ListenAddress == "" {
-		return errors.New("listen_address is required")
+	if err := validateServerTransport(configuration.Transport); err != nil {
+		return err
 	}
-	if configuration.HTTPListenAddress != "" &&
-		configuration.HTTPListenAddress == configuration.ListenAddress {
-		return errors.New("http_listen_address must differ from listen_address")
+	if configuration.Tunnel.HTTPListenAddress != "" &&
+		configuration.Tunnel.HTTPListenAddress == configuration.Transport.ListenAddress {
+		return errors.New("tunnel.http_listen_address must differ from transport.listen_address")
 	}
 	if err := validateHTTPConfig(configuration.HTTP); err != nil {
 		return err
 	}
-	if configuration.ProxyBindIP == "" {
-		return errors.New("proxy_bind_ip is required")
+	if configuration.Tunnel.BindIP == "" {
+		return errors.New("tunnel.bind_ip is required")
 	}
-	if net.ParseIP(configuration.ProxyBindIP) == nil {
-		return errors.New("proxy_bind_ip must be an IP address")
+	if net.ParseIP(configuration.Tunnel.BindIP) == nil {
+		return errors.New("tunnel.bind_ip must be an IP address")
 	}
 	return validateAuthentication(configuration.Authentication, true)
 }
 
-func validateHTTPConfig(configuration HTTPConfig) error {
-	if configuration.ReadHeaderTimeout <= 0 ||
-		configuration.ReadHeaderTimeout > consts.HTTPHardMaxReadHeaderTimeout {
-		return fmt.Errorf("http.read_header_timeout must be greater than zero and at most %s", consts.HTTPHardMaxReadHeaderTimeout)
-	}
-	if configuration.GracefulShutdownTimeout <= 0 ||
-		configuration.GracefulShutdownTimeout > consts.HTTPHardMaxGracefulShutdownTimeout {
-		return fmt.Errorf("http.graceful_shutdown_timeout must be greater than zero and at most %s", consts.HTTPHardMaxGracefulShutdownTimeout)
-	}
-	for name, value := range map[string]time.Duration{
-		"idle_connection_timeout": configuration.IdleConnectionTimeout,
-		"response_header_timeout":  configuration.ResponseHeaderTimeout,
-	} {
-		if value < 0 || value > consts.HTTPHardMaxBusinessTimeout {
-			return fmt.Errorf("http.%s must be zero or at most %s", name, consts.HTTPHardMaxBusinessTimeout)
+func validateClientTransport(configuration ClientTransportConfig) error {
+	switch configuration.Type {
+	case transport.TypeTCP:
+		if configuration.ServerAddress == "" {
+			return errors.New("transport.server_address is required")
 		}
-	}
-	limits := []struct {
-		name  string
-		value int
-		max   int
-	}{
-		{"max_header_bytes", configuration.MaxHeaderBytes, consts.HTTPHardMaxHeaderBytes},
-		{"max_concurrent_requests", configuration.MaxConcurrentRequests, consts.HTTPHardMaxConcurrentRequests},
-		{"max_concurrent_requests_per_client", configuration.MaxConcurrentRequestsPerClient, consts.HTTPHardMaxConcurrentRequestsPerClient},
-		{"max_concurrent_requests_per_domain", configuration.MaxConcurrentRequestsPerDomain, consts.HTTPHardMaxConcurrentRequestsPerDomain},
-		{"max_idle_connections", configuration.MaxIdleConnections, consts.HTTPHardMaxIdleConnections},
-		{"max_idle_connections_per_domain", configuration.MaxIdleConnectionsPerDomain, consts.HTTPHardMaxIdleConnectionsPerDomain},
-		{"max_upgrade_connections", configuration.MaxUpgradeConnections, consts.HTTPHardMaxUpgradeConnections},
-		{"max_upgrade_connections_per_client", configuration.MaxUpgradeConnectionsPerClient, consts.HTTPHardMaxUpgradeConnectionsPerClient},
-		{"max_upgrade_connections_per_domain", configuration.MaxUpgradeConnectionsPerDomain, consts.HTTPHardMaxUpgradeConnectionsPerDomain},
-		{"max_concurrent_http2_streams", configuration.MaxConcurrentHTTP2Streams, consts.HTTPHardMaxConcurrentHTTP2Streams},
-	}
-	for _, limit := range limits {
-		if limit.value <= 0 || limit.value > limit.max {
-			return fmt.Errorf("http.%s must be greater than zero and at most %d", limit.name, limit.max)
+		return nil
+	case transport.TypeQUIC:
+		if configuration.ServerAddress == "" {
+			return errors.New("transport.server_address is required")
 		}
+		if configuration.QUIC.ServerName == "" {
+			return errors.New("transport.quic.server_name is required")
+		}
+		return nil
+	default:
+		return fmt.Errorf("transport.type must be tcp or quic, got %q", configuration.Type)
 	}
-	if configuration.MaxConcurrentRequestsPerClient > configuration.MaxConcurrentRequests ||
-		configuration.MaxConcurrentRequestsPerDomain > configuration.MaxConcurrentRequests ||
-		configuration.MaxIdleConnectionsPerDomain > configuration.MaxIdleConnections ||
-		configuration.MaxUpgradeConnectionsPerClient > configuration.MaxUpgradeConnections ||
-		configuration.MaxUpgradeConnectionsPerDomain > configuration.MaxUpgradeConnections {
-		return errors.New("HTTP per-client and per-domain limits must not exceed their global limits")
-	}
-	return nil
 }
 
-// ValidateHTTPDomain validates a canonical HTTP proxy domain.
-func ValidateHTTPDomain(domain string) error {
-	if domain == "" || len(domain) > 253 || domain != strings.ToLower(domain) ||
-		strings.HasSuffix(domain, ".") || net.ParseIP(domain) != nil ||
-		strings.ContainsAny(domain, ":/*") {
-		return errors.New("must be a canonical lowercase ASCII DNS name without port, path, wildcard, or trailing dot")
-	}
-	for _, label := range strings.Split(domain, ".") {
-		if len(label) == 0 || len(label) > 63 ||
-			label[0] == '-' || label[len(label)-1] == '-' {
-			return errors.New("contains an invalid DNS label")
+func validateServerTransport(configuration ServerTransportConfig) error {
+	switch configuration.Type {
+	case transport.TypeTCP:
+		if configuration.ListenAddress == "" {
+			return errors.New("transport.listen_address is required")
 		}
-		for _, character := range label {
-			if character > 127 ||
-				!((character >= 'a' && character <= 'z') ||
-					(character >= '0' && character <= '9') ||
-					character == '-') {
-				return errors.New("contains an invalid DNS label")
-			}
+		return nil
+	case transport.TypeQUIC:
+		if configuration.ListenAddress == "" {
+			return errors.New("transport.listen_address is required")
 		}
+		if configuration.QUIC.CertFile == "" {
+			return errors.New("transport.quic.cert_file is required")
+		}
+		if configuration.QUIC.KeyFile == "" {
+			return errors.New("transport.quic.key_file is required")
+		}
+		return nil
+	default:
+		return fmt.Errorf("transport.type must be tcp or quic, got %q", configuration.Type)
 	}
-	return nil
 }
 
 func validateLogLevel(logLevel LogLevel) error {
@@ -408,36 +369,14 @@ func validateLogLevel(logLevel LogLevel) error {
 }
 
 func validateAuthentication(authentication AuthenticationConfig, server bool) error {
-	switch authentication.Mode {
-	case AuthenticationModeToken:
-		if authentication.Token != "" && len(authentication.Token) < generatedTokenBytes {
-			return fmt.Errorf("authentication.token must contain at least %d bytes", generatedTokenBytes)
-		}
-		return nil
-	case AuthenticationModeTLS:
-		if authentication.TLS == nil {
-			return errors.New("authentication.tls is required when mode is tls")
-		}
-		if authentication.TLS.CertFile == "" {
-			return errors.New("authentication.tls.cert_file is required when mode is tls")
-		}
-		if authentication.TLS.KeyFile == "" {
-			return errors.New("authentication.tls.key_file is required when mode is tls")
-		}
+	if authentication.Token == "" {
 		if server {
-			if authentication.TLS.ClientCAFile == "" {
-				return errors.New("authentication.tls.client_ca_file is required on the server")
-			}
-		} else {
-			if authentication.TLS.CAFile == "" {
-				return errors.New("authentication.tls.ca_file is required on the client")
-			}
-			if authentication.TLS.ServerName == "" {
-				return errors.New("authentication.tls.server_name is required on the client")
-			}
+			return nil
 		}
-		return errors.New("authentication mode tls is not implemented")
-	default:
-		return fmt.Errorf("authentication.mode must be token or tls, got %q", authentication.Mode)
+		return errors.New("authentication.token is required")
 	}
+	if len(authentication.Token) < generatedTokenBytes {
+		return fmt.Errorf("authentication.token must contain at least %d bytes", generatedTokenBytes)
+	}
+	return nil
 }

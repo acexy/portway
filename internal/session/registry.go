@@ -1,11 +1,11 @@
-package server
+// Package session owns authenticated client session state and recovery.
+package session
 
 import (
 	"net"
 	"sync"
 	"time"
 
-	"github.com/acexy/portway/internal/consts"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -13,35 +13,39 @@ type clientRecord struct {
 	clientID          string
 	sessionID         string
 	previousSessionID string
-	state             consts.ServerClientState
+	state             state
 	connection        net.Conn
 	lastHeartbeatAt   time.Time
 	suspendedAt       time.Time
 }
 
-type expiredClient struct {
-	clientID   string
-	sessionID  string
-	connection net.Conn
+// ExpiredClient identifies a session whose recovery window elapsed.
+type ExpiredClient struct {
+	ClientID   string
+	SessionID  string
+	Connection net.Conn
 }
 
-type clientSession struct {
-	clientID  string
-	sessionID string
+// Client identifies one current client session.
+type Client struct {
+	ClientID  string
+	SessionID string
 }
 
-type clientRegistry struct {
+// Registry owns the current session record for every ClientID.
+type Registry struct {
 	mutex   sync.Mutex
 	clients map[string]*clientRecord
 }
 
-func newClientRegistry() *clientRegistry {
-	return &clientRegistry{
+// NewRegistry creates an empty session registry.
+func NewRegistry() *Registry {
+	return &Registry{
 		clients: make(map[string]*clientRecord),
 	}
 }
 
-func (registry *clientRegistry) register(
+func (registry *Registry) Register(
 	clientID string,
 	resumeSessionID string,
 	sessionID string,
@@ -63,14 +67,14 @@ func (registry *clientRegistry) register(
 		registry.clients[clientID] = &clientRecord{
 			clientID:        clientID,
 			sessionID:       sessionID,
-			state:           consts.ServerClientStateActive,
+			state:           stateActive,
 			connection:      connection,
 			lastHeartbeatAt: now,
 		}
 		return false, true, nil, nil
 	}
 
-	if record.state == consts.ServerClientStateActive {
+	if record.state == stateActive {
 		return false, false, nil, &protocol.SessionError{
 			Code:      protocol.SessionErrorClientIDAlreadyOnline,
 			Message:   "client ID is already online",
@@ -95,14 +99,14 @@ func (registry *clientRegistry) register(
 	previousConnection = record.connection
 	record.previousSessionID = record.sessionID
 	record.sessionID = sessionID
-	record.state = consts.ServerClientStateActive
+	record.state = stateActive
 	record.connection = connection
 	record.lastHeartbeatAt = now
 	record.suspendedAt = time.Time{}
 	return true, false, previousConnection, nil
 }
 
-func (registry *clientRegistry) heartbeat(clientID string, sessionID string, now time.Time) bool {
+func (registry *Registry) Heartbeat(clientID string, sessionID string, now time.Time) bool {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 
@@ -110,13 +114,13 @@ func (registry *clientRegistry) heartbeat(clientID string, sessionID string, now
 	if !exists || record.sessionID != sessionID {
 		return false
 	}
-	record.state = consts.ServerClientStateActive
+	record.state = stateActive
 	record.lastHeartbeatAt = now
 	record.suspendedAt = time.Time{}
 	return true
 }
 
-func (registry *clientRegistry) disconnect(clientID string, sessionID string, now time.Time) {
+func (registry *Registry) Disconnect(clientID string, sessionID string, now time.Time) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 
@@ -124,13 +128,13 @@ func (registry *clientRegistry) disconnect(clientID string, sessionID string, no
 	if !exists || record.sessionID != sessionID {
 		return
 	}
-	if record.state != consts.ServerClientStateSuspended {
-		record.state = consts.ServerClientStateSuspended
+	if record.state != stateSuspended {
+		record.state = stateSuspended
 		record.suspendedAt = now
 	}
 }
 
-func (registry *clientRegistry) remove(clientID string, sessionID string) {
+func (registry *Registry) Remove(clientID string, sessionID string) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 
@@ -140,30 +144,30 @@ func (registry *clientRegistry) remove(clientID string, sessionID string) {
 	}
 }
 
-func (registry *clientRegistry) sweep(
+func (registry *Registry) Sweep(
 	now time.Time,
 	heartbeatTimeout time.Duration,
 	recoveryWindow time.Duration,
-) (suspendedClients []clientSession, expiredClients []expiredClient) {
+) (suspendedClients []Client, expiredClients []ExpiredClient) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 
 	for clientID, record := range registry.clients {
-		if record.state == consts.ServerClientStateActive && now.Sub(record.lastHeartbeatAt) >= heartbeatTimeout {
-			record.state = consts.ServerClientStateSuspended
+		if record.state == stateActive && now.Sub(record.lastHeartbeatAt) >= heartbeatTimeout {
+			record.state = stateSuspended
 			record.suspendedAt = now
-			suspendedClients = append(suspendedClients, clientSession{
-				clientID:  clientID,
-				sessionID: record.sessionID,
+			suspendedClients = append(suspendedClients, Client{
+				ClientID:  clientID,
+				SessionID: record.sessionID,
 			})
 			continue
 		}
-		if record.state == consts.ServerClientStateSuspended && now.Sub(record.suspendedAt) >= recoveryWindow {
+		if record.state == stateSuspended && now.Sub(record.suspendedAt) >= recoveryWindow {
 			delete(registry.clients, clientID)
-			expiredClients = append(expiredClients, expiredClient{
-				clientID:   clientID,
-				sessionID:  record.sessionID,
-				connection: record.connection,
+			expiredClients = append(expiredClients, ExpiredClient{
+				ClientID:   clientID,
+				SessionID:  record.sessionID,
+				Connection: record.connection,
 			})
 		}
 	}

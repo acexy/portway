@@ -1,4 +1,4 @@
-package server
+package session
 
 import (
 	"net"
@@ -9,13 +9,13 @@ import (
 )
 
 func TestClientRegistryRejectsDuplicateActiveClient(t *testing.T) {
-	registry := newClientRegistry()
+	registry := NewRegistry()
 	now := time.Now()
 	serverConnection, peerConnection := net.Pipe()
 	defer serverConnection.Close()
 	defer peerConnection.Close()
 
-	_, created, _, sessionError := registry.register(
+	_, created, _, sessionError := registry.Register(
 		"client-one",
 		"",
 		"session-one",
@@ -26,7 +26,7 @@ func TestClientRegistryRejectsDuplicateActiveClient(t *testing.T) {
 		t.Fatalf("initial registration failed: created=%t error=%v", created, sessionError)
 	}
 
-	_, _, _, sessionError = registry.register(
+	_, _, _, sessionError = registry.Register(
 		"client-one",
 		"",
 		"session-two",
@@ -39,7 +39,7 @@ func TestClientRegistryRejectsDuplicateActiveClient(t *testing.T) {
 }
 
 func TestClientRegistryResumesSuspendedClient(t *testing.T) {
-	registry := newClientRegistry()
+	registry := NewRegistry()
 	now := time.Now()
 	oldConnection, oldPeer := net.Pipe()
 	defer oldConnection.Close()
@@ -48,10 +48,10 @@ func TestClientRegistryResumesSuspendedClient(t *testing.T) {
 	defer newConnection.Close()
 	defer newPeer.Close()
 
-	registry.register("client-one", "", "session-one", oldConnection, now)
-	registry.disconnect("client-one", "session-one", now.Add(time.Second))
+	registry.Register("client-one", "", "session-one", oldConnection, now)
+	registry.Disconnect("client-one", "session-one", now.Add(time.Second))
 
-	resumed, created, previousConnection, sessionError := registry.register(
+	resumed, created, previousConnection, sessionError := registry.Register(
 		"client-one",
 		"session-one",
 		"session-two",
@@ -71,21 +71,21 @@ func TestClientRegistryResumesSuspendedClient(t *testing.T) {
 	}
 
 	// A delayed cleanup from the old handler must not suspend the new session.
-	registry.disconnect("client-one", "session-one", now.Add(3*time.Second))
-	if !registry.heartbeat("client-one", "session-two", now.Add(4*time.Second)) {
+	registry.Disconnect("client-one", "session-one", now.Add(3*time.Second))
+	if !registry.Heartbeat("client-one", "session-two", now.Add(4*time.Second)) {
 		t.Fatal("new session was changed by stale cleanup")
 	}
 }
 
 func TestClientRegistryExpiresAfterRecoveryWindow(t *testing.T) {
-	registry := newClientRegistry()
+	registry := NewRegistry()
 	now := time.Now()
 	serverConnection, peerConnection := net.Pipe()
 	defer serverConnection.Close()
 	defer peerConnection.Close()
 
-	registry.register("client-one", "", "session-one", serverConnection, now)
-	suspendedClientIDs, expiredClients := registry.sweep(
+	registry.Register("client-one", "", "session-one", serverConnection, now)
+	suspendedClientIDs, expiredClients := registry.Sweep(
 		now.Add(10*time.Second),
 		10*time.Second,
 		60*time.Second,
@@ -98,15 +98,15 @@ func TestClientRegistryExpiresAfterRecoveryWindow(t *testing.T) {
 		)
 	}
 
-	_, expiredClients = registry.sweep(
+	_, expiredClients = registry.Sweep(
 		now.Add(70*time.Second),
 		10*time.Second,
 		60*time.Second,
 	)
-	if len(expiredClients) != 1 || expiredClients[0].clientID != "client-one" {
+	if len(expiredClients) != 1 || expiredClients[0].ClientID != "client-one" {
 		t.Fatalf("unexpected expiration result: %#v", expiredClients)
 	}
-	if registry.heartbeat("client-one", "session-one", now.Add(71*time.Second)) {
+	if registry.Heartbeat("client-one", "session-one", now.Add(71*time.Second)) {
 		t.Fatal("expired client remained registered")
 	}
 }

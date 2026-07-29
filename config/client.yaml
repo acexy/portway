@@ -1,56 +1,80 @@
 # Portway client configuration.
+#
+# Field markers:
+#   * Required: the field must be configured explicitly.
+#   * Required when ...: the field is mandatory only under that condition.
+#   Optional: the field may be omitted and uses the documented default.
 
-# Minimum log severity.
-# Available values: trace, debug, info, warn, error.
+# Optional. Minimum log severity. Defaults to info.
+# Allowed values: trace, debug, info, warn, error.
 # Use trace for detailed protocol and lifecycle diagnostics, including heartbeats.
 log_level: info
 
-# Optional stable identifier for this client.
-# Leave empty to generate a random ID once for the current process. Configure
-# an explicit value when the identity must survive a process restart.
-# Allowed characters: letters, digits, dots, underscores, and hyphens.
+# Optional. Stable identifier for this client.
+# Leave empty to generate a random ID for the current process. Configure an
+# explicit value when identity must survive process restarts.
+# Length: 1-64 characters when configured.
+# Allowed characters: ASCII letters, digits, dots, underscores, and hyphens.
 client_id: ""
 
-# Public server address that the client connects to.
-server_address: gateway.example.com:7000
+# Optional. Underlying client-server transport settings.
+transport:
+  # Optional. Server endpoint used by both TCP and QUIC.
+  # Defaults to 127.0.0.1:7000. The effective value must not be empty.
+  server_address: gateway.example.com:7000
 
+  # Optional. Underlying transport type. Defaults to tcp.
+  # Allowed values: tcp, quic.
+  type: tcp
+
+  # Optional when type=tcp. QUIC-specific TLS transport settings.
+  quic:
+    # * Required when transport.type=quic.
+    # DNS name expected in the server certificate.
+    server_name: gateway.example.com
+
+    # Optional when transport.type=quic.
+    # CA bundle used to verify the server certificate.
+    # Leave empty to use the operating system trust store.
+    # For "portwayd cert generate", configure ./certs/root-ca.crt here.
+    ca_file: ""
+
+# * Required. Portway application identity settings.
 authentication:
-  # Authentication and encryption mode.
-  # Available values:
-  #   token - currently supported. The same static token must be configured
-  #           on both the client and server.
-  #   tls   - reserved for mutual TLS and not implemented yet.
-  mode: token
+  # * Required. Shared by TCP and QUIC and must match the server Token.
+  # Use a cryptographically random value containing at least 32 bytes.
+  # Never commit a real Token to version control.
+  token: CHANGE_ME_TO_A_RANDOM_TOKEN_AT_LEAST_32_BYTES
 
-  # Required only when mode is "token".
-  # Use a high-entropy random value of at least 32 bytes. This example is a
-  # placeholder; never commit a real token to version control.
-  token: CHANGE_ME_TO_A_RANDOM_TOKEN
-
-  # Required only when mode is "tls" (not implemented yet).
-  # Uncomment this block after TLS support is implemented.
-  # tls:
-  #   # CA certificate used to verify the server certificate.
-  #   ca_file: ./certs/ca.crt
-  #   # Client certificate and private key used by the server to authenticate
-  #   # this client.
-  #   cert_file: ./certs/client.crt
-  #   key_file: ./certs/client.key
-  #   # Expected DNS name in the server certificate.
-  #   server_name: gateway.example.com
-
+# Optional. Empty means that this client registers no proxies.
+# Proxy names must be unique within this ClientID across all proxy types.
 proxies:
+  # * Required for every proxy. Unique name using lowercase letters, digits,
+  # underscores, or hyphens; length 1-64. The first character must be a
+  # lowercase letter or digit.
   - name: ssh
+
+    # * Required for every proxy. Allowed values: tcp, http.
     type: tcp
-    # Optional. Defaults to 127.0.0.1 and may point to another machine that
-    # is reachable from the Portway client.
+
+    # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
+    # from the Portway client.
     local_ip: 127.0.0.1
+
+    # * Required for every proxy. Local target port, range 1-65535.
     local_port: 22
+
+    # * Required when type=tcp. Public server port, range 1-65535.
+    # Not allowed when type=http.
     remote_port: 22022
 
-  # HTTP proxy names share the same ClientID-scoped namespace as TCP proxies.
+  # HTTP example:
   # - name: web
   #   type: http
+  #   # * Required when type=http. Canonical lowercase DNS name without a
+  #   # scheme, port, path, wildcard, IP literal, or trailing dot.
   #   domain: app.example.com
+  #   # Optional. Defaults to 127.0.0.1.
   #   local_ip: 127.0.0.1
+  #   # * Required for every proxy. Range 1-65535.
   #   local_port: 8080

@@ -5,17 +5,18 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/acexy/portway/internal/consts"
 )
 
 func TestLoadServerParsesHTTPSettings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	content := []byte(`
 log_level: info
-listen_address: 127.0.0.1:7000
-http_listen_address: 127.0.0.1:8080
-proxy_bind_ip: 127.0.0.1
+transport:
+  type: tcp
+  listen_address: 127.0.0.1:7000
+tunnel:
+  bind_ip: 127.0.0.1
+  http_listen_address: 127.0.0.1:8080
 http:
   read_header_timeout: 12s
   graceful_shutdown_timeout: 40s
@@ -32,7 +33,6 @@ http:
   max_upgrade_connections_per_domain: 20
   max_concurrent_http2_streams: 64
 authentication:
-  mode: token
   token: test-token-with-at-least-32-random-bytes
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
@@ -44,7 +44,9 @@ authentication:
 	}
 	if configuration.HTTP.ReadHeaderTimeout != 12*time.Second ||
 		configuration.HTTP.ResponseHeaderTimeout != 45*time.Second ||
-		configuration.HTTP.MaxConcurrentHTTP2Streams != 64 {
+		configuration.HTTP.MaxConcurrentHTTP2Streams != 64 ||
+		configuration.Tunnel.BindIP != "127.0.0.1" ||
+		configuration.Tunnel.HTTPListenAddress != "127.0.0.1:8080" {
 		t.Fatalf("unexpected HTTP settings: %+v", configuration.HTTP)
 	}
 }
@@ -90,6 +92,12 @@ func TestValidateClientUsesOneProxyNameNamespace(t *testing.T) {
 
 func TestValidateServerAcceptsDefaultHTTPSettings(t *testing.T) {
 	configuration := DefaultServer()
+	if configuration.Tunnel.HTTPListenAddress != "" {
+		t.Fatalf(
+			"default HTTP listener must be disabled, got %q",
+			configuration.Tunnel.HTTPListenAddress,
+		)
+	}
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("default HTTP settings were rejected: %v", err)
 	}
@@ -97,7 +105,7 @@ func TestValidateServerAcceptsDefaultHTTPSettings(t *testing.T) {
 
 func TestValidateServerRejectsHTTPHardLimitOverflow(t *testing.T) {
 	configuration := DefaultServer()
-	configuration.HTTP.MaxHeaderBytes = consts.HTTPHardMaxHeaderBytes + 1
+	configuration.HTTP.MaxHeaderBytes = httpHardMaxHeaderBytes + 1
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP setting above the hard limit was accepted")
 	}
@@ -126,16 +134,12 @@ func TestValidateServerRejectsDisabledSafetyTimeout(t *testing.T) {
 }
 
 func validHTTPClientConfiguration() ClientConfig {
-	return ClientConfig{
-		ClientID: "http-client", ServerAddress: "127.0.0.1:7000",
-		LogLevel: LogLevelInfo,
-		Authentication: AuthenticationConfig{
-			Mode: AuthenticationModeToken,
-			Token: "test-token-with-at-least-32-random-bytes",
-		},
-		Proxies: []ProxyConfig{{
-			Name: "web", Type: "http", Domain: "app.example.com",
-			LocalIP: "127.0.0.1", LocalPort: 8080,
-		}},
-	}
+	configuration := DefaultClient()
+	configuration.ClientID = "http-client"
+	configuration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	configuration.Proxies = []ProxyConfig{{
+		Name: "web", Type: "http", Domain: "app.example.com",
+		LocalIP: "127.0.0.1", LocalPort: 8080,
+	}}
+	return configuration
 }

@@ -1,61 +1,105 @@
 # Portway server configuration.
+#
+# Field markers:
+#   * Required: the field must be configured explicitly.
+#   * Required when ...: the field is mandatory only under that condition.
+#   Optional: the field may be omitted and uses the documented default.
 
-# Minimum log severity.
-# Available values: trace, debug, info, warn, error.
+# Optional. Minimum log severity. Defaults to info.
+# Allowed values: trace, debug, info, warn, error.
 # Use trace for detailed per-session protocol diagnostics, including heartbeats.
 log_level: info
 
-# Address used by the server for client control and data connections.
-listen_address: 0.0.0.0:7000
+# Optional. Underlying client-server transport settings.
+# The server starts only the selected transport.
+transport:
+  # Optional. Underlying transport type. Defaults to tcp.
+  # Allowed values: tcp, quic.
+  type: tcp
 
-# Public HTTP listener. Leave empty to disable HTTP proxy registration.
-http_listen_address: ""
+  # Optional. Client control and data endpoint used by both TCP and QUIC.
+  # Defaults to 0.0.0.0:7000. The effective value must not be empty.
+  listen_address: 0.0.0.0:7000
 
-# HTTP safety limits and optional business timeouts.
+  # Optional when type=tcp. QUIC-specific TLS transport settings.
+  quic:
+    # * Required when transport.type=quic.
+    # Server certificate chain presented to QUIC clients.
+    # Run "portwayd cert generate" to create an internal CA and a server
+    # certificate under ./certs for local or private deployments.
+    cert_file: /path/to/server.crt
+
+    # * Required when transport.type=quic.
+    # Private key for cert_file. Keep this file readable only by Portway.
+    key_file: /path/to/server.key
+
+# Optional. Public proxy listener settings.
+tunnel:
+  # Optional. IP used by public TCP proxy listeners.
+  # Defaults to 0.0.0.0. Must be an IP address, not a hostname.
+  bind_ip: 0.0.0.0
+
+  # Optional. Public HTTP proxy listener.
+  # Defaults to empty, which disables HTTP proxy registration and serving.
+  # When configured, it must differ from transport.listen_address.
+  http_listen_address: ""
+
+# Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
+# Defaults shown below apply even when tunnel.http_listen_address is empty.
 http:
-  # Mandatory slow-header protection and graceful shutdown bounds.
+  # Optional. Slow-header protection. Defaults to 10s.
+  # Valid range: greater than 0s and at most 60s.
   read_header_timeout: 10s
+
+  # Optional. Maximum graceful HTTP shutdown period. Defaults to 30s.
+  # Valid range: greater than 0s and at most 2m.
   graceful_shutdown_timeout: 30s
 
-  # Optional business timeouts. Zero keeps streaming responses and idle
-  # keep-alive connections unlimited by Portway.
+  # Optional. Defaults to 0s. Zero means no Portway idle timeout.
+  # Maximum non-zero value: 10m.
   idle_connection_timeout: 0s
+
+  # Optional. Defaults to 0s. Zero allows streaming responses without a
+  # Portway response-header deadline. Maximum non-zero value: 10m.
   response_header_timeout: 0s
 
-  # Resource limits. Every value must be greater than zero and cannot exceed
-  # Portway's built-in hard ceiling.
+  # Optional capacity settings. Defaults are shown below. Every effective value
+  # must be greater than zero and no greater than its documented hard maximum.
+  # Per-client and per-domain values must not exceed their global value.
+
+  # Hard maximum: 1048576 bytes.
   max_header_bytes: 65536
+
+  # Hard maximum: 16384.
   max_concurrent_requests: 4096
+
+  # Hard maximum: 2048.
   max_concurrent_requests_per_client: 512
+
+  # Hard maximum: 1024.
   max_concurrent_requests_per_domain: 256
+
+  # Hard maximum: 4096.
   max_idle_connections: 1024
+
+  # Hard maximum: 128.
   max_idle_connections_per_domain: 32
+
+  # Hard maximum: 4096.
   max_upgrade_connections: 1024
+
+  # Hard maximum: 512.
   max_upgrade_connections_per_client: 128
+
+  # Hard maximum: 256.
   max_upgrade_connections_per_domain: 64
+
+  # Hard maximum: 256.
   max_concurrent_http2_streams: 128
 
-# IP used for public TCP proxy listeners. Clients only choose the remote port.
-proxy_bind_ip: 0.0.0.0
-
+# Optional on the server. Shared by TCP and QUIC.
 authentication:
-  # Authentication and encryption mode.
-  # Available values:
-  #   token - currently supported. The same static token must be configured
-  #           on both the client and server.
-  #   tls   - reserved for mutual TLS and not implemented yet.
-  mode: token
-
-  # Used only when mode is "token".
-  # Leave empty to generate a high-entropy token at startup and print it once
-  # in the server log. Set the same generated value in the client configuration.
+  # Optional. Leave empty to generate a cryptographically random 32-byte Token
+  # at startup and log the generated value once. A configured value must contain
+  # at least 32 bytes. Every client must use the same effective Token.
   token: ""
-
-  # Required only when mode is "tls" (not implemented yet).
-  # Uncomment this block after TLS support is implemented.
-  # tls:
-  #   # Server certificate and private key presented to clients.
-  #   cert_file: ./certs/server.crt
-  #   key_file: ./certs/server.key
-  #   # CA certificate used to verify client certificates.
-  #   client_ca_file: ./certs/client-ca.crt

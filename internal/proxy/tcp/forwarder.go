@@ -8,7 +8,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/acexy/portway/internal/consts"
 )
 
 // Stream is the reliable byte-stream boundary required by the TCP proxy.
@@ -51,7 +50,7 @@ func Forward(ctx context.Context, left Stream, right Stream) error {
 	go copyDirection(left, right)
 
 	firstResult := <-results
-	timer := time.NewTimer(consts.TCPStreamCloseGracePeriod)
+	timer := time.NewTimer(streamCloseGracePeriod)
 	defer timer.Stop()
 
 	select {

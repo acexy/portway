@@ -9,45 +9,48 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
-	"github.com/acexy/portway/internal/consts"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
 	"github.com/acexy/portway/internal/transport"
 )
 
-type clientTCPLinkManager struct {
+type linkManager struct {
 	context       context.Context
 	cancel        context.CancelFunc
 	logger        *logging.Logger
 	configuration config.ClientConfig
 	sessionID     string
-	writer        *controlWriter
+	writer        *control.Writer
+	transport     transport.ClientSession
 	mutex         sync.Mutex
 	links         map[string]context.CancelFunc
 	waitGroup     sync.WaitGroup
 }
 
-func newClientTCPLinkManager(
+func newLinkManager(
 	parent context.Context,
 	logger *logging.Logger,
 	configuration config.ClientConfig,
 	sessionID string,
-	writer *controlWriter,
-) *clientTCPLinkManager {
+	writer *control.Writer,
+	transportSession transport.ClientSession,
+) *linkManager {
 	ctx, cancel := context.WithCancel(parent)
-	return &clientTCPLinkManager{
+	return &linkManager{
 		context:       ctx,
 		cancel:        cancel,
 		logger:        logger,
 		configuration: configuration,
 		sessionID:     sessionID,
 		writer:        writer,
+		transport:     transportSession,
 		links:         make(map[string]context.CancelFunc),
 	}
 }
 
-func (manager *clientTCPLinkManager) open(request protocol.OpenLink) {
+func (manager *linkManager) open(request protocol.OpenLink) {
 	manager.mutex.Lock()
 	if _, exists := manager.links[request.LinkID]; exists {
 		manager.mutex.Unlock()
@@ -65,7 +68,7 @@ func (manager *clientTCPLinkManager) open(request protocol.OpenLink) {
 	}()
 }
 
-func (manager *clientTCPLinkManager) cancelLink(linkID string) {
+func (manager *linkManager) cancelLink(linkID string) {
 	manager.mutex.Lock()
 	cancel := manager.links[linkID]
 	manager.mutex.Unlock()
@@ -74,7 +77,7 @@ func (manager *clientTCPLinkManager) cancelLink(linkID string) {
 	}
 }
 
-func (manager *clientTCPLinkManager) close() {
+func (manager *linkManager) close() {
 	manager.cancel()
 	manager.mutex.Lock()
 	for _, cancel := range manager.links {
@@ -84,7 +87,7 @@ func (manager *clientTCPLinkManager) close() {
 	manager.waitGroup.Wait()
 }
 
-func (manager *clientTCPLinkManager) remove(linkID string) {
+func (manager *linkManager) remove(linkID string) {
 	manager.mutex.Lock()
 	cancel := manager.links[linkID]
 	delete(manager.links, linkID)
@@ -94,7 +97,7 @@ func (manager *clientTCPLinkManager) remove(linkID string) {
 	}
 }
 
-func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.OpenLink) {
+func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) {
 	logger := manager.logger.WithFields(map[string]any{
 		"link_id":    request.LinkID,
 		"proxy_name": request.ProxyName,
@@ -111,7 +114,7 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 	}
 
 	type dialResult struct {
-		dataConnection  net.Conn
+		dataConnection  transport.Stream
 		localConnection net.Conn
 		kind            linkDialKind
 		err             error
@@ -121,12 +124,7 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 	defer cancelDial()
 
 	go func() {
-		connection, err := transport.DialToken(
-			dialContext,
-			manager.configuration.ServerAddress,
-			manager.configuration.Authentication.Token,
-			protocol.RoleData,
-		)
+		connection, err := manager.transport.OpenDataStream(dialContext)
 		results <- dialResult{
 			dataConnection: connection,
 			kind:           linkDialTransport,
@@ -136,7 +134,7 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 	go func() {
 		localDialContext, cancelLocalDial := context.WithTimeout(
 			dialContext,
-			consts.TCPLocalDialTimeout,
+			localDialTimeout,
 		)
 		defer cancelLocalDial()
 		address := net.JoinHostPort(
@@ -151,7 +149,7 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 		}
 	}()
 
-	var dataConnection net.Conn
+	var dataConnection transport.Stream
 	var localConnection net.Conn
 	var transportDialError error
 	var localDialError error
@@ -191,7 +189,7 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 	defer dataConnection.Close()
 	defer localConnection.Close()
 
-	if err := dataConnection.SetDeadline(time.Now().Add(consts.TCPDataBindTimeout)); err != nil {
+	if err := dataConnection.SetDeadline(time.Now().Add(dataBindTimeout)); err != nil {
 		manager.reportFailure(request.LinkID, protocol.LinkErrorTransportFailed)
 		return
 	}
@@ -270,7 +268,7 @@ func classifyLinkDialFailure(
 	return protocol.LinkErrorTransportFailed
 }
 
-func (manager *clientTCPLinkManager) findProxy(
+func (manager *linkManager) findProxy(
 	name string,
 	proxyType protocol.ProxyType,
 ) (config.ProxyConfig, bool) {
@@ -283,11 +281,11 @@ func (manager *clientTCPLinkManager) findProxy(
 	return config.ProxyConfig{}, false
 }
 
-func (manager *clientTCPLinkManager) reportFailure(
+func (manager *linkManager) reportFailure(
 	linkID string,
 	code protocol.LinkErrorCode,
 ) {
-	_ = manager.writer.write(protocol.MessageLinkFailed, protocol.LinkFailed{
+	_ = manager.writer.Write(protocol.MessageLinkFailed, protocol.LinkFailed{
 		LinkID: linkID,
 		Code:   code,
 	})

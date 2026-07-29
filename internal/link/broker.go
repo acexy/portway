@@ -1,4 +1,5 @@
-package server
+// Package link coordinates logical data links independently of proxy protocols.
+package link
 
 import (
 	"context"
@@ -12,21 +13,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acexy/portway/internal/consts"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
 
-type linkTarget struct {
-	clientID   string
-	sessionID  string
-	proxyName  string
-	proxyType  protocol.ProxyType
-	bindingID  string
-	writer     *controlWriter
+// Target identifies the authenticated owner and proxy binding of one link.
+type Target struct {
+	ClientID   string
+	SessionID  string
+	ProxyName  string
+	ProxyType  protocol.ProxyType
+	BindingID  string
+	Writer     *control.Writer
 }
 
 type brokerPendingLink struct {
-	target       linkTarget
+	target       Target
 	linkID       string
 	ticketDigest [sha256.Size]byte
 	timer        *time.Timer
@@ -36,7 +38,7 @@ type brokerPendingLink struct {
 }
 
 type brokerActiveLink struct {
-	target     linkTarget
+	target     Target
 	connection *managedLinkConnection
 }
 
@@ -45,7 +47,8 @@ type linkOpenResult struct {
 	err        error
 }
 
-type linkBroker struct {
+// Broker owns pending and active logical data links.
+type Broker struct {
 	context context.Context
 	mutex   sync.Mutex
 	pending map[string]*brokerPendingLink
@@ -53,16 +56,17 @@ type linkBroker struct {
 	closed  bool
 }
 
-func newLinkBroker(ctx context.Context) *linkBroker {
-	return &linkBroker{
+// NewBroker creates a link broker.
+func NewBroker(ctx context.Context) *Broker {
+	return &Broker{
 		context: ctx,
 		pending: make(map[string]*brokerPendingLink),
 		active:  make(map[string]*brokerActiveLink),
 	}
 }
 
-func (broker *linkBroker) serveStream(
-	target linkTarget,
+func (broker *Broker) ServeStream(
+	target Target,
 	onCancel func(),
 	handler func(context.Context, net.Conn) error,
 ) error {
@@ -70,7 +74,7 @@ func (broker *linkBroker) serveStream(
 	return err
 }
 
-func (broker *linkBroker) openStream(ctx context.Context, target linkTarget) (net.Conn, error) {
+func (broker *Broker) OpenStream(ctx context.Context, target Target) (net.Conn, error) {
 	ready := make(chan linkOpenResult, 1)
 	linkID, err := broker.request(target, nil, ready, nil)
 	if err != nil {
@@ -85,8 +89,8 @@ func (broker *linkBroker) openStream(ctx context.Context, target linkTarget) (ne
 	}
 }
 
-func (broker *linkBroker) request(
-	target linkTarget,
+func (broker *Broker) request(
+	target Target,
 	onCancel func(),
 	ready chan linkOpenResult,
 	handler func(context.Context, net.Conn) error,
@@ -109,18 +113,18 @@ func (broker *linkBroker) request(
 		handler:      handler,
 	}
 	broker.pending[linkID] = pending
-	pending.timer = time.AfterFunc(consts.TCPPendingLinkTimeout, func() {
+	pending.timer = time.AfterFunc(pendingTimeout, func() {
 		broker.cancel(linkID, true, context.DeadlineExceeded)
 	})
 	broker.mutex.Unlock()
 
-	if err := target.writer.write(protocol.MessageOpenLink, protocol.OpenLink{
+	if err := target.Writer.Write(protocol.MessageOpenLink, protocol.OpenLink{
 		LinkID:          linkID,
-		ProxyName:       target.proxyName,
-		ProxyType:       target.proxyType,
-		BindingID:       target.bindingID,
+		ProxyName:       target.ProxyName,
+		ProxyType:       target.ProxyType,
+		BindingID:       target.BindingID,
 		Ticket:          ticket,
-		ExpiresAtUnixMS: time.Now().Add(consts.TCPPendingLinkTimeout).UnixMilli(),
+		ExpiresAtUnixMS: time.Now().Add(pendingTimeout).UnixMilli(),
 	}); err != nil {
 		broker.cancel(linkID, false, err)
 		return "", err
@@ -128,7 +132,7 @@ func (broker *linkBroker) request(
 	return linkID, nil
 }
 
-func (broker *linkBroker) bind(
+func (broker *Broker) Bind(
 	ctx context.Context,
 	connection net.Conn,
 	binding protocol.BindLink,
@@ -142,10 +146,10 @@ func (broker *linkBroker) bind(
 	broker.mutex.Lock()
 	pending := broker.pending[binding.LinkID]
 	if pending == nil ||
-		pending.target.clientID != binding.ClientID ||
-		pending.target.sessionID != binding.SessionID ||
-		pending.target.proxyType != binding.ProxyType ||
-		pending.target.bindingID != binding.BindingID ||
+		pending.target.ClientID != binding.ClientID ||
+		pending.target.SessionID != binding.SessionID ||
+		pending.target.ProxyType != binding.ProxyType ||
+		pending.target.BindingID != binding.BindingID ||
 		subtle.ConstantTimeCompare(digest[:], pending.ticketDigest[:]) != 1 {
 		broker.mutex.Unlock()
 		return broker.rejectBinding(connection, binding.LinkID, protocol.LinkErrorInvalidBinding)
@@ -188,7 +192,7 @@ func (broker *linkBroker) bind(
 	return err
 }
 
-func (broker *linkBroker) rejectBinding(
+func (broker *Broker) rejectBinding(
 	connection net.Conn,
 	linkID string,
 	code protocol.LinkErrorCode,
@@ -201,7 +205,7 @@ func (broker *linkBroker) rejectBinding(
 	return fmt.Errorf("bind data link: %s", code)
 }
 
-func (broker *linkBroker) cancel(linkID string, notify bool, err error) {
+func (broker *Broker) cancel(linkID string, notify bool, err error) {
 	broker.mutex.Lock()
 	pending := broker.pending[linkID]
 	if pending == nil {
@@ -218,24 +222,24 @@ func (broker *linkBroker) cancel(linkID string, notify bool, err error) {
 		pending.ready <- linkOpenResult{err: err}
 	}
 	if notify {
-		_ = pending.target.writer.write(protocol.MessageCancelLink, protocol.CancelLink{
+		_ = pending.target.Writer.Write(protocol.MessageCancelLink, protocol.CancelLink{
 			LinkID: linkID,
 			Reason: "link_cancelled",
 		})
 	}
 }
 
-func (broker *linkBroker) cancelSession(clientID string, sessionID string) {
+func (broker *Broker) CancelSession(clientID string, sessionID string) {
 	broker.mutex.Lock()
 	pendingIDs := make([]string, 0)
 	active := make([]*managedLinkConnection, 0)
 	for linkID, pending := range broker.pending {
-		if pending.target.clientID == clientID && pending.target.sessionID == sessionID {
+		if pending.target.ClientID == clientID && pending.target.SessionID == sessionID {
 			pendingIDs = append(pendingIDs, linkID)
 		}
 	}
 	for _, link := range broker.active {
-		if link.target.clientID == clientID && link.target.sessionID == sessionID {
+		if link.target.ClientID == clientID && link.target.SessionID == sessionID {
 			active = append(active, link.connection)
 		}
 	}
@@ -248,17 +252,17 @@ func (broker *linkBroker) cancelSession(clientID string, sessionID string) {
 	}
 }
 
-func (broker *linkBroker) cancelBinding(bindingID string) {
+func (broker *Broker) CancelBinding(bindingID string) {
 	broker.mutex.Lock()
 	pendingIDs := make([]string, 0)
 	active := make([]*managedLinkConnection, 0)
 	for linkID, pending := range broker.pending {
-		if pending.target.bindingID == bindingID {
+		if pending.target.BindingID == bindingID {
 			pendingIDs = append(pendingIDs, linkID)
 		}
 	}
 	for _, link := range broker.active {
-		if link.target.bindingID == bindingID {
+		if link.target.BindingID == bindingID {
 			active = append(active, link.connection)
 		}
 	}
@@ -271,7 +275,7 @@ func (broker *linkBroker) cancelBinding(bindingID string) {
 	}
 }
 
-func (broker *linkBroker) reportFailure(
+func (broker *Broker) ReportFailure(
 	clientID string,
 	sessionID string,
 	failure protocol.LinkFailed,
@@ -279,13 +283,13 @@ func (broker *linkBroker) reportFailure(
 	broker.mutex.Lock()
 	pending := broker.pending[failure.LinkID]
 	broker.mutex.Unlock()
-	if pending != nil && pending.target.clientID == clientID &&
-		pending.target.sessionID == sessionID {
+	if pending != nil && pending.target.ClientID == clientID &&
+		pending.target.SessionID == sessionID {
 		broker.cancel(failure.LinkID, false, errors.New(string(failure.Code)))
 	}
 }
 
-func (broker *linkBroker) close() {
+func (broker *Broker) Close() {
 	broker.mutex.Lock()
 	broker.closed = true
 	pendingIDs := make([]string, 0, len(broker.pending))
@@ -305,38 +309,38 @@ func (broker *linkBroker) close() {
 	}
 }
 
-func (broker *linkBroker) finish(linkID string) {
+func (broker *Broker) finish(linkID string) {
 	broker.mutex.Lock()
 	delete(broker.active, linkID)
 	broker.mutex.Unlock()
 }
 
-func (broker *linkBroker) limitReachedLocked(target linkTarget) bool {
-	if len(broker.pending) >= consts.ServerMaxTCPPendingLinks ||
-		len(broker.active) >= consts.ServerMaxTCPActiveLinks {
+func (broker *Broker) limitReachedLocked(target Target) bool {
+	if len(broker.pending) >= maxPending ||
+		len(broker.active) >= maxActive {
 		return true
 	}
 	pendingClient, pendingProxy, activeClient, activeProxy := 0, 0, 0, 0
 	for _, link := range broker.pending {
-		if link.target.clientID == target.clientID {
+		if link.target.ClientID == target.ClientID {
 			pendingClient++
-			if link.target.proxyName == target.proxyName {
+			if link.target.ProxyName == target.ProxyName {
 				pendingProxy++
 			}
 		}
 	}
 	for _, link := range broker.active {
-		if link.target.clientID == target.clientID {
+		if link.target.ClientID == target.ClientID {
 			activeClient++
-			if link.target.proxyName == target.proxyName {
+			if link.target.ProxyName == target.ProxyName {
 				activeProxy++
 			}
 		}
 	}
-	return pendingClient >= consts.ServerMaxTCPPendingLinksPerClient ||
-		pendingProxy >= consts.ServerMaxTCPPendingLinksPerProxy ||
-		activeClient >= consts.ServerMaxTCPActiveLinksPerClient ||
-		activeProxy >= consts.ServerMaxTCPActiveLinksPerProxy
+	return pendingClient >= maxPendingPerClient ||
+		pendingProxy >= maxPendingPerProxy ||
+		activeClient >= maxActivePerClient ||
+		activeProxy >= maxActivePerProxy
 }
 
 func newBrokerLinkCredentials() (string, string, [sha256.Size]byte, error) {
