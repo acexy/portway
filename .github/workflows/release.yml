@@ -66,13 +66,13 @@ jobs:
           for archive in "${unix_archives[@]}"; do
             test -f "$archive"
             mapfile -t contents < <(tar -tf "$archive")
-            [[ "${contents[*]}" == "portway portwayd" ]]
+            [[ "${contents[*]}" == "portway portwayd LICENSE NOTICE" ]]
           done
 
           windows_archive=target/portway-win-amd64.tar
           test -f "$windows_archive"
           mapfile -t contents < <(tar -tf "$windows_archive")
-          [[ "${contents[*]}" == "portway.exe portwayd.exe" ]]
+          [[ "${contents[*]}" == "portway.exe portwayd.exe LICENSE NOTICE" ]]
 
       - name: Create checksums
         working-directory: target

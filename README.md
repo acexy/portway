@@ -145,8 +145,8 @@ To cross-compile and package all supported release targets:
 ```
 
 The release matrix includes Linux and macOS on `amd64` and `arm64`, plus
-Windows on `amd64`. Each archive contains only the matching `portway` and
-`portwayd` executables at its root:
+Windows on `amd64`. Each archive contains the matching `portway` and `portwayd`
+executables together with `LICENSE` and `NOTICE` at its root:
 
 ```text
 target/portway-linux-amd64.tar
@@ -188,6 +188,7 @@ https://github.com/acexy/portway/releases
 
 - [Technical overview](assets/docs/technical/README.md)
 - [Security](assets/docs/security/README.md)
+- [Roadmap and TODO](assets/docs/todo/README.md)
 - Fully annotated configuration examples:
   [client](config/client.yaml) and [server](config/server.yaml)
 
@@ -199,3 +200,10 @@ properties without serving as a complete wire-protocol specification.
 Portway focuses on lightweight, operator-managed reverse tunneling. It does not
 currently provide a web dashboard, P2P NAT traversal, TUN/TAP networking,
 dynamic plugins, or a distributed multi-tenant control plane.
+
+## License
+
+Copyright 2026 Acexy.
+
+Portway is licensed under the [Apache License 2.0](LICENSE). See
+[NOTICE](NOTICE) for attribution information.

@@ -58,8 +58,9 @@ $(TARGET_DIR)/build/$(1)-$(2)/portwayd$(3): force
 $(TARGET_DIR)/portway-$(4)-$(2).tar: \
 		$(TARGET_DIR)/build/$(1)-$(2)/portway$(3) \
 		$(TARGET_DIR)/build/$(1)-$(2)/portwayd$(3)
+	cp LICENSE NOTICE "$(TARGET_DIR)/build/$(1)-$(2)/"
 	tar -C "$(TARGET_DIR)/build/$(1)-$(2)" -cf "$$@" \
-		"portway$(3)" "portwayd$(3)"
+		"portway$(3)" "portwayd$(3)" LICENSE NOTICE
 endef
 
 $(eval $(call RELEASE_RULES,linux,amd64,,linux))
