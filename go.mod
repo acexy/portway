@@ -3,7 +3,7 @@ module github.com/acexy/portway
 go 1.25.8
 
 require (
-	github.com/acexy/golang-toolkit v1.25.2-0.20260728082457-333d45133fd5
+	github.com/acexy/golang-toolkit v1.25.2
 	github.com/gaissmai/bart v0.29.0
 	github.com/quic-go/quic-go v0.61.0
 	gopkg.in/yaml.v3 v3.0.1

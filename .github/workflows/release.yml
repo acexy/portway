@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s\n' "$RELEASE_TAG" |
+            grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+            printf 'Invalid release tag: %s\n' "$RELEASE_TAG" >&2
+            printf 'Expected vMAJOR.MINOR.PATCH or a prerelease suffix.\n' >&2
+            exit 1
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build release archives
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          make release \
+            VERSION="$RELEASE_TAG" \
+            COMMIT="$RELEASE_COMMIT" \
+            BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Verify release archives
+        shell: bash
+        run: |
+          unix_archives=(
+            target/portway-linux-amd64.tar
+            target/portway-linux-arm64.tar
+            target/portway-darwin-amd64.tar
+            target/portway-darwin-arm64.tar
+          )
+          for archive in "${unix_archives[@]}"; do
+            test -f "$archive"
+            mapfile -t contents < <(tar -tf "$archive")
+            [[ "${contents[*]}" == "portway portwayd" ]]
+          done
+
+          windows_archive=target/portway-win-amd64.tar
+          test -f "$windows_archive"
+          mapfile -t contents < <(tar -tf "$windows_archive")
+          [[ "${contents[*]}" == "portway.exe portwayd.exe" ]]
+
+      - name: Create checksums
+        working-directory: target
+        run: sha256sum portway-*.tar > checksums.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          download_base="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
+          release_intro=$(cat <<EOF
+          ## Downloads
+
+          | Platform | Architecture | Download |
+          |---|---|---|
+          | Linux | AMD64 | [portway-linux-amd64.tar](${download_base}/portway-linux-amd64.tar) |
+          | Linux | ARM64 | [portway-linux-arm64.tar](${download_base}/portway-linux-arm64.tar) |
+          | macOS | AMD64 | [portway-darwin-amd64.tar](${download_base}/portway-darwin-amd64.tar) |
+          | macOS | ARM64 | [portway-darwin-arm64.tar](${download_base}/portway-darwin-arm64.tar) |
+          | Windows | AMD64 | [portway-win-amd64.tar](${download_base}/portway-win-amd64.tar) |
+
+          Verify downloads with [checksums.txt](${download_base}/checksums.txt).
+          EOF
+          )
+
+          release_flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            target/portway-*.tar \
+            target/checksums.txt \
+            --verify-tag \
+            --title "Portway ${RELEASE_TAG}" \
+            --generate-notes \
+            --notes "$release_intro" \
+            "${release_flags[@]}"

@@ -10,6 +10,69 @@ import (
 	"testing"
 )
 
+func TestRunWithoutArgumentsPrintsServerHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run(nil, &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d", exitCode)
+	}
+	for _, expected := range []string{
+		"Portway Server",
+		"portwayd <command> [options]",
+		"run",
+		"cert",
+		"version",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunVersionPrintsServerVersion(t *testing.T) {
+	var stdout bytes.Buffer
+
+	exitCode := run([]string{"version"}, &stdout, &bytes.Buffer{})
+
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "portwayd ") ||
+		!strings.Contains(stdout.String(), "Go:") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunCertificateGenerateHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run(
+		[]string{"cert", "generate", "--help"},
+		&stdout,
+		&stderr,
+	)
+
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d", exitCode)
+	}
+	if !strings.Contains(
+		stdout.String(),
+		"portwayd cert generate [options]",
+	) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunCertificateGenerateUsesLocalDefaults(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "certs")
 	var stdout bytes.Buffer
