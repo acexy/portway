@@ -25,6 +25,8 @@ const (
 type OpenLink struct {
 	LinkID          string `json:"link_id"`
 	ProxyName       string `json:"proxy_name"`
+	ProxyType       ProxyType `json:"proxy_type"`
+	BindingID       string `json:"binding_id"`
 	Ticket          string `json:"ticket"`
 	ExpiresAtUnixMS int64  `json:"expires_at_unix_ms"`
 }
@@ -46,6 +48,8 @@ type BindLink struct {
 	ClientID  string `json:"client_id"`
 	SessionID string `json:"session_id"`
 	LinkID    string `json:"link_id"`
+	ProxyType ProxyType `json:"proxy_type"`
+	BindingID string `json:"binding_id"`
 	Ticket    string `json:"ticket"`
 }
 

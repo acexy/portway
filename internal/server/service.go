@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -19,17 +20,18 @@ import (
 	"github.com/acexy/portway/internal/transport"
 )
 
-var errProxyRegistrationRejected = errors.New("TCP proxy registration rejected")
+var errProxyRegistrationRejected = errors.New("proxy registration rejected")
 
 // Service manages the server process lifecycle.
 //
-// It owns the client listener and control session lifecycles. Proxy registration
-// will be implemented in a later iteration.
+// It owns the client listener, control sessions, proxy registration, and
+// session-scoped TCP proxy resources.
 type Service struct {
 	logger         *logging.Logger
 	configuration  config.ServerConfig
 	clientRegistry *clientRegistry
 	tcpProxyManager *tcpProxyManager
+	linkBroker      *linkBroker
 }
 
 // NewService creates a server service.
@@ -60,13 +62,51 @@ func (s *Service) Run(ctx context.Context) error {
 	var sessions sync.WaitGroup
 	defer sessions.Wait()
 	sessionContext, cancelSessions := context.WithCancel(ctx)
+	s.linkBroker = newLinkBroker(sessionContext)
+	defer s.linkBroker.close()
 	s.tcpProxyManager = newTCPProxyManager(
 		sessionContext,
 		s.logger,
 		s.configuration.ProxyBindIP,
+		s.linkBroker,
+		s.configuration.HTTPListenAddress != "",
+		s.configuration.HTTP,
 	)
 	defer s.tcpProxyManager.close()
 	defer cancelSessions()
+	httpErrors := make(chan error, 1)
+	if s.configuration.HTTPListenAddress != "" {
+		httpListener, listenError := (&net.ListenConfig{}).Listen(ctx, "tcp", s.configuration.HTTPListenAddress)
+		if listenError != nil {
+			return fmt.Errorf("listen for HTTP proxy requests on %q: %w", s.configuration.HTTPListenAddress, listenError)
+		}
+		httpProtocols := new(http.Protocols)
+		httpProtocols.SetHTTP1(true)
+		httpProtocols.SetUnencryptedHTTP2(true)
+		httpServer := &http.Server{
+			Handler:           s.tcpProxyManager,
+			ReadHeaderTimeout: s.configuration.HTTP.ReadHeaderTimeout,
+			MaxHeaderBytes:    s.configuration.HTTP.MaxHeaderBytes,
+			Protocols:         httpProtocols,
+		}
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			serveError := httpServer.Serve(httpListener)
+			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
+				httpErrors <- serveError
+				listener.Close()
+			}
+		}()
+		defer func() {
+			shutdownContext, cancel := context.WithTimeout(
+				context.Background(),
+				s.configuration.HTTP.GracefulShutdownTimeout,
+			)
+			defer cancel()
+			_ = httpServer.Shutdown(shutdownContext)
+		}()
+	}
 	connectionSlots := make(chan struct{}, consts.ServerMaxConcurrentConnections)
 
 	sessions.Add(1)
@@ -78,6 +118,11 @@ func (s *Service) Run(ctx context.Context) error {
 	for {
 		rawConnection, err := listener.Accept()
 		if err != nil {
+			select {
+			case httpError := <-httpErrors:
+				return fmt.Errorf("serve HTTP proxy requests: %w", httpError)
+			default:
+			}
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
@@ -194,11 +239,12 @@ func (s *Service) handleConnection(ctx context.Context, rawConnection net.Conn) 
 		)
 		return nil
 	}
+	negotiatedCapabilities := negotiateCapabilities(clientHello.Capabilities)
 	if err := protocol.WriteControl(connection, protocol.MessageServerHello, protocol.ServerHello{
 		ClientID:     clientHello.ClientID,
 		SessionID:    sessionID,
 		Resumed:      resumed,
-		Capabilities: negotiateCapabilities(clientHello.Capabilities),
+		Capabilities: negotiatedCapabilities,
 	}); err != nil {
 		if created {
 			s.clientRegistry.remove(clientHello.ClientID, sessionID)
@@ -229,6 +275,7 @@ func (s *Service) handleConnection(ctx context.Context, rawConnection net.Conn) 
 		sessionID,
 		sessionLogger,
 		writer,
+		negotiatedCapabilities,
 	)
 	if gracefullyClosed {
 		s.tcpProxyManager.remove(clientHello.ClientID, sessionID)
@@ -254,6 +301,7 @@ func (s *Service) serveControlMessages(
 	sessionID string,
 	sessionLogger *logging.Logger,
 	writer *controlWriter,
+	negotiatedCapabilities []string,
 ) (gracefullyClosed bool, err error) {
 	for {
 		envelope, err := protocol.ReadControl(connection)
@@ -307,6 +355,11 @@ func (s *Service) serveControlMessages(
 			if err := protocol.DecodePayload(envelope, &request); err != nil {
 				return false, err
 			}
+			for _, declaration := range request.Proxies {
+				if !hasCapability(negotiatedCapabilities, string(declaration.Type)) {
+					return false, fmt.Errorf("%s proxy registration requires a negotiated capability", declaration.Type)
+				}
+			}
 			result := s.tcpProxyManager.syncProxies(
 				clientID,
 				sessionID,
@@ -322,7 +375,7 @@ func (s *Service) serveControlMessages(
 			}
 			if result.Status == protocol.ProxySyncStatusRejected {
 				sessionLogger.InfoWithField(
-					"TCP proxy registration rejected",
+					"proxy registration rejected",
 					"error_code",
 					result.Error.Code,
 				)
@@ -330,16 +383,19 @@ func (s *Service) serveControlMessages(
 			}
 			s.tcpProxyManager.activate(clientID, sessionID)
 			sessionLogger.InfoWithField(
-				"TCP proxy registration applied",
+				"proxy registration applied",
 				"revision",
 				result.Revision,
 			)
 		case protocol.MessageLinkFailed:
+			if !hasCapability(negotiatedCapabilities, "tcp") {
+				return false, errors.New("TCP link failure requires negotiated tcp capability")
+			}
 			var failure protocol.LinkFailed
 			if err := protocol.DecodePayload(envelope, &failure); err != nil {
 				return false, err
 			}
-			s.tcpProxyManager.reportLinkFailure(clientID, sessionID, failure)
+			s.linkBroker.reportFailure(clientID, sessionID, failure)
 			sessionLogger.WithField("link_id", failure.LinkID).TraceWithField(
 				"TCP link setup failed",
 				"error_code",
@@ -401,12 +457,7 @@ func (s *Service) handleDataConnection(ctx context.Context, connection net.Conn)
 	if err := protocol.DecodePayload(envelope, &binding); err != nil {
 		return err
 	}
-	logger := s.logger.WithFields(map[string]any{
-		"client_id":  binding.ClientID,
-		"session_id": binding.SessionID,
-		"link_id":    binding.LinkID,
-	})
-	return s.tcpProxyManager.handleDataStream(ctx, connection, binding, logger)
+	return s.linkBroker.bind(ctx, connection, binding)
 }
 
 func writeSessionError(connection net.Conn, sessionError protocol.SessionError) error {
@@ -425,6 +476,7 @@ func hasCapability(capabilities []string, expected string) bool {
 func negotiateCapabilities(clientCapabilities []string) []string {
 	supported := map[string]struct{}{
 		"tcp":          {},
+		"http":         {},
 		"json-control": {},
 	}
 	negotiated := make([]string, 0, len(clientCapabilities))

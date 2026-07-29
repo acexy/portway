@@ -45,8 +45,8 @@ func (sessionError *remoteSessionError) Error() string {
 
 // Service manages the client process lifecycle.
 //
-// It owns the control connection and reconnect lifecycle. Proxy registration
-// will be implemented in a later iteration.
+// It owns the control connection, reconnect lifecycle, proxy registration,
+// and session-scoped TCP links.
 type Service struct {
 	logger        *logging.Logger
 	configuration config.ClientConfig
@@ -162,7 +162,7 @@ func (s *Service) runControlSession(
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
 		ClientID:        s.configuration.ClientID,
 		ResumeSessionID: resumeSessionID,
-		Capabilities:    []string{"tcp", "json-control"},
+		Capabilities:    []string{"tcp", "http", "json-control"},
 	}); err != nil {
 		return "", false, err
 	}
@@ -203,7 +203,7 @@ func (s *Service) runControlSession(
 	if err := connection.SetDeadline(time.Now().Add(consts.ClientControlHelloTimeout)); err != nil {
 		return "", false, fmt.Errorf("set proxy registration deadline: %w", err)
 	}
-	if err := s.syncTCPProxies(connection, writer); err != nil {
+	if err := s.syncProxies(connection, writer); err != nil {
 		return "", false, err
 	}
 	if err := connection.SetDeadline(time.Time{}); err != nil {
@@ -239,12 +239,16 @@ func (s *Service) runControlLoop(
 	sessionLogger *logging.Logger,
 	writer *controlWriter,
 ) error {
-	sessionContext, cancelSession := context.WithCancel(context.Background())
+	sessionContext, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
 
+	// The reader remains available during the bounded graceful-close window
+	// after the process context is canceled so it can deliver close_ack.
+	readerContext, cancelReader := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelReader()
 	messages := make(chan protocol.Envelope)
 	readErrors := make(chan error, 1)
-	go readControlMessages(sessionContext, connection, messages, readErrors)
+	go readControlMessages(readerContext, connection, messages, readErrors)
 	linkManager := newClientTCPLinkManager(
 		sessionContext,
 		sessionLogger,
@@ -392,7 +396,7 @@ func (s *Service) closeControlSession(
 	}
 }
 
-func (s *Service) syncTCPProxies(
+func (s *Service) syncProxies(
 	connection net.Conn,
 	writer *controlWriter,
 ) error {
@@ -406,6 +410,7 @@ func (s *Service) syncTCPProxies(
 			Name:       proxyConfiguration.Name,
 			Type:       protocol.ProxyType(proxyConfiguration.Type),
 			RemotePort: proxyConfiguration.RemotePort,
+			Domain:     proxyConfiguration.Domain,
 		})
 	}
 	if err := writer.writeRequest(
@@ -443,7 +448,7 @@ func (s *Service) syncTCPProxies(
 			message:   result.Error.Message,
 		}
 	}
-	s.logger.InfoWithField("TCP proxy registration applied", "revision", result.Revision)
+	s.logger.InfoWithField("proxy registration applied", "revision", result.Revision)
 	return nil
 }
 

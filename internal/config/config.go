@@ -10,8 +10,12 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/acexy/portway/internal/consts"
 )
 
 // AuthenticationMode selects how client and server connections are protected.
@@ -71,6 +75,7 @@ type ProxyConfig struct {
 	LocalIP    string `yaml:"local_ip"`
 	LocalPort  uint16 `yaml:"local_port"`
 	RemotePort uint16 `yaml:"remote_port"`
+	Domain     string `yaml:"domain"`
 }
 
 // ClientConfig contains the complete client configuration.
@@ -80,6 +85,24 @@ type ClientConfig struct {
 	LogLevel       LogLevel             `yaml:"log_level"`
 	Authentication AuthenticationConfig `yaml:"authentication"`
 	Proxies        []ProxyConfig        `yaml:"proxies"`
+}
+
+// HTTPConfig configures the public HTTP server and its bounded resources.
+type HTTPConfig struct {
+	ReadHeaderTimeout                time.Duration `yaml:"read_header_timeout"`
+	GracefulShutdownTimeout          time.Duration `yaml:"graceful_shutdown_timeout"`
+	IdleConnectionTimeout            time.Duration `yaml:"idle_connection_timeout"`
+	ResponseHeaderTimeout            time.Duration `yaml:"response_header_timeout"`
+	MaxHeaderBytes                   int           `yaml:"max_header_bytes"`
+	MaxConcurrentRequests            int           `yaml:"max_concurrent_requests"`
+	MaxConcurrentRequestsPerClient   int           `yaml:"max_concurrent_requests_per_client"`
+	MaxConcurrentRequestsPerDomain   int           `yaml:"max_concurrent_requests_per_domain"`
+	MaxIdleConnections               int           `yaml:"max_idle_connections"`
+	MaxIdleConnectionsPerDomain      int           `yaml:"max_idle_connections_per_domain"`
+	MaxUpgradeConnections            int           `yaml:"max_upgrade_connections"`
+	MaxUpgradeConnectionsPerClient   int           `yaml:"max_upgrade_connections_per_client"`
+	MaxUpgradeConnectionsPerDomain   int           `yaml:"max_upgrade_connections_per_domain"`
+	MaxConcurrentHTTP2Streams        int           `yaml:"max_concurrent_http2_streams"`
 }
 
 // EnsureClientID generates a process-scoped client ID when none is configured.
@@ -101,6 +124,8 @@ func EnsureClientID(configuration *ClientConfig) (string, bool, error) {
 // ServerConfig contains the complete server configuration.
 type ServerConfig struct {
 	ListenAddress  string               `yaml:"listen_address"`
+	HTTPListenAddress string            `yaml:"http_listen_address"`
+	HTTP               HTTPConfig       `yaml:"http"`
 	ProxyBindIP    string               `yaml:"proxy_bind_ip"`
 	LogLevel       LogLevel             `yaml:"log_level"`
 	Authentication AuthenticationConfig `yaml:"authentication"`
@@ -123,6 +148,20 @@ func DefaultServer() ServerConfig {
 		ListenAddress: "0.0.0.0:7000",
 		ProxyBindIP:   "0.0.0.0",
 		LogLevel:      LogLevelInfo,
+		HTTP: HTTPConfig{
+			ReadHeaderTimeout:               consts.HTTPDefaultReadHeaderTimeout,
+			GracefulShutdownTimeout:         consts.HTTPDefaultGracefulShutdownTimeout,
+			MaxHeaderBytes:                  consts.HTTPDefaultMaxHeaderBytes,
+			MaxConcurrentRequests:           consts.HTTPDefaultMaxConcurrentRequests,
+			MaxConcurrentRequestsPerClient:  consts.HTTPDefaultMaxConcurrentRequestsPerClient,
+			MaxConcurrentRequestsPerDomain:  consts.HTTPDefaultMaxConcurrentRequestsPerDomain,
+			MaxIdleConnections:              consts.HTTPDefaultMaxIdleConnections,
+			MaxIdleConnectionsPerDomain:     consts.HTTPDefaultMaxIdleConnectionsPerDomain,
+			MaxUpgradeConnections:           consts.HTTPDefaultMaxUpgradeConnections,
+			MaxUpgradeConnectionsPerClient:  consts.HTTPDefaultMaxUpgradeConnectionsPerClient,
+			MaxUpgradeConnectionsPerDomain:  consts.HTTPDefaultMaxUpgradeConnectionsPerDomain,
+			MaxConcurrentHTTP2Streams:       consts.HTTPDefaultMaxConcurrentHTTP2Streams,
+		},
 		Authentication: AuthenticationConfig{
 			Mode: AuthenticationModeToken,
 		},
@@ -225,8 +264,21 @@ func validateClient(configuration ClientConfig) error {
 		proxyNames[proxy.Name] = struct{}{}
 		switch proxy.Type {
 		case "tcp":
+			if proxy.Domain != "" {
+				return fmt.Errorf("proxies[%d].domain is not allowed for tcp", index)
+			}
+			if proxy.RemotePort == 0 {
+				return fmt.Errorf("proxies[%d].remote_port must be between 1 and 65535", index)
+			}
+		case "http":
+			if proxy.RemotePort != 0 {
+				return fmt.Errorf("proxies[%d].remote_port is not allowed for http", index)
+			}
+			if err := ValidateHTTPDomain(proxy.Domain); err != nil {
+				return fmt.Errorf("proxies[%d].domain: %w", index, err)
+			}
 		default:
-			return fmt.Errorf("proxies[%d].type must be tcp", index)
+			return fmt.Errorf("proxies[%d].type must be tcp or http", index)
 		}
 		if proxy.LocalIP == "" {
 			configuration.Proxies[index].LocalIP = "127.0.0.1"
@@ -235,9 +287,6 @@ func validateClient(configuration ClientConfig) error {
 		}
 		if proxy.LocalPort == 0 {
 			return fmt.Errorf("proxies[%d].local_port must be between 1 and 65535", index)
-		}
-		if proxy.RemotePort == 0 {
-			return fmt.Errorf("proxies[%d].remote_port must be between 1 and 65535", index)
 		}
 	}
 	return nil
@@ -258,6 +307,13 @@ func validateServer(configuration ServerConfig) error {
 	if configuration.ListenAddress == "" {
 		return errors.New("listen_address is required")
 	}
+	if configuration.HTTPListenAddress != "" &&
+		configuration.HTTPListenAddress == configuration.ListenAddress {
+		return errors.New("http_listen_address must differ from listen_address")
+	}
+	if err := validateHTTPConfig(configuration.HTTP); err != nil {
+		return err
+	}
 	if configuration.ProxyBindIP == "" {
 		return errors.New("proxy_bind_ip is required")
 	}
@@ -265,6 +321,78 @@ func validateServer(configuration ServerConfig) error {
 		return errors.New("proxy_bind_ip must be an IP address")
 	}
 	return validateAuthentication(configuration.Authentication, true)
+}
+
+func validateHTTPConfig(configuration HTTPConfig) error {
+	if configuration.ReadHeaderTimeout <= 0 ||
+		configuration.ReadHeaderTimeout > consts.HTTPHardMaxReadHeaderTimeout {
+		return fmt.Errorf("http.read_header_timeout must be greater than zero and at most %s", consts.HTTPHardMaxReadHeaderTimeout)
+	}
+	if configuration.GracefulShutdownTimeout <= 0 ||
+		configuration.GracefulShutdownTimeout > consts.HTTPHardMaxGracefulShutdownTimeout {
+		return fmt.Errorf("http.graceful_shutdown_timeout must be greater than zero and at most %s", consts.HTTPHardMaxGracefulShutdownTimeout)
+	}
+	for name, value := range map[string]time.Duration{
+		"idle_connection_timeout": configuration.IdleConnectionTimeout,
+		"response_header_timeout":  configuration.ResponseHeaderTimeout,
+	} {
+		if value < 0 || value > consts.HTTPHardMaxBusinessTimeout {
+			return fmt.Errorf("http.%s must be zero or at most %s", name, consts.HTTPHardMaxBusinessTimeout)
+		}
+	}
+	limits := []struct {
+		name  string
+		value int
+		max   int
+	}{
+		{"max_header_bytes", configuration.MaxHeaderBytes, consts.HTTPHardMaxHeaderBytes},
+		{"max_concurrent_requests", configuration.MaxConcurrentRequests, consts.HTTPHardMaxConcurrentRequests},
+		{"max_concurrent_requests_per_client", configuration.MaxConcurrentRequestsPerClient, consts.HTTPHardMaxConcurrentRequestsPerClient},
+		{"max_concurrent_requests_per_domain", configuration.MaxConcurrentRequestsPerDomain, consts.HTTPHardMaxConcurrentRequestsPerDomain},
+		{"max_idle_connections", configuration.MaxIdleConnections, consts.HTTPHardMaxIdleConnections},
+		{"max_idle_connections_per_domain", configuration.MaxIdleConnectionsPerDomain, consts.HTTPHardMaxIdleConnectionsPerDomain},
+		{"max_upgrade_connections", configuration.MaxUpgradeConnections, consts.HTTPHardMaxUpgradeConnections},
+		{"max_upgrade_connections_per_client", configuration.MaxUpgradeConnectionsPerClient, consts.HTTPHardMaxUpgradeConnectionsPerClient},
+		{"max_upgrade_connections_per_domain", configuration.MaxUpgradeConnectionsPerDomain, consts.HTTPHardMaxUpgradeConnectionsPerDomain},
+		{"max_concurrent_http2_streams", configuration.MaxConcurrentHTTP2Streams, consts.HTTPHardMaxConcurrentHTTP2Streams},
+	}
+	for _, limit := range limits {
+		if limit.value <= 0 || limit.value > limit.max {
+			return fmt.Errorf("http.%s must be greater than zero and at most %d", limit.name, limit.max)
+		}
+	}
+	if configuration.MaxConcurrentRequestsPerClient > configuration.MaxConcurrentRequests ||
+		configuration.MaxConcurrentRequestsPerDomain > configuration.MaxConcurrentRequests ||
+		configuration.MaxIdleConnectionsPerDomain > configuration.MaxIdleConnections ||
+		configuration.MaxUpgradeConnectionsPerClient > configuration.MaxUpgradeConnections ||
+		configuration.MaxUpgradeConnectionsPerDomain > configuration.MaxUpgradeConnections {
+		return errors.New("HTTP per-client and per-domain limits must not exceed their global limits")
+	}
+	return nil
+}
+
+// ValidateHTTPDomain validates a canonical HTTP proxy domain.
+func ValidateHTTPDomain(domain string) error {
+	if domain == "" || len(domain) > 253 || domain != strings.ToLower(domain) ||
+		strings.HasSuffix(domain, ".") || net.ParseIP(domain) != nil ||
+		strings.ContainsAny(domain, ":/*") {
+		return errors.New("must be a canonical lowercase ASCII DNS name without port, path, wildcard, or trailing dot")
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 ||
+			label[0] == '-' || label[len(label)-1] == '-' {
+			return errors.New("contains an invalid DNS label")
+		}
+		for _, character := range label {
+			if character > 127 ||
+				!((character >= 'a' && character <= 'z') ||
+					(character >= '0' && character <= '9') ||
+					character == '-') {
+				return errors.New("contains an invalid DNS label")
+			}
+		}
+	}
+	return nil
 }
 
 func validateLogLevel(logLevel LogLevel) error {

@@ -8,14 +8,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"regexp"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/acexy/portway/internal/consts"
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
@@ -27,11 +28,16 @@ type tcpProxyManager struct {
 	logger              *logging.Logger
 	proxyBindIP         string
 	context             context.Context
+	linkBroker          *linkBroker
 	mutex               sync.Mutex
 	registrationMutex   sync.Mutex
 	clients             map[string]*clientTCPProxyState
-	pendingLinks        map[string]*pendingTCPLink
-	activeLinks         map[string]*activeTCPLink
+	endpoints           map[uint16]*tcpEndpointRuntime
+	httpEnabled         bool
+	httpConfiguration   config.HTTPConfig
+	httpDomains         map[string]*httpProxyBinding
+	httpActiveRequests  int
+	httpActiveUpgrades  int
 	listenerWaitGroup   sync.WaitGroup
 	closed              bool
 }
@@ -44,49 +50,60 @@ type clientTCPProxyState struct {
 	fingerprint     [sha256.Size]byte
 	lastRequestID   string
 	lastResult      protocol.SyncResult
-	proxies         map[string]*tcpProxyRuntime
+	proxies         map[string]*tcpProxyBinding
+	httpProxies     map[string]*httpProxyBinding
 }
 
-type tcpProxyRuntime struct {
-	manager     *tcpProxyManager
+type tcpProxyBinding struct {
 	clientID    string
+	sessionID   string
+	bindingID   string
 	declaration protocol.ProxyDeclaration
+	endpoint    *tcpEndpointRuntime
+}
+
+type tcpEndpointRuntime struct {
+	manager     *tcpProxyManager
+	remotePort  uint16
 	listener    net.Listener
+	binding     *tcpProxyBinding
 	closeOnce   sync.Once
 	startOnce   sync.Once
 }
 
-type pendingTCPLink struct {
-	linkID       string
-	clientID     string
-	sessionID    string
-	proxyName    string
-	ticketDigest [sha256.Size]byte
-	visitor      net.Conn
-	timer        *time.Timer
-}
-
-type activeTCPLink struct {
-	linkID    string
-	clientID  string
-	sessionID string
-	proxyName string
-	visitor   net.Conn
-	data      net.Conn
+type httpProxyBinding struct {
+	manager     *tcpProxyManager
+	clientID    string
+	sessionID   string
+	bindingID   string
+	declaration protocol.ProxyDeclaration
+	context     context.Context
+	cancel      context.CancelFunc
+	transport   *http.Transport
+	proxy       *httputil.ReverseProxy
+	active      int
+	activeUpgrades int
+	activeHTTP2 int
 }
 
 func newTCPProxyManager(
 	ctx context.Context,
 	logger *logging.Logger,
 	proxyBindIP string,
+	broker *linkBroker,
+	httpEnabled bool,
+	httpConfiguration config.HTTPConfig,
 ) *tcpProxyManager {
 	return &tcpProxyManager{
 		logger:        logger,
 		proxyBindIP:   proxyBindIP,
 		context:       ctx,
+		linkBroker:    broker,
+		httpEnabled:   httpEnabled,
+		httpConfiguration: httpConfiguration,
+		httpDomains:   make(map[string]*httpProxyBinding),
 		clients:       make(map[string]*clientTCPProxyState),
-		pendingLinks:  make(map[string]*pendingTCPLink),
-		activeLinks:   make(map[string]*activeTCPLink),
+		endpoints:     make(map[uint16]*tcpEndpointRuntime),
 	}
 }
 
@@ -101,7 +118,8 @@ func (manager *tcpProxyManager) attach(
 	state, exists := manager.clients[clientID]
 	if !exists {
 		state = &clientTCPProxyState{
-			proxies: make(map[string]*tcpProxyRuntime),
+			proxies: make(map[string]*tcpProxyBinding),
+			httpProxies: make(map[string]*httpProxyBinding),
 		}
 		manager.clients[clientID] = state
 	}
@@ -123,18 +141,6 @@ func (manager *tcpProxyManager) syncProxies(
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
 
-	manager.mutex.Lock()
-	if manager.closed {
-		manager.mutex.Unlock()
-		return rejectedSyncResult(
-			request.Revision,
-			protocol.ProxyErrorSessionInactive,
-			"",
-			"TCP proxy manager is closed",
-		)
-	}
-	manager.mutex.Unlock()
-
 	if requestID == "" {
 		return rejectedSyncResult(
 			request.Revision,
@@ -150,6 +156,15 @@ func (manager *tcpProxyManager) syncProxies(
 	fingerprint := sha256.Sum256(fingerprintBytes)
 
 	manager.mutex.Lock()
+	if manager.closed {
+		manager.mutex.Unlock()
+		return rejectedSyncResult(
+			request.Revision,
+			protocol.ProxyErrorSessionInactive,
+			"",
+			"TCP proxy manager is closed",
+		)
+	}
 	state, exists := manager.clients[clientID]
 	if !exists || state.sessionID != sessionID {
 		manager.mutex.Unlock()
@@ -197,23 +212,41 @@ func (manager *tcpProxyManager) syncProxies(
 			"TCP proxy limit exceeded",
 		)
 	}
-	existingProxies := make(map[string]*tcpProxyRuntime, len(state.proxies))
-	for name, proxyRuntime := range state.proxies {
-		existingProxies[name] = proxyRuntime
+	existingProxies := make(map[string]*tcpProxyBinding, len(state.proxies))
+	for name, binding := range state.proxies {
+		existingProxies[name] = binding
+	}
+	existingHTTPProxies := make(map[string]*httpProxyBinding, len(state.httpProxies))
+	for name, binding := range state.httpProxies {
+		existingHTTPProxies[name] = binding
 	}
 	manager.mutex.Unlock()
 
 	declarationsByName := make(map[string]protocol.ProxyDeclaration, len(request.Proxies))
+	declarationsByPort := make(map[uint16]protocol.ProxyDeclaration, len(request.Proxies))
 	for _, declaration := range request.Proxies {
-		if !tcpProxyNamePattern.MatchString(declaration.Name) ||
-			declaration.Type != protocol.ProxyTypeTCP ||
-			declaration.RemotePort == 0 {
+		if !tcpProxyNamePattern.MatchString(declaration.Name) {
 			return rejectedSyncResult(
 				request.Revision,
 				protocol.ProxyErrorInvalidProxy,
 				declaration.Name,
 				"invalid TCP proxy declaration",
 			)
+		}
+		switch declaration.Type {
+		case protocol.ProxyTypeTCP:
+			if declaration.RemotePort == 0 || declaration.Domain != "" {
+				return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid TCP proxy declaration")
+			}
+		case protocol.ProxyTypeHTTP:
+			if declaration.RemotePort != 0 || config.ValidateHTTPDomain(declaration.Domain) != nil {
+				return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid HTTP proxy declaration")
+			}
+			if !manager.httpEnabled {
+				return rejectedSyncResult(request.Revision, protocol.ProxyErrorHTTPDisabled, declaration.Name, "HTTP listener is disabled")
+			}
+		default:
+			return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "unsupported proxy type")
 		}
 		if _, duplicate := declarationsByName[declaration.Name]; duplicate {
 			return rejectedSyncResult(
@@ -223,15 +256,89 @@ func (manager *tcpProxyManager) syncProxies(
 				"duplicate proxy name",
 			)
 		}
+		if declaration.Type == protocol.ProxyTypeTCP {
+			if _, duplicate := declarationsByPort[declaration.RemotePort]; duplicate {
+				return rejectedSyncResult(
+					request.Revision,
+					protocol.ProxyErrorInvalidProxy,
+					declaration.Name,
+					"duplicate remote port",
+				)
+			}
+			declarationsByPort[declaration.RemotePort] = declaration
+		}
 		declarationsByName[declaration.Name] = declaration
 	}
 
-	nextProxies := make(map[string]*tcpProxyRuntime, len(request.Proxies))
-	newProxies := make([]*tcpProxyRuntime, 0)
+	manager.mutex.Lock()
+	reusableEndpoints := make(map[uint16]*tcpEndpointRuntime, len(request.Proxies))
+	for _, declaration := range request.Proxies {
+		if declaration.Type != protocol.ProxyTypeTCP {
+			continue
+		}
+		endpoint := manager.endpoints[declaration.RemotePort]
+		if endpoint == nil {
+			continue
+		}
+		currentBinding := endpoint.binding
+		if currentBinding == nil || currentBinding.clientID != clientID {
+			manager.mutex.Unlock()
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorPortConflict,
+				declaration.Name,
+				"remote port is unavailable",
+			)
+		}
+		if existingProxies[currentBinding.declaration.Name] != currentBinding {
+			manager.mutex.Unlock()
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorPortConflict,
+				declaration.Name,
+				"remote port is unavailable",
+			)
+		}
+		reusableEndpoints[declaration.RemotePort] = endpoint
+	}
+	manager.mutex.Unlock()
+
+	newEndpoints := make(map[uint16]*tcpEndpointRuntime)
+	for _, declaration := range request.Proxies {
+		if declaration.Type != protocol.ProxyTypeTCP {
+			continue
+		}
+		if reusableEndpoints[declaration.RemotePort] != nil {
+			continue
+		}
+		listenAddress := net.JoinHostPort(manager.proxyBindIP, strconv.Itoa(int(declaration.RemotePort)))
+		listener, err := (&net.ListenConfig{}).Listen(manager.context, "tcp", listenAddress)
+		if err != nil {
+			closeTCPEndpoints(newEndpoints)
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorPortConflict,
+				declaration.Name,
+				"remote port is unavailable",
+			)
+		}
+		newEndpoints[declaration.RemotePort] = &tcpEndpointRuntime{
+			manager:    manager,
+			remotePort: declaration.RemotePort,
+			listener:   listener,
+		}
+	}
+
+	nextProxies := make(map[string]*tcpProxyBinding, len(request.Proxies))
+	nextHTTPProxies := make(map[string]*httpProxyBinding, len(request.Proxies))
 	results := make([]protocol.ProxyResult, 0, len(request.Proxies))
 	for _, declaration := range request.Proxies {
-		if existing, ok := existingProxies[declaration.Name]; ok &&
-			existing.declaration == declaration {
+		if declaration.Type == protocol.ProxyTypeHTTP {
+			continue
+		}
+		existing := existingProxies[declaration.Name]
+		unchanged := existing != nil && existing.declaration == declaration
+		if unchanged && existing.sessionID == sessionID {
 			nextProxies[declaration.Name] = existing
 			results = append(results, protocol.ProxyResult{
 				Name:       declaration.Name,
@@ -240,32 +347,75 @@ func (manager *tcpProxyManager) syncProxies(
 			})
 			continue
 		}
-
-		listenAddress := net.JoinHostPort(manager.proxyBindIP, strconv.Itoa(int(declaration.RemotePort)))
-		listener, err := (&net.ListenConfig{}).Listen(manager.context, "tcp", listenAddress)
+		endpoint := reusableEndpoints[declaration.RemotePort]
+		if endpoint == nil {
+			endpoint = newEndpoints[declaration.RemotePort]
+		}
+		bindingID, err := newBindingID()
 		if err != nil {
-			for _, newProxy := range newProxies {
-				newProxy.close()
-			}
+			closeTCPEndpoints(newEndpoints)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				protocol.ProxyErrorInvalidRequest,
 				declaration.Name,
-				"remote port is unavailable",
+				"generate proxy binding ID",
 			)
 		}
-		proxyRuntime := &tcpProxyRuntime{
-			manager:     manager,
+		nextProxies[declaration.Name] = &tcpProxyBinding{
 			clientID:    clientID,
+			sessionID:   sessionID,
+			bindingID:   bindingID,
 			declaration: declaration,
-			listener:    listener,
+			endpoint:    endpoint,
 		}
-		nextProxies[declaration.Name] = proxyRuntime
-		newProxies = append(newProxies, proxyRuntime)
+		status := protocol.ProxyStatusActive
+		if unchanged {
+			status = protocol.ProxyStatusUnchanged
+		}
 		results = append(results, protocol.ProxyResult{
 			Name:       declaration.Name,
-			Status:     protocol.ProxyStatusActive,
+			Status:     status,
 			RemotePort: declaration.RemotePort,
+		})
+	}
+
+	manager.mutex.Lock()
+	for _, declaration := range request.Proxies {
+		if declaration.Type != protocol.ProxyTypeHTTP {
+			continue
+		}
+		owner := manager.httpDomains[declaration.Domain]
+		if owner != nil && existingHTTPProxies[owner.declaration.Name] != owner {
+			manager.mutex.Unlock()
+			closeTCPEndpoints(newEndpoints)
+			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, declaration.Name, "HTTP domain is unavailable")
+		}
+	}
+	manager.mutex.Unlock()
+
+	for _, declaration := range request.Proxies {
+		if declaration.Type != protocol.ProxyTypeHTTP {
+			continue
+		}
+		existing := existingHTTPProxies[declaration.Name]
+		unchanged := existing != nil && existing.declaration == declaration &&
+			existing.sessionID == sessionID
+		if unchanged {
+			nextHTTPProxies[declaration.Name] = existing
+			results = append(results, protocol.ProxyResult{
+				Name: declaration.Name, Status: protocol.ProxyStatusUnchanged, Domain: declaration.Domain,
+			})
+			continue
+		}
+		binding, err := manager.newHTTPBinding(clientID, sessionID, declaration)
+		if err != nil {
+			closeTCPEndpoints(newEndpoints)
+			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
+			return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidRequest, declaration.Name, "create HTTP proxy binding")
+		}
+		nextHTTPProxies[declaration.Name] = binding
+		results = append(results, protocol.ProxyResult{
+			Name: declaration.Name, Status: protocol.ProxyStatusActive, Domain: declaration.Domain,
 		})
 	}
 
@@ -278,9 +428,8 @@ func (manager *tcpProxyManager) syncProxies(
 	state, exists = manager.clients[clientID]
 	if !exists || state.sessionID != sessionID {
 		manager.mutex.Unlock()
-		for _, newProxy := range newProxies {
-			newProxy.close()
-		}
+		closeTCPEndpoints(newEndpoints)
+		closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
 		return rejectedSyncResult(
 			request.Revision,
 			protocol.ProxyErrorSessionInactive,
@@ -288,38 +437,97 @@ func (manager *tcpProxyManager) syncProxies(
 			"client session changed during registration",
 		)
 	}
+	for port, endpoint := range reusableEndpoints {
+		if manager.endpoints[port] != endpoint ||
+			endpoint.binding == nil ||
+			endpoint.binding.clientID != clientID ||
+			existingProxies[endpoint.binding.declaration.Name] != endpoint.binding {
+			manager.mutex.Unlock()
+			closeTCPEndpoints(newEndpoints)
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorPortConflict,
+				declarationsByPort[port].Name,
+				"remote port ownership changed during registration",
+			)
+		}
+	}
+	for _, binding := range nextHTTPProxies {
+		owner := manager.httpDomains[binding.declaration.Domain]
+		if owner != nil && existingHTTPProxies[owner.declaration.Name] != owner {
+			manager.mutex.Unlock()
+			closeTCPEndpoints(newEndpoints)
+			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
+			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration")
+		}
+	}
+
+	removedProxyNames := make([]string, 0)
+	for name, existing := range existingProxies {
+		if nextProxies[name] != existing {
+			removedProxyNames = append(removedProxyNames, name)
+		}
+	}
+	removedHTTPBindings := make([]*httpProxyBinding, 0)
+	for name, existing := range existingHTTPProxies {
+		if nextHTTPProxies[name] != existing {
+			removedHTTPBindings = append(removedHTTPBindings, existing)
+			if manager.httpDomains[existing.declaration.Domain] == existing {
+				delete(manager.httpDomains, existing.declaration.Domain)
+			}
+		}
+	}
+	nextEndpoints := make(map[uint16]*tcpEndpointRuntime, len(request.Proxies))
+	for _, binding := range nextProxies {
+		binding.sessionID = sessionID
+		binding.endpoint.binding = binding
+		nextEndpoints[binding.declaration.RemotePort] = binding.endpoint
+		manager.endpoints[binding.declaration.RemotePort] = binding.endpoint
+	}
+	removedEndpoints := make(map[uint16]*tcpEndpointRuntime)
+	for _, existing := range existingProxies {
+		endpoint := existing.endpoint
+		if nextEndpoints[endpoint.remotePort] != endpoint {
+			if manager.endpoints[endpoint.remotePort] == endpoint {
+				delete(manager.endpoints, endpoint.remotePort)
+			}
+			endpoint.binding = nil
+			removedEndpoints[endpoint.remotePort] = endpoint
+		}
+	}
 	state.proxies = nextProxies
+	state.httpProxies = nextHTTPProxies
+	for _, binding := range nextHTTPProxies {
+		manager.httpDomains[binding.declaration.Domain] = binding
+	}
 	state.revision = request.Revision
 	state.fingerprint = fingerprint
 	state.lastRequestID = requestID
 	state.lastResult = result
 	manager.mutex.Unlock()
 
-	for name, existing := range existingProxies {
-		if nextProxies[name] != existing {
-			existing.close()
-		}
+	for _, endpoint := range newEndpoints {
+		endpoint.start()
+	}
+	closeTCPEndpoints(removedEndpoints)
+	for _, name := range removedProxyNames {
+		manager.linkBroker.cancelBinding(existingProxies[name].bindingID)
+	}
+	for _, binding := range removedHTTPBindings {
+		binding.close()
 	}
 	return result
 }
 
 func (manager *tcpProxyManager) activate(clientID string, sessionID string) {
 	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+
 	state, exists := manager.clients[clientID]
 	if !exists || state.sessionID != sessionID {
-		manager.mutex.Unlock()
 		return
 	}
 	state.active = true
-	proxies := make([]*tcpProxyRuntime, 0, len(state.proxies))
-	for _, proxyRuntime := range state.proxies {
-		proxies = append(proxies, proxyRuntime)
-	}
-	manager.mutex.Unlock()
-
-	for _, proxyRuntime := range proxies {
-		proxyRuntime.start()
-	}
 }
 
 func (manager *tcpProxyManager) suspend(clientID string, sessionID string) {
@@ -331,15 +539,22 @@ func (manager *tcpProxyManager) suspend(clientID string, sessionID string) {
 	}
 	state.active = false
 	state.writer = nil
-	pending := manager.removePendingLocked(clientID, sessionID, "")
-	active := manager.removeActiveLocked(clientID, sessionID, "")
+	httpBindings := make([]*httpProxyBinding, 0, len(state.httpProxies))
+	for _, binding := range state.httpProxies {
+		httpBindings = append(httpBindings, binding)
+	}
 	manager.mutex.Unlock()
 
-	closePendingLinks(pending)
-	closeActiveLinks(active)
+	manager.linkBroker.cancelSession(clientID, sessionID)
+	for _, binding := range httpBindings {
+		binding.transport.CloseIdleConnections()
+	}
 }
 
 func (manager *tcpProxyManager) remove(clientID string, sessionID string) {
+	manager.registrationMutex.Lock()
+	defer manager.registrationMutex.Unlock()
+
 	manager.mutex.Lock()
 	state, exists := manager.clients[clientID]
 	if !exists || state.sessionID != sessionID {
@@ -347,87 +562,31 @@ func (manager *tcpProxyManager) remove(clientID string, sessionID string) {
 		return
 	}
 	delete(manager.clients, clientID)
-	proxies := make([]*tcpProxyRuntime, 0, len(state.proxies))
-	for _, proxyRuntime := range state.proxies {
-		proxies = append(proxies, proxyRuntime)
+	endpoints := make(map[uint16]*tcpEndpointRuntime, len(state.proxies))
+	for _, binding := range state.proxies {
+		endpoint := binding.endpoint
+		if manager.endpoints[endpoint.remotePort] == endpoint {
+			delete(manager.endpoints, endpoint.remotePort)
+		}
+		if endpoint.binding == binding {
+			endpoint.binding = nil
+		}
+		endpoints[endpoint.remotePort] = endpoint
 	}
-	pending := manager.removePendingLocked(clientID, sessionID, "")
-	active := manager.removeActiveLocked(clientID, sessionID, "")
+	httpBindings := make([]*httpProxyBinding, 0, len(state.httpProxies))
+	for _, binding := range state.httpProxies {
+		if manager.httpDomains[binding.declaration.Domain] == binding {
+			delete(manager.httpDomains, binding.declaration.Domain)
+		}
+		httpBindings = append(httpBindings, binding)
+	}
 	manager.mutex.Unlock()
 
-	for _, proxyRuntime := range proxies {
-		proxyRuntime.close()
+	closeTCPEndpoints(endpoints)
+	manager.linkBroker.cancelSession(clientID, sessionID)
+	for _, binding := range httpBindings {
+		binding.close()
 	}
-	closePendingLinks(pending)
-	closeActiveLinks(active)
-}
-
-func (manager *tcpProxyManager) reportLinkFailure(
-	clientID string,
-	sessionID string,
-	failure protocol.LinkFailed,
-) {
-	manager.mutex.Lock()
-	pending, exists := manager.pendingLinks[failure.LinkID]
-	if !exists || pending.clientID != clientID || pending.sessionID != sessionID {
-		manager.mutex.Unlock()
-		return
-	}
-	delete(manager.pendingLinks, failure.LinkID)
-	manager.mutex.Unlock()
-
-	pending.timer.Stop()
-	pending.visitor.Close()
-}
-
-func (manager *tcpProxyManager) bindDataConnection(
-	binding protocol.BindLink,
-	dataConnection net.Conn,
-) (*activeTCPLink, protocol.LinkErrorCode) {
-	ticketBytes, err := base64.RawURLEncoding.DecodeString(binding.Ticket)
-	if err != nil {
-		return nil, protocol.LinkErrorInvalidBinding
-	}
-	ticketDigest := sha256.Sum256(ticketBytes)
-
-	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
-
-	pending, exists := manager.pendingLinks[binding.LinkID]
-	if !exists {
-		return nil, protocol.LinkErrorExpired
-	}
-	state, active := manager.clients[binding.ClientID]
-	if !active ||
-		!state.active ||
-		state.sessionID != binding.SessionID ||
-		pending.clientID != binding.ClientID ||
-		pending.sessionID != binding.SessionID ||
-		subtle.ConstantTimeCompare(ticketDigest[:], pending.ticketDigest[:]) != 1 {
-		return nil, protocol.LinkErrorInvalidBinding
-	}
-	if manager.activeLinkLimitReachedLocked(pending.clientID, pending.proxyName) {
-		return nil, protocol.LinkErrorCancelled
-	}
-
-	delete(manager.pendingLinks, binding.LinkID)
-	pending.timer.Stop()
-	link := &activeTCPLink{
-		linkID:    pending.linkID,
-		clientID:  pending.clientID,
-		sessionID: pending.sessionID,
-		proxyName: pending.proxyName,
-		visitor:   pending.visitor,
-		data:      dataConnection,
-	}
-	manager.activeLinks[link.linkID] = link
-	return link, ""
-}
-
-func (manager *tcpProxyManager) finishActiveLink(linkID string) {
-	manager.mutex.Lock()
-	delete(manager.activeLinks, linkID)
-	manager.mutex.Unlock()
 }
 
 func (manager *tcpProxyManager) close() {
@@ -436,31 +595,39 @@ func (manager *tcpProxyManager) close() {
 
 	manager.mutex.Lock()
 	manager.closed = true
-	proxies := make([]*tcpProxyRuntime, 0)
-	for _, state := range manager.clients {
-		for _, proxyRuntime := range state.proxies {
-			proxies = append(proxies, proxyRuntime)
-		}
+	endpoints := make(map[uint16]*tcpEndpointRuntime, len(manager.endpoints))
+	httpBindings := make([]*httpProxyBinding, 0, len(manager.httpDomains))
+	for port, endpoint := range manager.endpoints {
+		endpoint.binding = nil
+		endpoints[port] = endpoint
 	}
-	pending := manager.removePendingLocked("", "", "")
-	active := manager.removeActiveLocked("", "", "")
+	for _, binding := range manager.httpDomains {
+		httpBindings = append(httpBindings, binding)
+	}
 	manager.clients = make(map[string]*clientTCPProxyState)
+	manager.endpoints = make(map[uint16]*tcpEndpointRuntime)
+	manager.httpDomains = make(map[string]*httpProxyBinding)
 	manager.mutex.Unlock()
 
-	for _, proxyRuntime := range proxies {
-		proxyRuntime.close()
+	closeTCPEndpoints(endpoints)
+	for _, binding := range httpBindings {
+		binding.close()
 	}
-	closePendingLinks(pending)
-	closeActiveLinks(active)
 	manager.listenerWaitGroup.Wait()
 }
 
-func (runtime *tcpProxyRuntime) start() {
+func (runtime *tcpEndpointRuntime) start() {
 	runtime.startOnce.Do(func() {
 		runtime.manager.listenerWaitGroup.Add(1)
 		go func() {
 			defer runtime.manager.listenerWaitGroup.Done()
 			for {
+				runtime.manager.mutex.Lock()
+				binding := runtime.binding
+				runtime.manager.mutex.Unlock()
+				if binding == nil {
+					return
+				}
 				visitor, err := runtime.listener.Accept()
 				if err != nil {
 					if errors.Is(err, net.ErrClosed) || runtime.manager.context.Err() != nil {
@@ -469,229 +636,65 @@ func (runtime *tcpProxyRuntime) start() {
 					runtime.manager.logger.Error("TCP proxy listener failed", err)
 					return
 				}
-				runtime.manager.openVisitor(runtime, visitor)
+				runtime.manager.openVisitor(runtime, binding, visitor)
 			}
 		}()
 	})
 }
 
-func (runtime *tcpProxyRuntime) close() {
+func (runtime *tcpEndpointRuntime) close() {
 	runtime.closeOnce.Do(func() {
 		runtime.listener.Close()
 	})
 }
 
-func (manager *tcpProxyManager) openVisitor(runtime *tcpProxyRuntime, visitor net.Conn) {
-	linkID, ticket, ticketDigest, err := newLinkCredentials()
-	if err != nil {
-		visitor.Close()
-		manager.logger.Error("failed to generate TCP link credentials", err)
-		return
-	}
-
+func (manager *tcpProxyManager) openVisitor(
+	endpoint *tcpEndpointRuntime,
+	binding *tcpProxyBinding,
+	visitor net.Conn,
+) {
 	manager.mutex.Lock()
-	state, exists := manager.clients[runtime.clientID]
+	state, exists := manager.clients[binding.clientID]
 	if manager.closed ||
 		!exists ||
 		!state.active ||
-		state.proxies[runtime.declaration.Name] != runtime ||
-		state.writer == nil ||
-		manager.pendingLinkLimitReachedLocked(runtime.clientID, runtime.declaration.Name) {
+		state.sessionID != binding.sessionID ||
+		endpoint.binding != binding ||
+		state.proxies[binding.declaration.Name] != binding ||
+		state.writer == nil {
 		manager.mutex.Unlock()
 		visitor.Close()
 		return
 	}
-	pending := &pendingTCPLink{
-		linkID:       linkID,
-		clientID:     runtime.clientID,
-		sessionID:    state.sessionID,
-		proxyName:    runtime.declaration.Name,
-		ticketDigest: ticketDigest,
-		visitor:      visitor,
-	}
-	manager.pendingLinks[linkID] = pending
-	pending.timer = time.AfterFunc(consts.TCPPendingLinkTimeout, func() {
-		manager.expirePendingLink(linkID)
-	})
 	writer := state.writer
 	sessionID := state.sessionID
 	manager.mutex.Unlock()
 
-	err = writer.write(protocol.MessageOpenLink, protocol.OpenLink{
-		LinkID:          linkID,
-		ProxyName:       runtime.declaration.Name,
-		Ticket:          ticket,
-		ExpiresAtUnixMS: time.Now().Add(consts.TCPPendingLinkTimeout).UnixMilli(),
-	})
+	err := manager.linkBroker.serveStream(
+		linkTarget{
+			clientID:  binding.clientID,
+			sessionID: sessionID,
+			proxyName: binding.declaration.Name,
+			proxyType: protocol.ProxyTypeTCP,
+			bindingID: binding.bindingID,
+			writer:    writer,
+		},
+		func() { visitor.Close() },
+		func(ctx context.Context, stream net.Conn) error {
+			return proxytcp.Forward(ctx, visitor, stream)
+		},
+	)
 	if err != nil {
-		manager.cancelPendingLink(linkID, false)
-		return
-	}
-	manager.logger.WithFields(map[string]any{
-		"client_id":  runtime.clientID,
-		"session_id": sessionID,
-		"proxy_name": runtime.declaration.Name,
-		"link_id":    linkID,
-	}).Trace("open link sent")
-}
-
-func (manager *tcpProxyManager) expirePendingLink(linkID string) {
-	manager.cancelPendingLink(linkID, true)
-}
-
-func (manager *tcpProxyManager) cancelPendingLink(linkID string, notifyClient bool) {
-	manager.mutex.Lock()
-	pending, exists := manager.pendingLinks[linkID]
-	if !exists {
-		manager.mutex.Unlock()
-		return
-	}
-	delete(manager.pendingLinks, linkID)
-	state := manager.clients[pending.clientID]
-	var writer *controlWriter
-	if state != nil && state.active && state.sessionID == pending.sessionID {
-		writer = state.writer
-	}
-	manager.mutex.Unlock()
-
-	pending.timer.Stop()
-	pending.visitor.Close()
-	if notifyClient && writer != nil {
-		_ = writer.write(protocol.MessageCancelLink, protocol.CancelLink{
-			LinkID: linkID,
-			Reason: "link_expired",
-		})
+		visitor.Close()
 	}
 }
 
-func (manager *tcpProxyManager) pendingLinkLimitReachedLocked(
-	clientID string,
-	proxyName string,
-) bool {
-	if len(manager.pendingLinks) >= consts.ServerMaxTCPPendingLinks {
-		return true
+func newBindingID() (string, error) {
+	randomBytes := make([]byte, 16)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
 	}
-	clientCount := 0
-	proxyCount := 0
-	for _, pending := range manager.pendingLinks {
-		if pending.clientID == clientID {
-			clientCount++
-			if pending.proxyName == proxyName {
-				proxyCount++
-			}
-		}
-	}
-	return clientCount >= consts.ServerMaxTCPPendingLinksPerClient ||
-		proxyCount >= consts.ServerMaxTCPPendingLinksPerProxy
-}
-
-func (manager *tcpProxyManager) activeLinkLimitReachedLocked(
-	clientID string,
-	proxyName string,
-) bool {
-	if len(manager.activeLinks) >= consts.ServerMaxTCPActiveLinks {
-		return true
-	}
-	clientCount := 0
-	proxyCount := 0
-	for _, active := range manager.activeLinks {
-		if active.clientID == clientID {
-			clientCount++
-			if active.proxyName == proxyName {
-				proxyCount++
-			}
-		}
-	}
-	return clientCount >= consts.ServerMaxTCPActiveLinksPerClient ||
-		proxyCount >= consts.ServerMaxTCPActiveLinksPerProxy
-}
-
-func (manager *tcpProxyManager) removePendingLocked(
-	clientID string,
-	sessionID string,
-	proxyName string,
-) []*pendingTCPLink {
-	removed := make([]*pendingTCPLink, 0)
-	for linkID, pending := range manager.pendingLinks {
-		if (clientID == "" || pending.clientID == clientID) &&
-			(sessionID == "" || pending.sessionID == sessionID) &&
-			(proxyName == "" || pending.proxyName == proxyName) {
-			delete(manager.pendingLinks, linkID)
-			removed = append(removed, pending)
-		}
-	}
-	return removed
-}
-
-func (manager *tcpProxyManager) removeActiveLocked(
-	clientID string,
-	sessionID string,
-	proxyName string,
-) []*activeTCPLink {
-	removed := make([]*activeTCPLink, 0)
-	for linkID, active := range manager.activeLinks {
-		if (clientID == "" || active.clientID == clientID) &&
-			(sessionID == "" || active.sessionID == sessionID) &&
-			(proxyName == "" || active.proxyName == proxyName) {
-			delete(manager.activeLinks, linkID)
-			removed = append(removed, active)
-		}
-	}
-	return removed
-}
-
-func (manager *tcpProxyManager) handleDataStream(
-	ctx context.Context,
-	connection net.Conn,
-	binding protocol.BindLink,
-	logger *logging.Logger,
-) error {
-	link, linkError := manager.bindDataConnection(binding, connection)
-	if linkError != "" {
-		_ = protocol.WriteControl(connection, protocol.MessageBindResult, protocol.BindResult{
-			LinkID: binding.LinkID,
-			Status: protocol.LinkStatusRejected,
-			Error:  &linkError,
-		})
-		return fmt.Errorf("bind TCP data link: %s", linkError)
-	}
-	defer manager.finishActiveLink(link.linkID)
-
-	if err := protocol.WriteControl(connection, protocol.MessageBindResult, protocol.BindResult{
-		LinkID: link.linkID,
-		Status: protocol.LinkStatusAccepted,
-	}); err != nil {
-		link.visitor.Close()
-		return err
-	}
-	if err := connection.SetDeadline(time.Time{}); err != nil {
-		link.visitor.Close()
-		return err
-	}
-	logger.Trace("TCP link streaming started")
-	err := proxytcp.Forward(ctx, link.visitor, connection)
-	logger.Trace("TCP link streaming stopped")
-	return err
-}
-
-func newLinkCredentials() (
-	linkID string,
-	ticket string,
-	ticketDigest [sha256.Size]byte,
-	err error,
-) {
-	linkBytes := make([]byte, 16)
-	if _, err = rand.Read(linkBytes); err != nil {
-		return "", "", ticketDigest, err
-	}
-	ticketBytes := make([]byte, 32)
-	if _, err = rand.Read(ticketBytes); err != nil {
-		return "", "", ticketDigest, err
-	}
-	return base64.RawURLEncoding.EncodeToString(linkBytes),
-		base64.RawURLEncoding.EncodeToString(ticketBytes),
-		sha256.Sum256(ticketBytes),
-		nil
+	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }
 
 func rejectedSyncResult(
@@ -713,18 +716,8 @@ func rejectedSyncResult(
 	}
 }
 
-func closePendingLinks(links []*pendingTCPLink) {
-	for _, link := range links {
-		if link.timer != nil {
-			link.timer.Stop()
-		}
-		link.visitor.Close()
-	}
-}
-
-func closeActiveLinks(links []*activeTCPLink) {
-	for _, link := range links {
-		link.visitor.Close()
-		link.data.Close()
+func closeTCPEndpoints(endpoints map[uint16]*tcpEndpointRuntime) {
+	for _, endpoint := range endpoints {
+		endpoint.close()
 	}
 }

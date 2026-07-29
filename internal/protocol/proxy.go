@@ -6,6 +6,8 @@ type ProxyType string
 const (
 	// ProxyTypeTCP identifies a reliable TCP byte-stream proxy.
 	ProxyTypeTCP ProxyType = "tcp"
+	// ProxyTypeHTTP identifies an HTTP domain-routing proxy.
+	ProxyTypeHTTP ProxyType = "http"
 )
 
 // ProxySyncStatus identifies the result of an atomic proxy declaration.
@@ -37,14 +39,16 @@ const (
 	ProxyErrorPortConflict     ProxyErrorCode = "port_conflict"
 	ProxyErrorCapacityExceeded ProxyErrorCode = "capacity_exceeded"
 	ProxyErrorSessionInactive  ProxyErrorCode = "session_inactive"
-	ProxyErrorListenerFailed   ProxyErrorCode = "listener_failed"
+	ProxyErrorHTTPDisabled     ProxyErrorCode = "http_listener_disabled"
+	ProxyErrorDomainConflict   ProxyErrorCode = "domain_conflict"
 )
 
 // ProxyDeclaration contains server-visible proxy configuration.
 type ProxyDeclaration struct {
 	Name       string    `json:"name"`
 	Type       ProxyType `json:"type"`
-	RemotePort uint16    `json:"remote_port"`
+	RemotePort uint16    `json:"remote_port,omitempty"`
+	Domain     string    `json:"domain,omitempty"`
 }
 
 // SyncProxies atomically declares the complete proxy set for one session.
@@ -58,6 +62,7 @@ type ProxyResult struct {
 	Name       string      `json:"name"`
 	Status     ProxyStatus `json:"status"`
 	RemotePort uint16      `json:"remote_port"`
+	Domain     string      `json:"domain,omitempty"`
 }
 
 // ProxyError describes a stable proxy registration failure.

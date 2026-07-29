@@ -99,10 +99,10 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 		"link_id":    request.LinkID,
 		"proxy_name": request.ProxyName,
 	})
-	proxyConfiguration, exists := manager.findProxy(request.ProxyName)
+	proxyConfiguration, exists := manager.findProxy(request.ProxyName, request.ProxyType)
 	if !exists {
 		manager.reportFailure(request.LinkID, protocol.LinkErrorLocalDialFailed)
-		logger.Error("TCP proxy configuration was not found", errors.New("unknown proxy"))
+		logger.Error("proxy configuration was not found", errors.New("unknown proxy"))
 		return
 	}
 	if request.ExpiresAtUnixMS <= time.Now().UnixMilli() {
@@ -113,6 +113,7 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 	type dialResult struct {
 		dataConnection  net.Conn
 		localConnection net.Conn
+		kind            linkDialKind
 		err             error
 	}
 	results := make(chan dialResult, 2)
@@ -126,7 +127,11 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 			manager.configuration.Authentication.Token,
 			protocol.RoleData,
 		)
-		results <- dialResult{dataConnection: connection, err: err}
+		results <- dialResult{
+			dataConnection: connection,
+			kind:           linkDialTransport,
+			err:            err,
+		}
 	}()
 	go func() {
 		localDialContext, cancelLocalDial := context.WithTimeout(
@@ -139,16 +144,25 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 			fmt.Sprintf("%d", proxyConfiguration.LocalPort),
 		)
 		connection, err := (&net.Dialer{}).DialContext(localDialContext, "tcp", address)
-		results <- dialResult{localConnection: connection, err: err}
+		results <- dialResult{
+			localConnection: connection,
+			kind:            linkDialLocal,
+			err:             err,
+		}
 	}()
 
 	var dataConnection net.Conn
 	var localConnection net.Conn
-	var dialError error
+	var transportDialError error
+	var localDialError error
 	for range 2 {
 		result := <-results
 		if result.err != nil {
-			dialError = errors.Join(dialError, result.err)
+			if result.kind == linkDialTransport {
+				transportDialError = result.err
+			} else {
+				localDialError = result.err
+			}
 			cancelDial()
 		}
 		if result.dataConnection != nil {
@@ -158,15 +172,20 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 			localConnection = result.localConnection
 		}
 	}
-	if dialError != nil || dataConnection == nil || localConnection == nil {
+	if transportDialError != nil || localDialError != nil ||
+		dataConnection == nil || localConnection == nil {
 		if dataConnection != nil {
 			dataConnection.Close()
 		}
 		if localConnection != nil {
 			localConnection.Close()
 		}
-		manager.reportFailure(request.LinkID, protocol.LinkErrorLocalDialFailed)
-		logger.Error("TCP link dial failed", dialError)
+		failureCode := classifyLinkDialFailure(ctx, transportDialError, localDialError)
+		manager.reportFailure(request.LinkID, failureCode)
+		logger.Error(
+			"proxy link dial failed",
+			errors.Join(transportDialError, localDialError),
+		)
 		return
 	}
 	defer dataConnection.Close()
@@ -180,6 +199,8 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 		ClientID:  manager.configuration.ClientID,
 		SessionID: manager.sessionID,
 		LinkID:    request.LinkID,
+		ProxyType: request.ProxyType,
+		BindingID: request.BindingID,
 		Ticket:    request.Ticket,
 	}); err != nil {
 		manager.reportFailure(request.LinkID, protocol.LinkErrorTransportFailed)
@@ -196,9 +217,16 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 	}
 	var result protocol.BindResult
 	if err := protocol.DecodePayload(envelope, &result); err != nil ||
-		result.LinkID != request.LinkID ||
-		result.Status != protocol.LinkStatusAccepted {
+		result.LinkID != request.LinkID {
 		manager.reportFailure(request.LinkID, protocol.LinkErrorInvalidBinding)
+		return
+	}
+	if result.Status != protocol.LinkStatusAccepted {
+		failureCode := protocol.LinkErrorInvalidBinding
+		if result.Error != nil {
+			failureCode = *result.Error
+		}
+		manager.reportFailure(request.LinkID, failureCode)
 		return
 	}
 	if err := dataConnection.SetDeadline(time.Time{}); err != nil {
@@ -206,19 +234,49 @@ func (manager *clientTCPLinkManager) run(ctx context.Context, request protocol.O
 		return
 	}
 
-	logger.Trace("TCP link streaming started")
+	logger.Trace("proxy link streaming started")
 	err = proxytcp.Forward(ctx, dataConnection, localConnection)
 	if err != nil && ctx.Err() == nil {
-		logger.Error("TCP link streaming ended", err)
+		logger.Error("proxy link streaming ended", err)
 	} else {
-		logger.Trace("TCP link streaming stopped")
+		logger.Trace("proxy link streaming stopped")
 	}
 }
 
-func (manager *clientTCPLinkManager) findProxy(name string) (config.ProxyConfig, bool) {
+type linkDialKind uint8
+
+const (
+	linkDialTransport linkDialKind = iota + 1
+	linkDialLocal
+)
+
+func classifyLinkDialFailure(
+	ctx context.Context,
+	transportError error,
+	localError error,
+) protocol.LinkErrorCode {
+	if ctx.Err() != nil {
+		return protocol.LinkErrorCancelled
+	}
+	if localError != nil && !errors.Is(localError, context.Canceled) {
+		return protocol.LinkErrorLocalDialFailed
+	}
+	if transportError != nil && !errors.Is(transportError, context.Canceled) {
+		return protocol.LinkErrorTransportFailed
+	}
+	if localError != nil {
+		return protocol.LinkErrorLocalDialFailed
+	}
+	return protocol.LinkErrorTransportFailed
+}
+
+func (manager *clientTCPLinkManager) findProxy(
+	name string,
+	proxyType protocol.ProxyType,
+) (config.ProxyConfig, bool) {
 	for _, proxyConfiguration := range manager.configuration.Proxies {
 		if proxyConfiguration.Name == name &&
-			proxyConfiguration.Type == string(protocol.ProxyTypeTCP) {
+			proxyConfiguration.Type == string(proxyType) {
 			return proxyConfiguration, true
 		}
 	}

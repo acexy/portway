@@ -8,6 +8,33 @@ log_level: info
 # Address used by the server for client control and data connections.
 listen_address: 0.0.0.0:7000
 
+# Public HTTP listener. Leave empty to disable HTTP proxy registration.
+http_listen_address: ""
+
+# HTTP safety limits and optional business timeouts.
+http:
+  # Mandatory slow-header protection and graceful shutdown bounds.
+  read_header_timeout: 10s
+  graceful_shutdown_timeout: 30s
+
+  # Optional business timeouts. Zero keeps streaming responses and idle
+  # keep-alive connections unlimited by Portway.
+  idle_connection_timeout: 0s
+  response_header_timeout: 0s
+
+  # Resource limits. Every value must be greater than zero and cannot exceed
+  # Portway's built-in hard ceiling.
+  max_header_bytes: 65536
+  max_concurrent_requests: 4096
+  max_concurrent_requests_per_client: 512
+  max_concurrent_requests_per_domain: 256
+  max_idle_connections: 1024
+  max_idle_connections_per_domain: 32
+  max_upgrade_connections: 1024
+  max_upgrade_connections_per_client: 128
+  max_upgrade_connections_per_domain: 64
+  max_concurrent_http2_streams: 128
+
 # IP used for public TCP proxy listeners. Clients only choose the remote port.
 proxy_bind_ip: 0.0.0.0
 

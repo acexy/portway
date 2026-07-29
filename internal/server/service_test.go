@@ -32,6 +32,7 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 				"session_id": "session-one",
 			}),
 			writer,
+			[]string{"tcp", "json-control"},
 		)
 		results <- serverResult{gracefullyClosed: gracefullyClosed, err: err}
 	}()
@@ -69,5 +70,46 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 			result.gracefullyClosed,
 			result.err,
 		)
+	}
+}
+
+func TestServeControlMessagesRejectsTCPMessageWithoutCapability(t *testing.T) {
+	t.Parallel()
+
+	clientConnection, serverConnection := net.Pipe()
+	defer clientConnection.Close()
+	defer serverConnection.Close()
+
+	results := make(chan error, 1)
+	service := &Service{}
+	go func() {
+		_, err := service.serveControlMessages(
+			serverConnection,
+			"client-one",
+			"session-one",
+			logging.New("test"),
+			newControlWriter(serverConnection),
+			[]string{"json-control"},
+		)
+		results <- err
+	}()
+
+	if err := protocol.WriteControlWithRequestID(
+		clientConnection,
+		protocol.MessageSyncProxies,
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{
+				{Name: "web", Type: protocol.ProxyTypeTCP, RemotePort: 8080},
+			},
+		},
+	); err != nil {
+		t.Fatalf("write proxy synchronization: %v", err)
+	}
+
+	err := <-results
+	if err == nil || err.Error() != "tcp proxy registration requires a negotiated capability" {
+		t.Fatalf("unexpected capability validation error: %v", err)
 	}
 }

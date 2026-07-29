@@ -40,7 +40,6 @@ authentication:
   #   server_name: gateway.example.com
 
 proxies:
-  # "tcp" is currently the only supported value.
   - name: ssh
     type: tcp
     # Optional. Defaults to 127.0.0.1 and may point to another machine that
@@ -48,3 +47,10 @@ proxies:
     local_ip: 127.0.0.1
     local_port: 22
     remote_port: 22022
+
+  # HTTP proxy names share the same ClientID-scoped namespace as TCP proxies.
+  # - name: web
+  #   type: http
+  #   domain: app.example.com
+  #   local_ip: 127.0.0.1
+  #   local_port: 8080

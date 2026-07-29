@@ -25,10 +25,3 @@ const (
 func (role Role) Valid() bool {
 	return role == RoleControl || role == RoleData
 }
-
-const (
-	// ALPNControlV1 is the ALPN identifier for version 1 control connections.
-	ALPNControlV1 = "portway-control/1"
-	// ALPNDataV1 is the ALPN identifier for version 1 data connections.
-	ALPNDataV1 = "portway-data/1"
-)

@@ -1,3 +1,4 @@
+// Package transport implements Portway secure transport connections.
 package transport
 
 import (
@@ -297,17 +298,6 @@ type secureConnection struct {
 	readSequence  uint64
 	writeSequence uint64
 	readBuffer    []byte
-}
-
-// CloseRead propagates a read half-close to the underlying transport.
-func (connection *secureConnection) CloseRead() error {
-	halfCloser, ok := connection.Conn.(interface {
-		CloseRead() error
-	})
-	if !ok {
-		return errors.New("underlying transport does not support CloseRead")
-	}
-	return halfCloser.CloseRead()
 }
 
 // CloseWrite propagates a write half-close after all encrypted writes complete.
