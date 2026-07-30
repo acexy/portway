@@ -163,27 +163,6 @@ metadata when needed:
 VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 ```
 
-## Publishing a release
-
-Pushing a semantic version Tag triggers the GitHub Actions release workflow:
-
-```bash
-git tag -a v1.0.0 -m "Portway v1.0.0"
-git push origin v1.0.0
-```
-
-The workflow runs all Go tests, builds the complete release matrix, creates
-SHA-256 checksums, generates release notes from merged changes, and publishes
-the archives as GitHub Release assets. Tags with a suffix such as
-`v1.0.0-rc.1` are published as pre-releases.
-
-Push the target commit to the repository's default branch before creating its
-release Tag. Release downloads are available from:
-
-```text
-https://github.com/acexy/portway/releases
-```
-
 ## Public documentation
 
 - [Technical overview](assets/docs/technical/README.md)

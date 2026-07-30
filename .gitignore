@@ -1,12 +1,7 @@
 .idea
 .DS_Store
-AGENTS.md
-.codex
 /docs
-CLAUDE.md
-.claude
 /client.yaml
 /server.yaml
 certs
 target
-.codex_history
