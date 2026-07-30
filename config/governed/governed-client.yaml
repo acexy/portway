@@ -29,9 +29,10 @@ permissions:
     - udp
     - http
 
-  # Optional unless tcp is allowed and the client needs TCP proxies.
+  # Required and non-empty when tcp is allowed. Must be empty or omitted when
+  # tcp is not allowed.
   tcp:
-    # Optional. Inclusive public TCP port ranges. Empty denies every TCP port.
+    # Inclusive public TCP port ranges.
     # Ports must be in 1-65535. Ranges must not overlap.
     remote_port_ranges:
       - start: 20000
@@ -39,17 +40,19 @@ permissions:
       - start: 22000
         end: 22099
 
-  # Optional unless udp is allowed and the client needs UDP proxies.
+  # Required and non-empty when udp is allowed. Must be empty or omitted when
+  # udp is not allowed.
   udp:
-    # Optional. Inclusive public UDP port ranges. Empty denies every UDP port.
+    # Inclusive public UDP port ranges.
     # Ports must be in 1-65535. Ranges must not overlap.
     remote_port_ranges:
       - start: 30000
         end: 30999
 
-  # Optional unless http is allowed and the client needs HTTP proxies.
+  # Required and non-empty when http is allowed. Must be empty or omitted when
+  # http is not allowed.
   http:
-    # Optional. Authorized exact domains or single-label wildcard domains.
+    # Authorized exact domains or single-label wildcard domains.
     # Exact names must be lowercase canonical DNS names.
     # "*.example.com" matches "app.example.com", but not "example.com" or
     # "a.b.example.com". Clients still register exact domains, not wildcards.

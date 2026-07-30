@@ -21,6 +21,8 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
 - 动态热加载 IPv4/IPv6 拒绝列表
 - 严格的 YAML 配置和故障关闭（fail-closed）校验
 - 小巧的客户端和服务端二进制文件，命令行接口风格一致
+- **灵活的客户端配置治理：** 为可信客户端群组提供 Shared 共享配置，
+  通过 Governed 模式约束客户端配置，或由服务端以 Managed 模式完全托管配置
 
 ## 快速开始
 
@@ -34,7 +36,7 @@ transport:
   listen_address: 127.0.0.1:7000
 
 authentication:
-  token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
 ```
 
 创建 `client.yaml`：
@@ -175,6 +177,7 @@ VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 ## 公开文档
 
 - [技术概览](assets/docs/technical/README_ZH.md)
+- [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
 - [安全性](assets/docs/security/README_ZH.md)
 - [未来计划](assets/docs/future/README_ZH.md)
 - 完整注释的配置示例：

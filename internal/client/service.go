@@ -4,10 +4,7 @@ package client
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -42,7 +39,7 @@ type proxyRegistrationError struct {
 
 func (registrationError *proxyRegistrationError) Error() string {
 	return fmt.Sprintf(
-		"TCP proxy registration rejected: proxy=%q code=%s message=%s",
+		"proxy registration rejected: proxy=%q code=%s message=%s",
 		registrationError.proxyName,
 		registrationError.code,
 		registrationError.message,
@@ -58,19 +55,24 @@ func (sessionError *remoteSessionError) Error() string {
 // It owns the control connection, reconnect lifecycle, proxy registration,
 // and session-scoped TCP links.
 type Service struct {
-	logger         *logging.Logger
-	configuration  config.ClientConfig
-	transport      transport.Client
-	identification protocol.ClientIdentification
-	managedMutex   sync.RWMutex
-	managedStatus  protocol.ManagedConfigStatus
+	logger          *logging.Logger
+	configuration   config.ClientConfig
+	transport       transport.Client
+	identification  protocol.ClientIdentification
+	runtimeMutex    sync.RWMutex
+	runtimeClientID string
+	runtimeProxies  []config.ProxyConfig
+	managedMutex    sync.RWMutex
+	managedStatus   protocol.ManagedConfigStatus
 }
 
 // NewService creates a client service.
 func NewService(logger *logging.Logger, configuration config.ClientConfig) *Service {
 	return &Service{
-		logger:        logger.WithField("client_id", configuration.ClientID),
-		configuration: configuration,
+		logger:          logger.WithField("client_id", configuration.ClientID),
+		configuration:   configuration,
+		runtimeClientID: configuration.ClientID,
+		runtimeProxies:  append([]config.ProxyConfig(nil), configuration.Proxies...),
 	}
 }
 
@@ -265,7 +267,7 @@ func (s *Service) runControlSession(
 				transport.ErrProtocol,
 			)
 		}
-		s.configuration.ClientID = serverHello.ClientID
+		s.setRuntimeClientID(serverHello.ClientID)
 	}
 	if serverHello.SessionID == "" {
 		return "", false, fmt.Errorf(
@@ -369,7 +371,7 @@ func (s *Service) receiveManagedConfiguration(
 	if activation != status {
 		return fmt.Errorf("%w: managed configuration activation mismatch", transport.ErrProtocol)
 	}
-	s.configuration.Proxies = proxies
+	s.setRuntimeProxies(proxies)
 	s.managedMutex.Lock()
 	s.managedStatus = status
 	s.managedMutex.Unlock()
@@ -389,15 +391,14 @@ func validateManagedPreparation(
 			transport.ErrProtocol,
 		)
 	}
-	digestBytes, err := json.Marshal(preparation.Proxies)
+	digest, err := protocol.ManagedConfigurationDigest(preparation.Proxies)
 	if err != nil {
 		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(
 			"encode managed configuration: %w",
 			err,
 		)
 	}
-	digestSum := sha256.Sum256(digestBytes)
-	if hex.EncodeToString(digestSum[:]) != preparation.Digest {
+	if digest != preparation.Digest {
 		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(
 			"%w: managed configuration digest mismatch",
 			transport.ErrProtocol,
@@ -470,7 +471,8 @@ func (s *Service) runControlLoop(
 	linkManager := newLinkManager(
 		sessionContext,
 		sessionLogger,
-		s.configuration,
+		s.runtimeIdentity(),
+		s.runtimeProxySnapshot(),
 		sessionID,
 		writer,
 		transportSession,
@@ -621,10 +623,7 @@ func (s *Service) runControlLoop(
 						transport.ErrProtocol,
 					)
 				}
-				s.configuration.Proxies = append(
-					[]config.ProxyConfig(nil),
-					pendingManagedProxies...,
-				)
+				s.setRuntimeProxies(pendingManagedProxies)
 				linkManager.updateProxies(pendingManagedProxies)
 				s.managedMutex.Lock()
 				s.managedStatus = activation
@@ -732,8 +731,9 @@ func (s *Service) syncProxies(
 	if err != nil {
 		return err
 	}
-	declarations := make([]protocol.ProxyDeclaration, 0, len(s.configuration.Proxies))
-	for _, proxyConfiguration := range s.configuration.Proxies {
+	proxies := s.runtimeProxySnapshot()
+	declarations := make([]protocol.ProxyDeclaration, 0, len(proxies))
+	for _, proxyConfiguration := range proxies {
 		declarations = append(declarations, protocol.ProxyDeclaration{
 			Name:       proxyConfiguration.Name,
 			Type:       protocol.ProxyType(proxyConfiguration.Type),
@@ -782,6 +782,30 @@ func (s *Service) syncProxies(
 	}
 	s.logger.InfoWithField("proxy registration applied", "revision", result.Revision)
 	return nil
+}
+
+func (s *Service) runtimeIdentity() string {
+	s.runtimeMutex.RLock()
+	defer s.runtimeMutex.RUnlock()
+	return s.runtimeClientID
+}
+
+func (s *Service) setRuntimeClientID(clientID string) {
+	s.runtimeMutex.Lock()
+	s.runtimeClientID = clientID
+	s.runtimeMutex.Unlock()
+}
+
+func (s *Service) runtimeProxySnapshot() []config.ProxyConfig {
+	s.runtimeMutex.RLock()
+	defer s.runtimeMutex.RUnlock()
+	return append([]config.ProxyConfig(nil), s.runtimeProxies...)
+}
+
+func (s *Service) setRuntimeProxies(proxies []config.ProxyConfig) {
+	s.runtimeMutex.Lock()
+	s.runtimeProxies = append([]config.ProxyConfig(nil), proxies...)
+	s.runtimeMutex.Unlock()
 }
 
 func newRequestID() (string, error) {

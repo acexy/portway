@@ -4,10 +4,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,15 +38,6 @@ type restartRequiredError struct {
 	field string
 }
 
-type managedSession struct {
-	sessionID  string
-	connection net.Conn
-	writer     *control.Writer
-	prepared   chan protocol.ManagedConfigStatus
-	applied    chan protocol.ManagedConfigStatus
-	mutex      sync.Mutex
-}
-
 func (reloadError restartRequiredError) Error() string {
 	return fmt.Sprintf("%s changed and requires restart", reloadError.field)
 }
@@ -60,16 +48,14 @@ func (reloadError restartRequiredError) Error() string {
 // session-scoped TCP proxy resources.
 type Service struct {
 	logger                *logging.Logger
-	configuration         config.ServerConfig
+	configuration         *configurationManager
 	clientRegistry        *session.Registry
 	proxyRegistry         *proxyregistry.Registry
 	linkBroker            *link.Broker
 	transportServer       transport.Server
 	authenticationStore   *authentication.Store
-	configurationMutex    sync.RWMutex
 	authenticationBarrier sync.RWMutex
-	managedSessionsMutex  sync.RWMutex
-	managedSessions       map[string]*managedSession
+	managed               *managedCoordinator
 }
 
 // NewService creates a server service.
@@ -78,16 +64,16 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 		configuration.Generation = 1
 	}
 	return &Service{
-		logger:          logger,
-		configuration:   configuration,
-		clientRegistry:  session.NewRegistry(),
-		managedSessions: make(map[string]*managedSession),
+		logger:         logger,
+		configuration:  newConfigurationManager(configuration),
+		clientRegistry: session.NewRegistry(),
+		managed:        newManagedCoordinator(),
 	}
 }
 
 // Run runs the server until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
-	configuration := s.configuration
+	configuration := s.configuration.snapshot()
 	s.logger.InfoWithField(
 		"server started",
 		"listen_address", configuration.Transport.ListenAddress,
@@ -372,9 +358,8 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 	writer := control.NewWriter(connection)
 	maxActiveLinks := 0
 	if inbound.Authentication.Mode == authentication.ModeGoverned {
-		s.configurationMutex.RLock()
-		maxActiveLinks = s.configuration.GovernedClients[clientHello.ClientID].Permissions.Limits.MaxActiveLinks
-		s.configurationMutex.RUnlock()
+		governed, _ := s.configuration.governedClient(clientHello.ClientID)
+		maxActiveLinks = governed.Permissions.Limits.MaxActiveLinks
 	}
 	s.proxyRegistry.AttachAuthenticated(
 		clientHello.ClientID,
@@ -402,6 +387,7 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 				return fmt.Errorf("set managed configuration deadline: %w", err)
 			}
 			if err := s.applyManagedConfiguration(
+				ctx,
 				connection,
 				clientHello.ClientID,
 				sessionID,
@@ -455,98 +441,29 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 }
 
 func (s *Service) applyManagedConfiguration(
+	ctx context.Context,
 	connection net.Conn,
 	clientID string,
 	sessionID string,
 	writer *control.Writer,
 ) error {
-	s.configurationMutex.RLock()
-	clientConfiguration, exists := s.configuration.ManagedClients[clientID]
-	s.configurationMutex.RUnlock()
+	clientConfiguration, exists := s.configuration.managedClient(clientID)
 	if !exists {
 		return errors.New("managed client configuration is unavailable")
 	}
-	managedProxies := make(
-		[]protocol.ManagedProxy,
-		0,
-		len(clientConfiguration.Configuration.Proxies),
-	)
-	declarations := make(
-		[]protocol.ProxyDeclaration,
-		0,
-		len(clientConfiguration.Configuration.Proxies),
-	)
-	for _, proxyConfiguration := range clientConfiguration.Configuration.Proxies {
-		managedProxies = append(managedProxies, protocol.ManagedProxy{
-			Name:       proxyConfiguration.Name,
-			Type:       protocol.ProxyType(proxyConfiguration.Type),
-			LocalIP:    proxyConfiguration.LocalIP,
-			LocalPort:  proxyConfiguration.LocalPort,
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
-		})
-		declarations = append(declarations, protocol.ProxyDeclaration{
-			Name:       proxyConfiguration.Name,
-			Type:       protocol.ProxyType(proxyConfiguration.Type),
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
-		})
-	}
-	digestBytes, err := json.Marshal(managedProxies)
+	preparation, declarations, err := managedConfigurationPayload(clientConfiguration)
 	if err != nil {
-		return fmt.Errorf("encode managed configuration: %w", err)
+		return fmt.Errorf("build managed configuration: %w", err)
 	}
-	digestSum := sha256.Sum256(digestBytes)
-	digest := hex.EncodeToString(digestSum[:])
-	status := protocol.ManagedConfigStatus{
-		Revision: clientConfiguration.Configuration.Revision,
-		Digest:   digest,
-	}
-	if err := writer.Write(protocol.MessageManagedConfigPrepare, protocol.ManagedConfigPrepare{
-		Revision: status.Revision,
-		Digest:   status.Digest,
-		Proxies:  managedProxies,
-	}); err != nil {
-		return err
-	}
-	if err := expectManagedStatus(
-		connection,
-		protocol.MessageManagedConfigPrepared,
-		status,
-	); err != nil {
-		return err
-	}
-	result := s.proxyRegistry.Sync(
+	return s.applyManagedGeneration(
+		ctx,
 		clientID,
 		sessionID,
-		"managed-"+digest,
-		protocol.SyncProxies{
-			Revision: status.Revision,
-			Proxies:  declarations,
-		},
+		preparation,
+		declarations,
+		initialManagedExchange{connection: connection, writer: writer},
+		false,
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
-		if result.Error != nil {
-			return fmt.Errorf(
-				"apply managed proxy configuration: %s: %s",
-				result.Error.Code,
-				result.Error.Message,
-			)
-		}
-		return errors.New("apply managed proxy configuration: rejected")
-	}
-	if err := writer.Write(protocol.MessageManagedConfigActivate, status); err != nil {
-		return err
-	}
-	if err := expectManagedStatus(
-		connection,
-		protocol.MessageManagedConfigApplied,
-		status,
-	); err != nil {
-		return err
-	}
-	s.proxyRegistry.Activate(clientID, sessionID)
-	return nil
 }
 
 func expectManagedStatus(
@@ -577,27 +494,17 @@ func (s *Service) registerManagedSession(
 	connection net.Conn,
 	writer *control.Writer,
 ) {
-	s.managedSessionsMutex.Lock()
-	defer s.managedSessionsMutex.Unlock()
-	if s.managedSessions == nil {
-		s.managedSessions = make(map[string]*managedSession)
-	}
-	s.managedSessions[clientID] = &managedSession{
+	s.managed.register(clientID, &managedSession{
 		sessionID:  sessionID,
 		connection: connection,
 		writer:     writer,
 		prepared:   make(chan protocol.ManagedConfigStatus, 1),
 		applied:    make(chan protocol.ManagedConfigStatus, 1),
-	}
+	})
 }
 
 func (s *Service) unregisterManagedSession(clientID string, sessionID string) {
-	s.managedSessionsMutex.Lock()
-	defer s.managedSessionsMutex.Unlock()
-	current := s.managedSessions[clientID]
-	if current != nil && current.sessionID == sessionID {
-		delete(s.managedSessions, clientID)
-	}
+	s.managed.unregister(clientID, sessionID)
 }
 
 func (s *Service) publishManagedStatus(
@@ -606,27 +513,7 @@ func (s *Service) publishManagedStatus(
 	messageType protocol.MessageType,
 	status protocol.ManagedConfigStatus,
 ) bool {
-	s.managedSessionsMutex.RLock()
-	current := s.managedSessions[clientID]
-	s.managedSessionsMutex.RUnlock()
-	if current == nil || current.sessionID != sessionID {
-		return false
-	}
-	var destination chan protocol.ManagedConfigStatus
-	switch messageType {
-	case protocol.MessageManagedConfigPrepared:
-		destination = current.prepared
-	case protocol.MessageManagedConfigApplied:
-		destination = current.applied
-	default:
-		return false
-	}
-	select {
-	case destination <- status:
-		return true
-	default:
-		return false
-	}
+	return s.managed.publish(clientID, sessionID, messageType, status)
 }
 
 func managedConfigurationPayload(
@@ -658,12 +545,10 @@ func managedConfigurationPayload(
 			Domain:     proxyConfiguration.Domain,
 		})
 	}
-	digestBytes, err := json.Marshal(managedProxies)
+	digest, err := protocol.ManagedConfigurationDigest(managedProxies)
 	if err != nil {
 		return protocol.ManagedConfigPrepare{}, protocol.SyncProxies{}, err
 	}
-	digestSum := sha256.Sum256(digestBytes)
-	digest := hex.EncodeToString(digestSum[:])
 	return protocol.ManagedConfigPrepare{
 			Revision: clientConfiguration.Configuration.Revision,
 			Digest:   digest,
@@ -679,9 +564,7 @@ func (s *Service) rolloutManagedConfiguration(
 	clientID string,
 	configuration config.ManagedClientConfig,
 ) error {
-	s.managedSessionsMutex.RLock()
-	current := s.managedSessions[clientID]
-	s.managedSessionsMutex.RUnlock()
+	current := s.managed.get(clientID)
 	if current == nil {
 		return nil
 	}
@@ -692,42 +575,17 @@ func (s *Service) rolloutManagedConfiguration(
 	if err != nil {
 		return fmt.Errorf("build managed rollout: %w", err)
 	}
-	status := protocol.ManagedConfigStatus{
-		Revision: preparation.Revision,
-		Digest:   preparation.Digest,
-	}
-	drainManagedStatus(current.prepared)
-	drainManagedStatus(current.applied)
-	if err := current.writer.Write(
-		protocol.MessageManagedConfigPrepare,
-		preparation,
-	); err != nil {
-		return err
-	}
 	rolloutContext, cancel := context.WithTimeout(ctx, managedRolloutTimeout)
 	defer cancel()
-	if err := waitManagedStatus(rolloutContext, current.prepared, status); err != nil {
-		return err
-	}
-	s.proxyRegistry.Deactivate(clientID, current.sessionID)
-	result := s.proxyRegistry.Sync(
+	return s.applyManagedGeneration(
+		rolloutContext,
 		clientID,
 		current.sessionID,
-		"managed-"+preparation.Digest,
+		preparation,
 		declarations,
+		onlineManagedExchange{session: current},
+		true,
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
-		s.proxyRegistry.Activate(clientID, current.sessionID)
-		return errors.New("managed proxy rollout was rejected")
-	}
-	if err := current.writer.Write(protocol.MessageManagedConfigActivate, status); err != nil {
-		return err
-	}
-	if err := waitManagedStatus(rolloutContext, current.applied, status); err != nil {
-		return err
-	}
-	s.proxyRegistry.Activate(clientID, current.sessionID)
-	return nil
 }
 
 func drainManagedStatus(statuses chan protocol.ManagedConfigStatus) {
@@ -993,9 +851,7 @@ func (s *Service) validateGovernedProxies(
 	clientID string,
 	request protocol.SyncProxies,
 ) *protocol.SyncResult {
-	s.configurationMutex.RLock()
-	clientConfiguration, exists := s.configuration.GovernedClients[clientID]
-	s.configurationMutex.RUnlock()
+	clientConfiguration, exists := s.configuration.governedClient(clientID)
 	if !exists {
 		return governedRejection(
 			request.Revision,
@@ -1069,9 +925,7 @@ func (s *Service) validateGovernedProxies(
 }
 
 func (s *Service) watchConfiguration(ctx context.Context) {
-	s.configurationMutex.RLock()
-	sourcePath := s.configuration.SourcePath
-	s.configurationMutex.RUnlock()
+	sourcePath := s.configuration.snapshot().SourcePath
 	if sourcePath == "" {
 		return
 	}
@@ -1130,9 +984,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		}
 	}()
 
-	s.configurationMutex.RLock()
-	current := s.configuration
-	s.configurationMutex.RUnlock()
+	current := s.configuration.snapshot()
 
 	if candidate.Authentication.SharedToken != nil &&
 		*candidate.Authentication.SharedToken == "" &&
@@ -1179,9 +1031,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
 		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
 		candidate.LogLevel == current.LogLevel {
-		s.configurationMutex.Lock()
-		s.configuration.SourceDigest = candidate.SourceDigest
-		s.configurationMutex.Unlock()
+		s.configuration.updateSourceDigest(candidate.SourceDigest)
 		return nil
 	}
 	snapshot, err := config.BuildAuthenticationSnapshot(candidate)
@@ -1207,9 +1057,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	managedChanges := changedManagedClients(current, candidate)
 	candidate.Generation = current.Generation + 1
 
-	s.configurationMutex.Lock()
-	s.configuration = candidate
-	s.configurationMutex.Unlock()
+	s.configuration.publish(candidate)
 	s.authenticationStore.ReplaceRevoking(snapshot, revokedContexts)
 
 	var revokedSessions []session.ExpiredClient
@@ -1259,9 +1107,7 @@ func (s *Service) rolloutManagedConfigurations(
 	defer cancel()
 	var waitGroup sync.WaitGroup
 	for _, clientID := range clientIDs {
-		s.managedSessionsMutex.RLock()
-		managed := s.managedSessions[clientID]
-		s.managedSessionsMutex.RUnlock()
+		managed := s.managed.get(clientID)
 		if managed == nil {
 			continue
 		}
@@ -1307,9 +1153,7 @@ func validateManagedRevisionTransitions(
 }
 
 func (s *Service) currentConfigurationGeneration() uint64 {
-	s.configurationMutex.RLock()
-	defer s.configurationMutex.RUnlock()
-	return s.configuration.Generation
+	return s.configuration.snapshot().Generation
 }
 
 func reloadErrorCode(err error) string {

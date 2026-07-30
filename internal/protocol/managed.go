@@ -1,5 +1,12 @@
 package protocol
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+)
+
 // ManagedProxy contains the complete server-owned client proxy configuration.
 type ManagedProxy struct {
 	Name       string    `json:"name"`
@@ -21,4 +28,14 @@ type ManagedConfigPrepare struct {
 type ManagedConfigStatus struct {
 	Revision uint64 `json:"revision"`
 	Digest   string `json:"digest"`
+}
+
+// ManagedConfigurationDigest returns the canonical digest used by both peers.
+func ManagedConfigurationDigest(proxies []ManagedProxy) (string, error) {
+	encoded, err := json.Marshal(proxies)
+	if err != nil {
+		return "", fmt.Errorf("encode managed configuration: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }

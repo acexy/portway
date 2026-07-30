@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acexy/golang-toolkit/util/coll"
-
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -21,36 +19,39 @@ import (
 )
 
 type linkManager struct {
-	context       context.Context
-	cancel        context.CancelFunc
-	logger        *logging.Logger
-	configuration config.ClientConfig
-	sessionID     string
-	writer        *control.Writer
-	transport     transport.ClientSession
-	mutex         sync.Mutex
-	links         map[string]context.CancelFunc
-	waitGroup     sync.WaitGroup
+	context   context.Context
+	cancel    context.CancelFunc
+	logger    *logging.Logger
+	clientID  string
+	proxies   map[string]config.ProxyConfig
+	sessionID string
+	writer    *control.Writer
+	transport transport.ClientSession
+	mutex     sync.Mutex
+	links     map[string]context.CancelFunc
+	waitGroup sync.WaitGroup
 }
 
 func newLinkManager(
 	parent context.Context,
 	logger *logging.Logger,
-	configuration config.ClientConfig,
+	clientID string,
+	proxies []config.ProxyConfig,
 	sessionID string,
 	writer *control.Writer,
 	transportSession transport.ClientSession,
 ) *linkManager {
 	ctx, cancel := context.WithCancel(parent)
 	return &linkManager{
-		context:       ctx,
-		cancel:        cancel,
-		logger:        logger,
-		configuration: configuration,
-		sessionID:     sessionID,
-		writer:        writer,
-		transport:     transportSession,
-		links:         make(map[string]context.CancelFunc),
+		context:   ctx,
+		cancel:    cancel,
+		logger:    logger,
+		clientID:  clientID,
+		proxies:   indexProxyConfigurations(proxies),
+		sessionID: sessionID,
+		writer:    writer,
+		transport: transportSession,
+		links:     make(map[string]context.CancelFunc),
 	}
 }
 
@@ -215,14 +216,11 @@ func (manager *linkManager) bindDataStream(
 	dataConnection transport.Stream,
 	request protocol.OpenLink,
 ) protocol.LinkErrorCode {
-	manager.mutex.Lock()
-	clientID := manager.configuration.ClientID
-	manager.mutex.Unlock()
 	if err := dataConnection.SetDeadline(time.Now().Add(dataBindTimeout)); err != nil {
 		return protocol.LinkErrorTransportFailed
 	}
 	if err := protocol.WriteControl(dataConnection, protocol.MessageBindLink, protocol.BindLink{
-		ClientID:  clientID,
+		ClientID:  manager.clientID,
 		SessionID: manager.sessionID,
 		LinkID:    request.LinkID,
 		ProxyType: request.ProxyType,
@@ -394,21 +392,24 @@ func (manager *linkManager) findProxy(
 	proxyType protocol.ProxyType,
 ) (config.ProxyConfig, bool) {
 	manager.mutex.Lock()
-	proxies := append([]config.ProxyConfig(nil), manager.configuration.Proxies...)
-	manager.mutex.Unlock()
-	return coll.SliceFind(
-		proxies,
-		func(proxyConfiguration config.ProxyConfig) bool {
-			return proxyConfiguration.Name == name &&
-				proxyConfiguration.Type == string(proxyType)
-		},
-	)
+	defer manager.mutex.Unlock()
+	proxyConfiguration, exists := manager.proxies[name]
+	return proxyConfiguration, exists &&
+		proxyConfiguration.Type == string(proxyType)
 }
 
 func (manager *linkManager) updateProxies(proxies []config.ProxyConfig) {
 	manager.mutex.Lock()
-	manager.configuration.Proxies = append([]config.ProxyConfig(nil), proxies...)
+	manager.proxies = indexProxyConfigurations(proxies)
 	manager.mutex.Unlock()
+}
+
+func indexProxyConfigurations(proxies []config.ProxyConfig) map[string]config.ProxyConfig {
+	indexed := make(map[string]config.ProxyConfig, len(proxies))
+	for _, proxyConfiguration := range proxies {
+		indexed[proxyConfiguration.Name] = proxyConfiguration
+	}
+	return indexed
 }
 
 func (manager *linkManager) reportFailure(

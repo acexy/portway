@@ -91,3 +91,32 @@ func TestCloseSessionFrameRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected close session: %#v", actual)
 	}
 }
+
+func TestManagedConfigurationDigestIsStableAndSensitive(t *testing.T) {
+	proxies := []ManagedProxy{{
+		Name:       "ssh",
+		Type:       ProxyTypeTCP,
+		LocalIP:    "127.0.0.1",
+		LocalPort:  22,
+		RemotePort: 22022,
+	}}
+	first, err := ManagedConfigurationDigest(proxies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ManagedConfigurationDigest(append([]ManagedProxy(nil), proxies...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatal("equivalent managed configurations produced different digests")
+	}
+	proxies[0].RemotePort++
+	changed, err := ManagedConfigurationDigest(proxies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == first {
+		t.Fatal("changed managed configuration retained the previous digest")
+	}
+}

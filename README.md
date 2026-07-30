@@ -25,6 +25,8 @@ bounded resources, and secure defaults.
 - Dynamically reloaded IPv4/IPv6 deny lists
 - Strict YAML configuration and fail-closed validation
 - Small client and server binaries with a consistent command-line interface
+- **Flexible client governance:** shared configuration for trusted fleets,
+  policy-governed client configuration, or fully server-managed configuration
 
 ## Quick start
 
@@ -39,7 +41,7 @@ transport:
   listen_address: 127.0.0.1:7000
 
 authentication:
-  token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
 ```
 
 Create `client.yaml`:
@@ -186,6 +188,7 @@ VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 ## Public documentation
 
 - [Technical overview](assets/docs/technical/README.md)
+- [Authentication and configuration control](assets/docs/authentication/README.md)
 - [Security](assets/docs/security/README.md)
 - [Future plans](assets/docs/future/README.md)
 - Fully annotated configuration examples:

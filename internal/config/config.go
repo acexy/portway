@@ -956,6 +956,46 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 		limits.MaxActiveLinks < 0 {
 		return errors.New("permissions limits must not be negative")
 	}
+	if err := validateGovernedRulePresence(
+		"tcp",
+		types,
+		len(permissions.TCP.RemotePortRanges),
+		"permissions.tcp.remote_port_ranges",
+	); err != nil {
+		return err
+	}
+	if err := validateGovernedRulePresence(
+		"udp",
+		types,
+		len(permissions.UDP.RemotePortRanges),
+		"permissions.udp.remote_port_ranges",
+	); err != nil {
+		return err
+	}
+	if err := validateGovernedRulePresence(
+		"http",
+		types,
+		len(permissions.HTTP.Domains),
+		"permissions.http.domains",
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGovernedRulePresence(
+	proxyType string,
+	allowedTypes map[string]struct{},
+	ruleCount int,
+	field string,
+) error {
+	_, allowed := allowedTypes[proxyType]
+	if allowed && ruleCount == 0 {
+		return fmt.Errorf("%s must not be empty when %s is allowed", field, proxyType)
+	}
+	if !allowed && ruleCount != 0 {
+		return fmt.Errorf("%s must be empty when %s is not allowed", field, proxyType)
+	}
 	return nil
 }
 

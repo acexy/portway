@@ -4,12 +4,6 @@ This document summarizes possible future directions for Portway. These items
 are exploratory, are not accepted scope or implementation commitments, and do
 not represent release-date commitments.
 
-## Authentication and server-managed configuration
-
-- Support both a server-wide Token and a separate Token bound to each client.
-- Allow the server to deliver configuration to clients.
-- Explore server-enforced client configuration that clients cannot override.
-
 ## Distribution
 
 - Publish Portway through Homebrew.

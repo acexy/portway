@@ -224,6 +224,63 @@ func TestValidateManagedProxiesRejectsPublicBindingConflicts(t *testing.T) {
 	}
 }
 
+func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
+	tests := []struct {
+		name        string
+		permissions GovernedPermissions
+	}{
+		{
+			name: "TCP without ranges",
+			permissions: GovernedPermissions{
+				ProxyTypes: []string{"tcp"},
+			},
+		},
+		{
+			name: "UDP without ranges",
+			permissions: GovernedPermissions{
+				ProxyTypes: []string{"udp"},
+			},
+		},
+		{
+			name: "HTTP without domains",
+			permissions: GovernedPermissions{
+				ProxyTypes: []string{"http"},
+			},
+		},
+		{
+			name: "rules for disabled type",
+			permissions: GovernedPermissions{
+				TCP: ProxyPermission{
+					RemotePortRanges: []PortRange{{Start: 20000, End: 20999}},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateGovernedPermissions(test.permissions); err == nil {
+				t.Fatal("expected governed rule presence rejection")
+			}
+		})
+	}
+
+	valid := GovernedPermissions{
+		ProxyTypes: []string{"tcp", "udp", "http"},
+		TCP: ProxyPermission{
+			RemotePortRanges: []PortRange{{Start: 20000, End: 20999}},
+		},
+		UDP: ProxyPermission{
+			RemotePortRanges: []PortRange{{Start: 30000, End: 30999}},
+		},
+		HTTP: HTTPPermission{
+			Domains: []string{"app.example.com"},
+		},
+	}
+	if err := validateGovernedPermissions(valid); err != nil {
+		t.Fatalf("valid governed permissions were rejected: %v", err)
+	}
+}
+
 func TestServerSourceManifestDetectsAuthenticationFileChange(t *testing.T) {
 	configurationDirectory := t.TempDir()
 	governedDirectory := filepath.Join(configurationDirectory, "governed")

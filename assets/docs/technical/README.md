@@ -38,13 +38,23 @@ QUIC without changing the public protocol or the private service.
 
 ## Registration and identity
 
-Each client has a `client_id`. Proxy names must be unique within that client
-across all proxy types.
+The server may accept Shared, Governed, and Managed authentication records at
+the same time. A client supplies only its Token; the selected server record
+determines its mode and authoritative identity. Shared clients use a runtime
+ClientID for resource ownership, while Governed and Managed clients receive a
+server-owned ClientID bound to their independent Token.
 
-A client sends its complete desired proxy set as one registration operation.
-The server validates the entire set before publishing it. If any proxy conflicts
-with an existing port, domain, or rule, the complete registration fails and no
-partial state becomes visible.
+Shared and Governed clients send their complete desired proxy set as one
+registration operation. Governed declarations are additionally constrained by
+server-owned proxy-type, port, domain, and quota rules. Managed clients receive
+their complete proxy configuration from the server and cannot register a
+replacement set.
+
+The server validates a complete set before publishing it. If any proxy conflicts
+with an existing port, domain, or rule, the complete operation fails and no
+partial state becomes visible. See
+[Authentication and configuration control](../authentication/README.md) for
+mode selection and configuration examples.
 
 Temporary transport loss may recover the authenticated session within a bounded
 window. Connection generations prevent stale connections from taking ownership

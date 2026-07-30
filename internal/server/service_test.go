@@ -22,7 +22,7 @@ import (
 
 func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T) {
 	service := &Service{
-		configuration: config.ServerConfig{
+		configuration: newConfigurationManager(config.ServerConfig{
 			GovernedClients: map[string]config.GovernedClientConfig{
 				"customer-a": {
 					ClientID: "customer-a",
@@ -38,7 +38,7 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 					},
 				},
 			},
-		},
+		}),
 	}
 	allowed := protocol.SyncProxies{
 		Revision: 1,
@@ -75,7 +75,7 @@ func TestApplyConfigurationCandidateReplacesAuthenticationSnapshot(t *testing.T)
 	}
 	service := &Service{
 		logger:              logging.New("test"),
-		configuration:       original,
+		configuration:       newConfigurationManager(original),
 		clientRegistry:      session.NewRegistry(),
 		authenticationStore: authentication.NewStore(snapshot),
 	}
@@ -231,11 +231,11 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 	registry := session.NewRegistry()
 	service := &Service{
 		logger:              logging.New("test"),
-		configuration:       current,
+		configuration:       newConfigurationManager(current),
 		clientRegistry:      registry,
 		authenticationStore: store,
 		linkBroker:          broker,
-		managedSessions:     make(map[string]*managedSession),
+		managed:             newManagedCoordinator(),
 	}
 	service.proxyRegistry = proxyregistry.New(
 		ctx,
@@ -336,16 +336,16 @@ func TestApplyConfigurationCandidateUpdatesSourceDigestWithoutGeneration(t *test
 	}
 	service := &Service{
 		logger:              logging.New("test"),
-		configuration:       current,
+		configuration:       newConfigurationManager(current),
 		clientRegistry:      session.NewRegistry(),
 		authenticationStore: authentication.NewStore(snapshot),
 	}
 	if err := service.applyConfigurationCandidate(candidate); err != nil {
 		t.Fatal(err)
 	}
-	if service.configuration.SourceDigest != "new" ||
-		service.configuration.Generation != 7 {
-		t.Fatalf("unexpected metadata-only update: %+v", service.configuration)
+	updated := service.configuration.snapshot()
+	if updated.SourceDigest != "new" || updated.Generation != 7 {
+		t.Fatalf("unexpected metadata-only update: %+v", updated)
 	}
 }
 
@@ -361,7 +361,7 @@ func TestApplyConfigurationCandidateReportsRestartField(t *testing.T) {
 	}
 	service := &Service{
 		logger:              logging.New("test"),
-		configuration:       current,
+		configuration:       newConfigurationManager(current),
 		clientRegistry:      session.NewRegistry(),
 		authenticationStore: authentication.NewStore(snapshot),
 	}
@@ -386,7 +386,7 @@ func TestApplyConfigurationCandidateRejectsExplicitSharedTokenRemoval(t *testing
 	}
 	service := &Service{
 		logger:              logging.New("test"),
-		configuration:       current,
+		configuration:       newConfigurationManager(current),
 		clientRegistry:      session.NewRegistry(),
 		authenticationStore: authentication.NewStore(snapshot),
 	}
@@ -406,10 +406,10 @@ func TestManagedConfigurationRolloutCompletesOnActiveSession(t *testing.T) {
 	broker := link.NewBroker(ctx)
 	defer broker.Close()
 	service := &Service{
-		logger:          logging.New("test"),
-		clientRegistry:  session.NewRegistry(),
-		linkBroker:      broker,
-		managedSessions: make(map[string]*managedSession),
+		logger:         logging.New("test"),
+		clientRegistry: session.NewRegistry(),
+		linkBroker:     broker,
+		managed:        newManagedCoordinator(),
 	}
 	service.proxyRegistry = proxyregistry.New(
 		ctx,
@@ -525,10 +525,10 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 	broker := link.NewBroker(ctx)
 	defer broker.Close()
 	service := &Service{
-		logger:          logging.New("test"),
-		clientRegistry:  session.NewRegistry(),
-		linkBroker:      broker,
-		managedSessions: make(map[string]*managedSession),
+		logger:         logging.New("test"),
+		clientRegistry: session.NewRegistry(),
+		linkBroker:     broker,
+		managed:        newManagedCoordinator(),
 	}
 	service.proxyRegistry = proxyregistry.New(
 		ctx,
@@ -625,10 +625,10 @@ func TestConfigurationReloadWaitsForAuthenticationRegistrationBarrier(t *testing
 	}
 	service := &Service{
 		logger:              logging.New("test"),
-		configuration:       current,
+		configuration:       newConfigurationManager(current),
 		clientRegistry:      session.NewRegistry(),
 		authenticationStore: authentication.NewStore(snapshot),
-		managedSessions:     make(map[string]*managedSession),
+		managed:             newManagedCoordinator(),
 	}
 
 	service.authenticationBarrier.RLock()

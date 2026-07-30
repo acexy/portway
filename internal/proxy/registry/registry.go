@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net"
-	"regexp"
 	"strconv"
 	"sync"
 
@@ -24,8 +23,6 @@ import (
 	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 	"github.com/acexy/portway/internal/security/ipfilter"
 )
-
-var tcpProxyNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // Registry owns the complete proxy set and public routing resources.
 type Registry struct {
@@ -246,7 +243,7 @@ func (manager *Registry) Sync(
 			request.Revision,
 			protocol.ProxyErrorSessionInactive,
 			"",
-			"TCP proxy manager is closed",
+			"proxy registry is closed",
 		)
 	}
 	state, exists := manager.clients[clientID]
@@ -293,7 +290,7 @@ func (manager *Registry) Sync(
 			request.Revision,
 			protocol.ProxyErrorCapacityExceeded,
 			"",
-			"TCP proxy limit exceeded",
+			"proxy limit exceeded",
 		)
 	}
 	existingProxies := make(map[string]*tcpProxyBinding, len(state.tcpProxies))
@@ -310,68 +307,22 @@ func (manager *Registry) Sync(
 	}
 	manager.mutex.Unlock()
 
-	declarationsByName := make(map[string]protocol.ProxyDeclaration, len(request.Proxies))
-	declarationsByPort := make(map[uint16]protocol.ProxyDeclaration, len(request.Proxies))
-	declarationsByUDPPort := make(map[uint16]protocol.ProxyDeclaration, len(request.Proxies))
+	if rejection := validateProxyDeclarations(
+		request.Revision,
+		request.Proxies,
+		manager.httpEnabled,
+	); rejection != nil {
+		return *rejection
+	}
+	declarationsByPort := make(map[uint16]protocol.ProxyDeclaration)
+	declarationsByUDPPort := make(map[uint16]protocol.ProxyDeclaration)
 	for _, declaration := range request.Proxies {
-		if !tcpProxyNamePattern.MatchString(declaration.Name) {
-			return rejectedSyncResult(
-				request.Revision,
-				protocol.ProxyErrorInvalidProxy,
-				declaration.Name,
-				"invalid TCP proxy declaration",
-			)
-		}
 		switch declaration.Type {
 		case protocol.ProxyTypeTCP:
-			if declaration.RemotePort == 0 || declaration.Domain != "" {
-				return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid TCP proxy declaration")
-			}
-		case protocol.ProxyTypeUDP:
-			if declaration.RemotePort == 0 || declaration.Domain != "" {
-				return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid UDP proxy declaration")
-			}
-		case protocol.ProxyTypeHTTP:
-			if declaration.RemotePort != 0 || config.ValidateHTTPDomain(declaration.Domain) != nil {
-				return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid HTTP proxy declaration")
-			}
-			if !manager.httpEnabled {
-				return rejectedSyncResult(request.Revision, protocol.ProxyErrorHTTPDisabled, declaration.Name, "HTTP listener is disabled")
-			}
-		default:
-			return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "unsupported proxy type")
-		}
-		if _, duplicate := declarationsByName[declaration.Name]; duplicate {
-			return rejectedSyncResult(
-				request.Revision,
-				protocol.ProxyErrorInvalidProxy,
-				declaration.Name,
-				"duplicate proxy name",
-			)
-		}
-		if declaration.Type == protocol.ProxyTypeTCP {
-			if _, duplicate := declarationsByPort[declaration.RemotePort]; duplicate {
-				return rejectedSyncResult(
-					request.Revision,
-					protocol.ProxyErrorInvalidProxy,
-					declaration.Name,
-					"duplicate remote port",
-				)
-			}
 			declarationsByPort[declaration.RemotePort] = declaration
-		}
-		if declaration.Type == protocol.ProxyTypeUDP {
-			if _, duplicate := declarationsByUDPPort[declaration.RemotePort]; duplicate {
-				return rejectedSyncResult(
-					request.Revision,
-					protocol.ProxyErrorInvalidProxy,
-					declaration.Name,
-					"duplicate UDP remote port",
-				)
-			}
+		case protocol.ProxyTypeUDP:
 			declarationsByUDPPort[declaration.RemotePort] = declaration
 		}
-		declarationsByName[declaration.Name] = declaration
 	}
 
 	manager.mutex.Lock()

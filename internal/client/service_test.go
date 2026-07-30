@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
@@ -65,6 +67,35 @@ func TestValidateManagedPreparationVerifiesDigest(t *testing.T) {
 	preparation.Digest = hex.EncodeToString(make([]byte, sha256.Size))
 	if _, _, err := validateManagedPreparation(preparation); err == nil {
 		t.Fatal("managed preparation with invalid digest was accepted")
+	}
+}
+
+func TestRuntimeIdentityAndProxiesDoNotMutateStartupConfiguration(t *testing.T) {
+	configuration := config.DefaultClient()
+	configuration.ClientID = "startup-client"
+	configuration.Proxies = []config.ProxyConfig{{
+		Name:      "startup",
+		Type:      "tcp",
+		LocalIP:   "127.0.0.1",
+		LocalPort: 1,
+	}}
+	service := NewService(logging.New("test"), configuration)
+	service.setRuntimeClientID("authenticated-client")
+	service.setRuntimeProxies([]config.ProxyConfig{{
+		Name:      "managed",
+		Type:      "tcp",
+		LocalIP:   "127.0.0.1",
+		LocalPort: 2,
+	}})
+
+	if service.configuration.ClientID != "startup-client" ||
+		len(service.configuration.Proxies) != 1 ||
+		service.configuration.Proxies[0].Name != "startup" {
+		t.Fatalf("runtime state mutated startup configuration: %+v", service.configuration)
+	}
+	if service.runtimeIdentity() != "authenticated-client" ||
+		service.runtimeProxySnapshot()[0].Name != "managed" {
+		t.Fatal("runtime identity or proxy snapshot was not updated")
 	}
 }
 
