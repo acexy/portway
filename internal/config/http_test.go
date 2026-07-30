@@ -33,7 +33,7 @@ http:
   max_upgrade_connections_per_domain: 20
   max_concurrent_http2_streams: 64
 authentication:
-  token: test-token-with-at-least-32-random-bytes
+  shared_token: test-token-with-at-least-32-random-bytes
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)

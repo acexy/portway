@@ -215,16 +215,19 @@ func (manager *linkManager) bindDataStream(
 	dataConnection transport.Stream,
 	request protocol.OpenLink,
 ) protocol.LinkErrorCode {
+	manager.mutex.Lock()
+	clientID := manager.configuration.ClientID
+	manager.mutex.Unlock()
 	if err := dataConnection.SetDeadline(time.Now().Add(dataBindTimeout)); err != nil {
 		return protocol.LinkErrorTransportFailed
 	}
 	if err := protocol.WriteControl(dataConnection, protocol.MessageBindLink, protocol.BindLink{
-		ClientID: manager.configuration.ClientID,
+		ClientID:  clientID,
 		SessionID: manager.sessionID,
-		LinkID: request.LinkID,
+		LinkID:    request.LinkID,
 		ProxyType: request.ProxyType,
 		BindingID: request.BindingID,
-		Ticket: request.Ticket,
+		Ticket:    request.Ticket,
 	}); err != nil {
 		return protocol.LinkErrorTransportFailed
 	}
@@ -268,10 +271,10 @@ func (manager *linkManager) runUDP(
 		fmt.Sprintf("%d", proxyConfiguration.LocalPort),
 	)
 	type udpDialResult struct {
-		dataConnection transport.Stream
+		dataConnection  transport.Stream
 		localConnection net.Conn
-		kind linkDialKind
-		err error
+		kind            linkDialKind
+		err             error
 	}
 	results := make(chan udpDialResult, 2)
 	dialContext, cancelDial := context.WithCancel(ctx)
@@ -280,8 +283,8 @@ func (manager *linkManager) runUDP(
 		connection, err := manager.transport.OpenDataStream(dialContext)
 		results <- udpDialResult{
 			dataConnection: connection,
-			kind: linkDialTransport,
-			err: err,
+			kind:           linkDialTransport,
+			err:            err,
 		}
 	}()
 	go func() {
@@ -297,8 +300,8 @@ func (manager *linkManager) runUDP(
 		)
 		results <- udpDialResult{
 			localConnection: connection,
-			kind: linkDialLocal,
-			err: err,
+			kind:            linkDialLocal,
+			err:             err,
 		}
 	}()
 	var dataConnection transport.Stream
@@ -390,13 +393,22 @@ func (manager *linkManager) findProxy(
 	name string,
 	proxyType protocol.ProxyType,
 ) (config.ProxyConfig, bool) {
+	manager.mutex.Lock()
+	proxies := append([]config.ProxyConfig(nil), manager.configuration.Proxies...)
+	manager.mutex.Unlock()
 	return coll.SliceFind(
-		manager.configuration.Proxies,
+		proxies,
 		func(proxyConfiguration config.ProxyConfig) bool {
 			return proxyConfiguration.Name == name &&
 				proxyConfiguration.Type == string(proxyType)
 		},
 	)
+}
+
+func (manager *linkManager) updateProxies(proxies []config.ProxyConfig) {
+	manager.mutex.Lock()
+	manager.configuration.Proxies = append([]config.ProxyConfig(nil), proxies...)
+	manager.mutex.Unlock()
 }
 
 func (manager *linkManager) reportFailure(

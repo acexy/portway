@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -78,15 +79,17 @@ type ClientSession interface {
 
 // Inbound is one authenticated stream accepted by a transport server.
 type Inbound struct {
-	Stream        Stream
-	Role          protocol.Role
-	ConnectionID  ConnectionID
-	Generation    Generation
-	RemoteAddress string
+	Stream         Stream
+	Role           protocol.Role
+	Authentication authentication.Context
+	ConnectionID   ConnectionID
+	Generation     Generation
+	RemoteAddress  string
 }
 
 // Server accepts authenticated inbound streams.
 type Server interface {
 	Accept(context.Context) (Inbound, error)
+	RevokeAuthentication([]authentication.Context)
 	Close() error
 }

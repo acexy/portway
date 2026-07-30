@@ -1,0 +1,68 @@
+# Portway governed client authentication record.
+#
+# Place this file in the directory configured by
+# authentication.governed_clients_path in server.yaml.
+#
+# The file name must be exactly <client_id>.yaml. This example therefore uses
+# client_id: governed-client and must be installed as governed-client.yaml.
+# All ClientIDs and Tokens must be globally unique across Shared, Governed, and
+# Managed authentication records.
+
+# * Required. Server-owned identity returned to the authenticated client.
+# Length: 1-64 characters.
+# Allowed characters: ASCII letters, digits, dots, underscores, and hyphens.
+client_id: governed-client
+
+# * Required. Independent Token configured as authentication.token on this
+# client. Use a cryptographically random value containing at least 32 bytes.
+# Never commit or log a real Token.
+token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+
+# * Required. Limits the proxy configuration declared by this client.
+# The server rejects the complete proxy set when any declaration is outside
+# these permissions; it never silently removes individual proxies.
+permissions:
+  # Optional. Proxy type allowlist. Empty means that no proxy type is allowed.
+  # Allowed values: tcp, udp, http. Values must not be repeated.
+  proxy_types:
+    - tcp
+    - udp
+    - http
+
+  # Optional unless tcp is allowed and the client needs TCP proxies.
+  tcp:
+    # Optional. Inclusive public TCP port ranges. Empty denies every TCP port.
+    # Ports must be in 1-65535. Ranges must not overlap.
+    remote_port_ranges:
+      - start: 20000
+        end: 20999
+      - start: 22000
+        end: 22099
+
+  # Optional unless udp is allowed and the client needs UDP proxies.
+  udp:
+    # Optional. Inclusive public UDP port ranges. Empty denies every UDP port.
+    # Ports must be in 1-65535. Ranges must not overlap.
+    remote_port_ranges:
+      - start: 30000
+        end: 30999
+
+  # Optional unless http is allowed and the client needs HTTP proxies.
+  http:
+    # Optional. Authorized exact domains or single-label wildcard domains.
+    # Exact names must be lowercase canonical DNS names.
+    # "*.example.com" matches "app.example.com", but not "example.com" or
+    # "a.b.example.com". Clients still register exact domains, not wildcards.
+    domains:
+      - app.example.com
+      - "*.customer.example.com"
+
+  # Optional. Per-client ceilings applied in addition to server-wide limits.
+  # Every value must be zero or greater. Zero means that this per-client
+  # ceiling is disabled; server-wide and program hard limits still apply.
+  limits:
+    max_proxies: 20
+    max_tcp_proxies: 10
+    max_udp_proxies: 5
+    max_http_proxies: 10
+    max_active_links: 100

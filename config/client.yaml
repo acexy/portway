@@ -41,12 +41,16 @@ transport:
 
 # * Required. Portway application identity settings.
 authentication:
-  # * Required. Shared by TCP and QUIC and must match the server Token.
+  # * Required. Shared by TCP and QUIC. The server associates a globally unique
+  # Token with shared, governed, or managed behavior automatically; the client
+  # does not declare a management mode.
   # Use a cryptographically random value containing at least 32 bytes.
   # Never commit a real Token to version control.
   token: CHANGE_ME_TO_A_RANDOM_TOKEN_AT_LEAST_32_BYTES
 
-# Optional. Empty means that this client registers no proxies.
+# Optional for shared and governed clients. Managed clients must leave this
+# empty because the server supplies and locks the complete proxy configuration.
+# Empty means that this client registers no proxies.
 # Proxy names must be unique within this ClientID across all proxy types.
 proxies:
   # * Required for every proxy. Unique name using lowercase letters, digits,

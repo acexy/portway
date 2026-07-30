@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
@@ -34,17 +35,17 @@ func DialToken(ctx context.Context, address string, token string, role protocol.
 func AcceptToken(
 	ctx context.Context,
 	rawConnection net.Conn,
-	token string,
+	credentials *authentication.Store,
 	allowedRoles ...protocol.Role,
-) (transport.Stream, protocol.Role, error) {
-	if token == "" {
-		return nil, protocol.RoleUnknown, ErrAuthentication
+) (transport.Stream, protocol.Role, authentication.Context, error) {
+	if credentials == nil {
+		return nil, protocol.RoleUnknown, authentication.Context{}, ErrAuthentication
 	}
-	secureConnection, role, err := serverTokenHandshake(
-		ctx, rawConnection, token, allowedRoles,
+	secureConnection, role, authenticationContext, err := serverTokenHandshakeContext(
+		ctx, rawConnection, credentials, allowedRoles,
 	)
 	if err != nil {
-		return nil, protocol.RoleUnknown, err
+		return nil, protocol.RoleUnknown, authentication.Context{}, err
 	}
-	return secureConnection, role, nil
+	return secureConnection, role, authenticationContext, nil
 }

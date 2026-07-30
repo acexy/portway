@@ -13,20 +13,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
 
 // Target identifies the authenticated owner and proxy binding of one link.
 type Target struct {
-	ClientID   string
-	SessionID  string
-	ProxyName  string
-	ProxyType  protocol.ProxyType
-	BindingID  string
-	Writer     *control.Writer
+	ClientID        string
+	SessionID       string
+	ProxyName       string
+	ProxyType       protocol.ProxyType
+	BindingID       string
+	Writer          *control.Writer
 	MaxDatagramSize int
-	WriteTimeout time.Duration
+	WriteTimeout    time.Duration
+	Authentication  authentication.Context
+	MaxActiveLinks  int
 }
 
 type brokerPendingLink struct {
@@ -161,6 +164,7 @@ func (broker *Broker) Bind(
 	ctx context.Context,
 	connection net.Conn,
 	binding protocol.BindLink,
+	authenticationContext authentication.Context,
 ) error {
 	ticket, err := base64.RawURLEncoding.DecodeString(binding.Ticket)
 	if err != nil {
@@ -175,6 +179,7 @@ func (broker *Broker) Bind(
 		pending.target.SessionID != binding.SessionID ||
 		pending.target.ProxyType != binding.ProxyType ||
 		pending.target.BindingID != binding.BindingID ||
+		pending.target.Authentication != authenticationContext ||
 		subtle.ConstantTimeCompare(digest[:], pending.ticketDigest[:]) != 1 {
 		broker.mutex.Unlock()
 		return broker.rejectBinding(connection, binding.LinkID, protocol.LinkErrorInvalidBinding)
@@ -392,6 +397,8 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 	}
 	return pendingClient >= maxPendingPerClient ||
 		pendingProxy >= maxPendingPerProxy ||
+		(target.MaxActiveLinks > 0 &&
+			pendingClient+activeClient >= target.MaxActiveLinks) ||
 		activeClient >= maxActivePerClient ||
 		activeProxy >= maxActivePerProxy
 }

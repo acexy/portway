@@ -54,7 +54,7 @@ func TestHTTPProxyOverQUICEndToEnd(t *testing.T) {
 	serverConfiguration.Transport.QUIC.KeyFile = keyFile
 	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
 	serverConfiguration.Tunnel.HTTPListenAddress = httpAddress.String()
-	serverConfiguration.Authentication.Token = token
+	serverConfiguration.Authentication.SharedToken = &token
 	serverContext, cancelServer := context.WithCancel(context.Background())
 	serverErrors := make(chan error, 1)
 	serverService := NewService(logging.New("test-http-quic-server"), serverConfiguration)
@@ -150,7 +150,7 @@ func TestTCPProxyOverQUICEndToEnd(t *testing.T) {
 	serverConfiguration.Transport.QUIC.CertFile = certificateFile
 	serverConfiguration.Transport.QUIC.KeyFile = keyFile
 	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.Authentication.Token = token
+	serverConfiguration.Authentication.SharedToken = &token
 	serverContext, cancelServer := context.WithCancel(context.Background())
 	serverErrors := make(chan error, 1)
 	serverService := NewService(logging.New("test-quic-server"), serverConfiguration)

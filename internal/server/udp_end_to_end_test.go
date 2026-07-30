@@ -54,7 +54,7 @@ func runUDPProxyEndToEnd(t *testing.T, transportType transport.Type) {
 	token := "test-token-with-at-least-32-random-bytes"
 	serverConfiguration.Transport.ListenAddress = serverAddress
 	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.Authentication.Token = token
+	serverConfiguration.Authentication.SharedToken = &token
 
 	serverContext, cancelServer := context.WithCancel(context.Background())
 	defer cancelServer()
@@ -71,10 +71,10 @@ func runUDPProxyEndToEnd(t *testing.T, transportType transport.Type) {
 	clientConfiguration.Transport.ServerAddress = serverAddress
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Proxies = []config.ProxyConfig{{
-		Name: "echo",
-		Type: "udp",
-		LocalIP: "127.0.0.1",
-		LocalPort: uint16(echoAddress.Port),
+		Name:       "echo",
+		Type:       "udp",
+		LocalIP:    "127.0.0.1",
+		LocalPort:  uint16(echoAddress.Port),
 		RemotePort: uint16(proxyAddress.Port),
 	}}
 	clientContext, cancelClient := context.WithCancel(context.Background())

@@ -1,0 +1,59 @@
+# Portway managed client authentication record.
+#
+# Place this file in the directory configured by
+# authentication.managed_clients_path in server.yaml.
+#
+# The file name must be exactly <client_id>.yaml. This example therefore uses
+# client_id: managed-client and must be installed as managed-client.yaml.
+# All ClientIDs and Tokens must be globally unique across Shared, Governed, and
+# Managed authentication records.
+
+# * Required. Server-owned identity returned to the authenticated client.
+# Length: 1-64 characters.
+# Allowed characters: ASCII letters, digits, dots, underscores, and hyphens.
+client_id: managed-client
+
+# * Required. Independent Token configured as authentication.token on this
+# client. Use a cryptographically random value containing at least 32 bytes.
+# Never commit or log a real Token.
+token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+
+# * Required. Complete server-owned client configuration.
+# A managed client must not define local proxies in client.yaml; it receives
+# this complete list after authentication and cannot override it.
+configuration:
+  # * Required. Monotonically increasing configuration revision.
+  # Allowed values: positive integers greater than zero.
+  revision: 1
+
+  # Optional. Complete desired proxy set. Empty means that this client exposes
+  # no proxies. Names must be unique within this record.
+  proxies:
+    # TCP example.
+    - name: ssh
+      # * Required. Allowed values: tcp, udp, http.
+      type: tcp
+      # * Required. Local target must be an IP address reachable by the client.
+      local_ip: 127.0.0.1
+      # * Required. Local target port, range 1-65535.
+      local_port: 22
+      # * Required for tcp and udp. Public server port, range 1-65535.
+      # Not allowed for http.
+      remote_port: 22022
+
+    # UDP example.
+    - name: dns
+      type: udp
+      local_ip: 127.0.0.1
+      local_port: 53
+      remote_port: 5353
+
+    # HTTP example.
+    - name: web
+      type: http
+      local_ip: 127.0.0.1
+      local_port: 8080
+      # * Required for http. Canonical lowercase DNS name without a scheme,
+      # port, path, wildcard, IP literal, or trailing dot.
+      # Not allowed for tcp or udp.
+      domain: app.example.com

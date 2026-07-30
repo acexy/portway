@@ -11,8 +11,9 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
-	"github.com/acexy/portway/internal/security/ipfilter"
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -20,10 +21,10 @@ var _ transport.Server = (*Server)(nil)
 
 // ServerConfig contains the QUIC server transport settings.
 type ServerConfig struct {
-	Address  string
-	CertFile string
-	KeyFile  string
-	Token    string
+	Address     string
+	CertFile    string
+	KeyFile     string
+	Credentials *authentication.Store
 }
 
 type acceptResult struct {
@@ -34,14 +35,14 @@ type acceptResult struct {
 // Server accepts Token-authenticated QUIC connections and their logical streams.
 type Server struct {
 	listener       *quicgo.Listener
-	token          string
+	credentials    *authentication.Store
 	context        context.Context
 	cancel         context.CancelFunc
 	connectionSlot chan struct{}
 	results        chan acceptResult
 	nextGeneration atomic.Uint64
 	mutex          sync.Mutex
-	connections    map[*quicgo.Conn]struct{}
+	connections    map[*quicgo.Conn]authentication.Context
 	sourceFilter   *ipfilter.Filter
 	closeOnce      sync.Once
 	closeError     error
@@ -75,6 +76,12 @@ func NewServer(
 		return nil, fmt.Errorf("listen for QUIC connections on %q: %w", configuration.Address, err)
 	}
 	serverContext, cancel := context.WithCancel(ctx)
+	credentials := configuration.Credentials
+	if credentials == nil {
+		cancel()
+		listener.Close()
+		return nil, transport.ErrAuthentication
+	}
 	resultCapacity := max(maxConcurrentConnections*2, 1)
 	var sourceFilter *ipfilter.Filter
 	if len(sourceFilters) > 0 {
@@ -82,12 +89,12 @@ func NewServer(
 	}
 	server := &Server{
 		listener:       listener,
-		token:          configuration.Token,
+		credentials:    credentials,
 		context:        serverContext,
 		cancel:         cancel,
 		connectionSlot: make(chan struct{}, maxConcurrentConnections),
 		results:        make(chan acceptResult, resultCapacity),
-		connections:    make(map[*quicgo.Conn]struct{}),
+		connections:    make(map[*quicgo.Conn]authentication.Context),
 		sourceFilter:   sourceFilter,
 	}
 	server.waitGroup.Add(1)
@@ -172,7 +179,12 @@ func (server *Server) handleConnection(
 	if err != nil {
 		return
 	}
-	if err := authenticateServer(server.context, controlStream, server.token); err != nil {
+	authenticationContext, err := authenticateServer(
+		server.context,
+		controlStream,
+		server.credentials,
+	)
+	if err != nil {
 		errorCode := applicationErrorProtocol
 		if errors.Is(err, transport.ErrAuthentication) {
 			errorCode = applicationErrorAuth
@@ -180,16 +192,22 @@ func (server *Server) handleConnection(
 		connection.CloseWithError(errorCode, "QUIC authentication failed")
 		return
 	}
+	server.setConnectionAuthentication(connection, authenticationContext)
+	if !server.credentials.IsCurrent(authenticationContext) {
+		connection.CloseWithError(applicationErrorAuth, "authentication revoked")
+		return
+	}
 
 	generation := transport.Generation(server.nextGeneration.Add(1))
 	connectionID := transport.ConnectionID(fmt.Sprintf("quic-server-%d", generation))
 	remoteAddress := connection.RemoteAddr().String()
 	if !server.publish(acceptResult{inbound: transport.Inbound{
-		Stream:        newStream(controlStream, connection, true),
-		Role:          protocol.RoleControl,
-		ConnectionID:  connectionID,
-		Generation:    generation,
-		RemoteAddress: remoteAddress,
+		Stream:         newStream(controlStream, connection, true),
+		Role:           protocol.RoleControl,
+		Authentication: authenticationContext,
+		ConnectionID:   connectionID,
+		Generation:     generation,
+		RemoteAddress:  remoteAddress,
 	}}) {
 		connection.CloseWithError(applicationErrorShutdown, "server stopped")
 		return
@@ -200,17 +218,53 @@ func (server *Server) handleConnection(
 		if err != nil {
 			return
 		}
+		if !server.credentials.IsCurrent(authenticationContext) {
+			dataStream.CancelRead(streamErrorClosed)
+			dataStream.CancelWrite(streamErrorClosed)
+			connection.CloseWithError(applicationErrorAuth, "authentication revoked")
+			return
+		}
 		if !server.publish(acceptResult{inbound: transport.Inbound{
-			Stream:        newStream(dataStream, connection, false),
-			Role:          protocol.RoleData,
-			ConnectionID:  connectionID,
-			Generation:    generation,
-			RemoteAddress: remoteAddress,
+			Stream:         newStream(dataStream, connection, false),
+			Role:           protocol.RoleData,
+			Authentication: authenticationContext,
+			ConnectionID:   connectionID,
+			Generation:     generation,
+			RemoteAddress:  remoteAddress,
 		}}) {
 			dataStream.CancelRead(streamErrorClosed)
 			dataStream.CancelWrite(streamErrorClosed)
 			return
 		}
+	}
+}
+
+// RevokeAuthentication closes QUIC connections authenticated by revoked records.
+func (server *Server) RevokeAuthentication(contexts []authentication.Context) {
+	type revokedRecord struct {
+		credentialID [32]byte
+		generation   uint64
+	}
+	revoked := make(map[revokedRecord]struct{}, len(contexts))
+	for _, context := range contexts {
+		revoked[revokedRecord{
+			credentialID: context.CredentialID,
+			generation:   context.Generation,
+		}] = struct{}{}
+	}
+	server.mutex.Lock()
+	connections := make([]*quicgo.Conn, 0)
+	for connection, context := range server.connections {
+		if _, exists := revoked[revokedRecord{
+			credentialID: context.CredentialID,
+			generation:   context.Generation,
+		}]; exists {
+			connections = append(connections, connection)
+		}
+	}
+	server.mutex.Unlock()
+	for _, connection := range connections {
+		connection.CloseWithError(applicationErrorAuth, "authentication revoked")
 	}
 }
 
@@ -256,7 +310,18 @@ func (server *Server) Close() error {
 
 func (server *Server) addConnection(connection *quicgo.Conn) {
 	server.mutex.Lock()
-	server.connections[connection] = struct{}{}
+	server.connections[connection] = authentication.Context{}
+	server.mutex.Unlock()
+}
+
+func (server *Server) setConnectionAuthentication(
+	connection *quicgo.Conn,
+	context authentication.Context,
+) {
+	server.mutex.Lock()
+	if _, exists := server.connections[connection]; exists {
+		server.connections[connection] = context
+	}
 	server.mutex.Unlock()
 }
 

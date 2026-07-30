@@ -13,10 +13,11 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
-	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/link"
+	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	proxyhttp "github.com/acexy/portway/internal/proxy/http"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
@@ -46,21 +47,23 @@ type Registry struct {
 	httpDomains         map[string]*httpProxyBinding
 	httpActiveRequests  int
 	httpActiveUpgrades  int
-	sourceFilter         *ipfilter.Filter
+	sourceFilter        *ipfilter.Filter
 	closed              bool
 }
 
 type clientState struct {
-	sessionID       string
-	active          bool
-	writer          *control.Writer
-	revision        uint64
-	fingerprint     [sha256.Size]byte
-	lastRequestID   string
-	lastResult      protocol.SyncResult
-	tcpProxies      map[string]*tcpProxyBinding
-	udpProxies      map[string]*udpProxyBinding
-	httpProxies     map[string]*httpProxyBinding
+	sessionID      string
+	active         bool
+	writer         *control.Writer
+	revision       uint64
+	fingerprint    [sha256.Size]byte
+	lastRequestID  string
+	lastResult     protocol.SyncResult
+	authentication authentication.Context
+	maxActiveLinks int
+	tcpProxies     map[string]*tcpProxyBinding
+	udpProxies     map[string]*udpProxyBinding
+	httpProxies    map[string]*httpProxyBinding
 }
 
 type tcpProxyBinding struct {
@@ -150,20 +153,20 @@ func newRegistry(
 		sourceFilter = sourceFilters[0]
 	}
 	return &Registry{
-		logger:        logger,
-		proxyBindIP:   proxyBindIP,
-		context:       ctx,
-		linkBroker:    broker,
-		httpEnabled:   httpEnabled,
-		httpConfiguration: httpConfiguration,
-		udpConfiguration: udpConfiguration,
-		udpLimiter: proxyudp.NewLimiter(udpConfiguration),
-		sourceFilter: sourceFilter,
-		httpDomains:   make(map[string]*httpProxyBinding),
-		clients:       make(map[string]*clientState),
-		endpoints:     make(map[uint16]*proxytcp.Endpoint),
-		endpointBindings: make(map[uint16]*tcpProxyBinding),
-		udpEndpoints: make(map[uint16]*proxyudp.Endpoint),
+		logger:              logger,
+		proxyBindIP:         proxyBindIP,
+		context:             ctx,
+		linkBroker:          broker,
+		httpEnabled:         httpEnabled,
+		httpConfiguration:   httpConfiguration,
+		udpConfiguration:    udpConfiguration,
+		udpLimiter:          proxyudp.NewLimiter(udpConfiguration),
+		sourceFilter:        sourceFilter,
+		httpDomains:         make(map[string]*httpProxyBinding),
+		clients:             make(map[string]*clientState),
+		endpoints:           make(map[uint16]*proxytcp.Endpoint),
+		endpointBindings:    make(map[uint16]*tcpProxyBinding),
+		udpEndpoints:        make(map[uint16]*proxyudp.Endpoint),
 		udpEndpointBindings: make(map[uint16]*udpProxyBinding),
 	}
 }
@@ -173,14 +176,31 @@ func (manager *Registry) Attach(
 	sessionID string,
 	writer *control.Writer,
 ) {
+	manager.AttachAuthenticated(
+		clientID,
+		sessionID,
+		writer,
+		authentication.Context{Mode: authentication.ModeShared},
+		0,
+	)
+}
+
+// AttachAuthenticated binds proxy ownership to an authenticated Session.
+func (manager *Registry) AttachAuthenticated(
+	clientID string,
+	sessionID string,
+	writer *control.Writer,
+	authenticationContext authentication.Context,
+	maxActiveLinks int,
+) {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
 
 	state, exists := manager.clients[clientID]
 	if !exists {
 		state = &clientState{
-			tcpProxies: make(map[string]*tcpProxyBinding),
-			udpProxies: make(map[string]*udpProxyBinding),
+			tcpProxies:  make(map[string]*tcpProxyBinding),
+			udpProxies:  make(map[string]*udpProxyBinding),
 			httpProxies: make(map[string]*httpProxyBinding),
 		}
 		manager.clients[clientID] = state
@@ -192,6 +212,8 @@ func (manager *Registry) Attach(
 	state.fingerprint = [sha256.Size]byte{}
 	state.lastRequestID = ""
 	state.lastResult = protocol.SyncResult{}
+	state.authentication = authenticationContext
+	state.maxActiveLinks = maxActiveLinks
 }
 
 func (manager *Registry) Sync(
@@ -528,8 +550,8 @@ func (manager *Registry) Sync(
 		if unchanged {
 			nextUDPProxies[declaration.Name] = existing
 			results = append(results, protocol.ProxyResult{
-				Name: declaration.Name,
-				Status: protocol.ProxyStatusUnchanged,
+				Name:       declaration.Name,
+				Status:     protocol.ProxyStatusUnchanged,
 				RemotePort: declaration.RemotePort,
 			})
 			continue
@@ -557,8 +579,8 @@ func (manager *Registry) Sync(
 		}
 		nextUDPProxies[declaration.Name] = binding
 		results = append(results, protocol.ProxyResult{
-			Name: declaration.Name,
-			Status: protocol.ProxyStatusActive,
+			Name:       declaration.Name,
+			Status:     protocol.ProxyStatusActive,
 			RemotePort: declaration.RemotePort,
 		})
 	}

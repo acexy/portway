@@ -20,6 +20,7 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/security/ipfilter"
@@ -27,6 +28,94 @@ import (
 )
 
 const testToken = "test-token-with-at-least-32-random-bytes"
+
+func testCredentials(t *testing.T, token string) *authentication.Store {
+	t.Helper()
+	snapshot, err := authentication.NewSnapshot([]authentication.Record{{
+		Context: authentication.Context{Mode: authentication.ModeShared},
+		Token:   token,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authentication.NewStore(snapshot)
+}
+
+func TestQUICServerRevokesAuthenticatedConnection(t *testing.T) {
+	certificateFile, keyFile := writeTestCertificate(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	credentials := testCredentials(t, testToken)
+	server, err := NewServer(ctx, ServerConfig{
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: credentials,
+	}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		Address:    server.listener.Addr().String(),
+		ServerName: "localhost",
+		CAFile:     certificateFile,
+		Token:      testToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientSession, err := client.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	inbound, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.RevokeAuthentication([]authentication.Context{inbound.Authentication})
+
+	buffer := make([]byte, 1)
+	if err := clientSession.ControlStream().SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientSession.ControlStream().Read(buffer); err == nil {
+		t.Fatal("revoked QUIC connection remained readable")
+	}
+	if stream, err := clientSession.OpenDataStream(ctx); err == nil {
+		stream.Close()
+		t.Fatal("revoked QUIC connection opened a new stream")
+	}
+}
+
+func TestQUICServerRejectsUnknownSelectorWithDummyToken(t *testing.T) {
+	certificateFile, keyFile := writeTestCertificate(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	server, err := NewServer(ctx, ServerConfig{
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: testCredentials(t, testToken),
+	}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		Address:    server.listener.Addr().String(),
+		ServerName: "localhost",
+		CAFile:     certificateFile,
+		Token:      string(make([]byte, 32)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Connect(ctx); err == nil {
+		t.Fatal("unknown selector authenticated with the dummy Token")
+	}
+}
 
 func TestQUICServerRejectsDeniedSource(t *testing.T) {
 	certificateFile, keyFile := writeTestCertificate(t)
@@ -46,10 +135,10 @@ func TestQUICServerRejectsDeniedSource(t *testing.T) {
 	}
 	defer sourceFilter.Close()
 	server, err := NewServer(ctx, ServerConfig{
-		Address:  "127.0.0.1:0",
-		CertFile: certificateFile,
-		KeyFile:  keyFile,
-		Token:    testToken,
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: testCredentials(t, testToken),
 	}, 8, sourceFilter)
 	if err != nil {
 		t.Fatal(err)
@@ -75,10 +164,10 @@ func TestQUICControlAndDataStreams(t *testing.T) {
 	defer cancel()
 
 	server, err := NewServer(ctx, ServerConfig{
-		Address:  "127.0.0.1:0",
-		CertFile: certificateFile,
-		KeyFile:  keyFile,
-		Token:    testToken,
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: testCredentials(t, testToken),
 	}, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -162,10 +251,10 @@ func TestQUICRejectsMismatchedToken(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server, err := NewServer(ctx, ServerConfig{
-		Address:  "127.0.0.1:0",
-		CertFile: certificateFile,
-		KeyFile:  keyFile,
-		Token:    testToken,
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: testCredentials(t, testToken),
 	}, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -191,10 +280,10 @@ func TestQUICConcurrentDataStreamsShareGeneration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server, err := NewServer(ctx, ServerConfig{
-		Address:  "127.0.0.1:0",
-		CertFile: certificateFile,
-		KeyFile:  keyFile,
-		Token:    testToken,
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: testCredentials(t, testToken),
 	}, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -274,10 +363,10 @@ func TestQUICReconnectUsesNewGeneration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server, err := NewServer(ctx, ServerConfig{
-		Address:  "127.0.0.1:0",
-		CertFile: certificateFile,
-		KeyFile:  keyFile,
-		Token:    testToken,
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: testCredentials(t, testToken),
 	}, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -324,10 +413,10 @@ func TestQUICRejectsUnexpectedServerName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server, err := NewServer(ctx, ServerConfig{
-		Address:  "127.0.0.1:0",
-		CertFile: certificateFile,
-		KeyFile:  keyFile,
-		Token:    testToken,
+		Address:     "127.0.0.1:0",
+		CertFile:    certificateFile,
+		KeyFile:     keyFile,
+		Credentials: testCredentials(t, testToken),
 	}, 8)
 	if err != nil {
 		t.Fatal(err)

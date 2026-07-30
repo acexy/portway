@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/transport"
@@ -20,10 +21,14 @@ type acceptResult struct {
 	err     error
 }
 
+// RevokeAuthentication is a no-op for TCP because every physical connection
+// is independently authenticated and application owners close its Stream.
+func (server *Server) RevokeAuthentication(_ []authentication.Context) {}
+
 // Server accepts and authenticates token-protected TCP connections.
 type Server struct {
 	listener       net.Listener
-	token          string
+	credentials    *authentication.Store
 	context        context.Context
 	cancel         context.CancelFunc
 	connectionSlot chan struct{}
@@ -37,7 +42,7 @@ type Server struct {
 func NewServer(
 	ctx context.Context,
 	address string,
-	token string,
+	credentials *authentication.Store,
 	maxConcurrentConnections int,
 	sourceFilters ...*ipfilter.Filter,
 ) (*Server, error) {
@@ -48,10 +53,14 @@ func NewServer(
 	if len(sourceFilters) > 0 {
 		listener = ipfilter.WrapListener(listener, sourceFilters[0])
 	}
+	if credentials == nil {
+		listener.Close()
+		return nil, transport.ErrAuthentication
+	}
 	serverContext, cancel := context.WithCancel(ctx)
 	server := &Server{
 		listener:       listener,
-		token:          token,
+		credentials:    credentials,
 		context:        serverContext,
 		cancel:         cancel,
 		connectionSlot: make(chan struct{}, maxConcurrentConnections),
@@ -90,10 +99,10 @@ func (server *Server) authenticate(rawConnection net.Conn) {
 	}()
 
 	remoteAddress := rawConnection.RemoteAddr().String()
-	stream, role, err := AcceptToken(
+	stream, role, authenticationContext, err := AcceptToken(
 		server.context,
 		rawConnection,
-		server.token,
+		server.credentials,
 		protocol.RoleControl,
 		protocol.RoleData,
 	)
@@ -103,11 +112,12 @@ func (server *Server) authenticate(rawConnection net.Conn) {
 	}
 	generation := transport.Generation(server.nextGeneration.Add(1))
 	if !server.publish(acceptResult{inbound: transport.Inbound{
-		Stream:        stream,
-		Role:          role,
-		ConnectionID:  transport.ConnectionID(fmt.Sprintf("tcp-server-%d", generation)),
-		Generation:    generation,
-		RemoteAddress: remoteAddress,
+		Stream:         stream,
+		Role:           role,
+		Authentication: authenticationContext,
+		ConnectionID:   transport.ConnectionID(fmt.Sprintf("tcp-server-%d", generation)),
+		Generation:     generation,
+		RemoteAddress:  remoteAddress,
 	}}) {
 		stream.Close()
 	}

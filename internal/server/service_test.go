@@ -2,15 +2,691 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
+	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
+	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
 )
+
+func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T) {
+	service := &Service{
+		configuration: config.ServerConfig{
+			GovernedClients: map[string]config.GovernedClientConfig{
+				"customer-a": {
+					ClientID: "customer-a",
+					Permissions: config.GovernedPermissions{
+						ProxyTypes: []string{"tcp", "http"},
+						TCP: config.ProxyPermission{
+							RemotePortRanges: []config.PortRange{{Start: 20000, End: 20999}},
+						},
+						HTTP: config.HTTPPermission{
+							Domains: []string{"*.customer-a.example.com"},
+						},
+						Limits: config.PermissionLimits{MaxProxies: 2},
+					},
+				},
+			},
+		},
+	}
+	allowed := protocol.SyncProxies{
+		Revision: 1,
+		Proxies: []protocol.ProxyDeclaration{
+			{Name: "ssh", Type: protocol.ProxyTypeTCP, RemotePort: 20022},
+			{Name: "web", Type: protocol.ProxyTypeHTTP, Domain: "app.customer-a.example.com"},
+		},
+	}
+	if result := service.validateGovernedProxies("customer-a", allowed); result != nil {
+		t.Fatalf("allowed governed configuration was rejected: %+v", result)
+	}
+
+	disallowed := allowed
+	disallowed.Proxies = append([]protocol.ProxyDeclaration(nil), allowed.Proxies...)
+	disallowed.Proxies[0].RemotePort = 22022
+	result := service.validateGovernedProxies("customer-a", disallowed)
+	if result == nil || result.Error == nil ||
+		result.Error.Code != protocol.ProxyErrorRemotePortNotAllowed {
+		t.Fatalf("expected remote port rejection, got %+v", result)
+	}
+}
+
+func TestApplyConfigurationCandidateReplacesAuthenticationSnapshot(t *testing.T) {
+	originalToken := "original-shared-token-with-at-least-32-random-bytes"
+	replacementToken := "replacement-shared-token-with-at-least-32-random-bytes"
+	original := config.DefaultServer()
+	original.Authentication.SharedToken = &originalToken
+	replacement := original
+	replacement.Authentication.SharedToken = &replacementToken
+
+	snapshot, err := config.BuildAuthenticationSnapshot(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       original,
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+	}
+	if err := service.applyConfigurationCandidate(replacement); err != nil {
+		t.Fatal(err)
+	}
+	selector := authentication.Selector(replacementToken)
+	record, exists := service.authenticationStore.Resolve(selector[:])
+	if !exists || record.Context.Mode != authentication.ModeShared {
+		t.Fatal("replacement authentication snapshot was not published")
+	}
+	oldSelector := authentication.Selector(originalToken)
+	if _, exists := service.authenticationStore.Resolve(oldSelector[:]); exists {
+		t.Fatal("previous authentication snapshot remained active")
+	}
+}
+
+func TestRevokedAuthenticationContextsSelectsChangedClient(t *testing.T) {
+	governedToken := "governed-token-with-at-least-32-random-bytes"
+	managedToken := "managed-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.GovernedClients = map[string]config.GovernedClientConfig{
+		"governed": {
+			ClientID: "governed",
+			Token:    governedToken,
+			Permissions: config.GovernedPermissions{
+				ProxyTypes: []string{"tcp"},
+			},
+		},
+	}
+	current.ManagedClients = map[string]config.ManagedClientConfig{
+		"managed": {
+			ClientID: "managed",
+			Token:    managedToken,
+			Configuration: config.ManagedConfiguration{
+				Revision: 1,
+			},
+		},
+	}
+	candidate := current
+	candidate.GovernedClients = map[string]config.GovernedClientConfig{
+		"governed": current.GovernedClients["governed"],
+	}
+	changed := candidate.GovernedClients["governed"]
+	changed.Permissions.Limits.MaxProxies = 1
+	candidate.GovernedClients["governed"] = changed
+
+	currentSnapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := authentication.NewStore(currentSnapshot)
+	candidateSnapshot, err := config.BuildAuthenticationSnapshot(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := revokedAuthenticationContexts(
+		store.Load(),
+		candidateSnapshot,
+		current,
+		candidate,
+	)
+	if len(revoked) != 1 ||
+		revoked[0].Mode != authentication.ModeGoverned ||
+		revoked[0].ClientID != "governed" {
+		t.Fatalf("unexpected revoked contexts: %+v", revoked)
+	}
+}
+
+func TestRevokedAuthenticationContextsRejectsModeMigration(t *testing.T) {
+	token := "client-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.GovernedClients = map[string]config.GovernedClientConfig{
+		"client-one": {
+			ClientID: "client-one",
+			Token:    token,
+		},
+	}
+	candidate := config.DefaultServer()
+	candidate.ManagedClients = map[string]config.ManagedClientConfig{
+		"client-one": {
+			ClientID: "client-one",
+			Token:    token,
+			Configuration: config.ManagedConfiguration{
+				Revision: 1,
+			},
+		},
+	}
+	currentSnapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := authentication.NewStore(currentSnapshot)
+	candidateSnapshot, err := config.BuildAuthenticationSnapshot(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := revokedAuthenticationContexts(
+		store.Load(),
+		candidateSnapshot,
+		current,
+		candidate,
+	)
+	if len(revoked) != 1 ||
+		revoked[0].Mode != authentication.ModeGoverned ||
+		revoked[0].ClientID != "client-one" {
+		t.Fatalf("mode migration did not revoke the old context: %+v", revoked)
+	}
+}
+
+func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	proxyPort := uint16(reserveTCPAddress(t).Port)
+	sharedToken := "shared-token-with-at-least-32-random-bytes"
+	governedToken := "governed-token-with-at-least-32-random-bytes"
+	managedToken := "managed-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &sharedToken
+	current.GovernedClients = map[string]config.GovernedClientConfig{
+		"governed-client": {
+			ClientID: "governed-client",
+			Token:    governedToken,
+			Permissions: config.GovernedPermissions{
+				ProxyTypes: []string{"tcp"},
+			},
+		},
+	}
+	current.ManagedClients = map[string]config.ManagedClientConfig{
+		"managed-client": {
+			ClientID: "managed-client",
+			Token:    managedToken,
+			Configuration: config.ManagedConfiguration{
+				Revision: 1,
+			},
+		},
+	}
+	candidate := current
+	candidate.GovernedClients = map[string]config.GovernedClientConfig{
+		"governed-client": current.GovernedClients["governed-client"],
+	}
+	changedGoverned := candidate.GovernedClients["governed-client"]
+	changedGoverned.Permissions.Limits.MaxProxies = 1
+	candidate.GovernedClients["governed-client"] = changedGoverned
+
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := authentication.NewStore(snapshot)
+	registry := session.NewRegistry()
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       current,
+		clientRegistry:      registry,
+		authenticationStore: store,
+		linkBroker:          broker,
+		managedSessions:     make(map[string]*managedSession),
+	}
+	service.proxyRegistry = proxyregistry.New(
+		ctx,
+		logging.New("test"),
+		"127.0.0.1",
+		broker,
+		false,
+		config.DefaultServer().HTTP,
+	)
+	defer service.proxyRegistry.Close()
+
+	type registeredSession struct {
+		clientID string
+		token    string
+		server   net.Conn
+		client   net.Conn
+	}
+	sessions := []registeredSession{
+		{clientID: "shared-instance", token: sharedToken},
+		{clientID: "governed-client", token: governedToken},
+		{clientID: "managed-client", token: managedToken},
+	}
+	for index := range sessions {
+		selector := authentication.Selector(sessions[index].token)
+		record, exists := store.Resolve(selector[:])
+		if !exists {
+			t.Fatalf("authentication record for %s is unavailable", sessions[index].clientID)
+		}
+		sessions[index].server, sessions[index].client = net.Pipe()
+		_, _, _, registrationError := registry.RegisterAuthenticated(
+			sessions[index].clientID,
+			"",
+			fmt.Sprintf("session-%d", index),
+			sessions[index].server,
+			time.Now(),
+			record.Context,
+		)
+		if registrationError != nil {
+			t.Fatalf("register %s: %v", sessions[index].clientID, registrationError)
+		}
+		service.proxyRegistry.AttachAuthenticated(
+			sessions[index].clientID,
+			fmt.Sprintf("session-%d", index),
+			control.NewWriter(sessions[index].server),
+			record.Context,
+			0,
+		)
+		defer sessions[index].server.Close()
+		defer sessions[index].client.Close()
+	}
+	result := service.proxyRegistry.Sync(
+		"governed-client",
+		"session-1",
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{{
+				Name:       "governed-proxy",
+				Type:       protocol.ProxyTypeTCP,
+				RemotePort: proxyPort,
+			}},
+		},
+	)
+	if result.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("register governed proxy: %+v", result)
+	}
+
+	if err := service.applyConfigurationCandidate(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if registry.Heartbeat("governed-client", "session-1", time.Now()) {
+		t.Fatal("changed governed session remained registered")
+	}
+	if !registry.Heartbeat("shared-instance", "session-0", time.Now()) {
+		t.Fatal("unrelated shared session was revoked")
+	}
+	if !registry.Heartbeat("managed-client", "session-2", time.Now()) {
+		t.Fatal("unrelated managed session was revoked")
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
+	if err != nil {
+		t.Fatalf("revoked governed listener was not released: %v", err)
+	}
+	listener.Close()
+}
+
+func TestApplyConfigurationCandidateUpdatesSourceDigestWithoutGeneration(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	current.SourceDigest = "old"
+	current.Generation = 7
+	candidate := current
+	candidate.SourceDigest = "new"
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       current,
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+	}
+	if err := service.applyConfigurationCandidate(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if service.configuration.SourceDigest != "new" ||
+		service.configuration.Generation != 7 {
+		t.Fatalf("unexpected metadata-only update: %+v", service.configuration)
+	}
+}
+
+func TestApplyConfigurationCandidateReportsRestartField(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	candidate := current
+	candidate.Transport.ListenAddress = "127.0.0.1:7001"
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       current,
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+	}
+	err = service.applyConfigurationCandidate(candidate)
+	var restartError restartRequiredError
+	if !errors.As(err, &restartError) ||
+		restartError.field != "transport.listen_address" {
+		t.Fatalf("expected precise restart field, got %v", err)
+	}
+}
+
+func TestApplyConfigurationCandidateRejectsExplicitSharedTokenRemoval(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	empty := ""
+	candidate := current
+	candidate.Authentication.SharedToken = &empty
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       current,
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+	}
+	err = service.applyConfigurationCandidate(candidate)
+	var restartError restartRequiredError
+	if !errors.As(err, &restartError) ||
+		restartError.field != "authentication.shared_token" {
+		t.Fatalf("expected shared Token restart requirement, got %v", err)
+	}
+}
+
+func TestManagedConfigurationRolloutCompletesOnActiveSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	service := &Service{
+		logger:          logging.New("test"),
+		clientRegistry:  session.NewRegistry(),
+		linkBroker:      broker,
+		managedSessions: make(map[string]*managedSession),
+	}
+	service.proxyRegistry = proxyregistry.New(
+		ctx,
+		logging.New("test"),
+		"127.0.0.1",
+		broker,
+		false,
+		config.DefaultServer().HTTP,
+	)
+	defer service.proxyRegistry.Close()
+	writer := control.NewWriter(serverConnection)
+	service.proxyRegistry.AttachAuthenticated(
+		"managed-client",
+		"session-one",
+		writer,
+		authentication.Context{
+			Mode:     authentication.ModeManaged,
+			ClientID: "managed-client",
+		},
+		0,
+	)
+	service.registerManagedSession(
+		"managed-client",
+		"session-one",
+		serverConnection,
+		writer,
+	)
+	defer service.unregisterManagedSession("managed-client", "session-one")
+
+	controlErrors := make(chan error, 1)
+	go func() {
+		_, err := service.serveControlMessages(
+			serverConnection,
+			"managed-client",
+			"session-one",
+			logging.New("test"),
+			writer,
+			[]string{"json-control"},
+			authentication.ModeManaged,
+		)
+		controlErrors <- err
+	}()
+	clientErrors := make(chan error, 1)
+	go func() {
+		envelope, err := protocol.ReadControl(clientConnection)
+		if err != nil {
+			clientErrors <- err
+			return
+		}
+		var preparation protocol.ManagedConfigPrepare
+		if envelope.Type != protocol.MessageManagedConfigPrepare {
+			clientErrors <- fmt.Errorf("unexpected message %s", envelope.Type)
+			return
+		}
+		if err := protocol.DecodePayload(envelope, &preparation); err != nil {
+			clientErrors <- err
+			return
+		}
+		status := protocol.ManagedConfigStatus{
+			Revision: preparation.Revision,
+			Digest:   preparation.Digest,
+		}
+		if err := protocol.WriteControl(
+			clientConnection,
+			protocol.MessageManagedConfigPrepared,
+			status,
+		); err != nil {
+			clientErrors <- err
+			return
+		}
+		envelope, err = protocol.ReadControl(clientConnection)
+		if err != nil {
+			clientErrors <- err
+			return
+		}
+		if envelope.Type != protocol.MessageManagedConfigActivate {
+			clientErrors <- fmt.Errorf("unexpected message %s", envelope.Type)
+			return
+		}
+		clientErrors <- protocol.WriteControl(
+			clientConnection,
+			protocol.MessageManagedConfigApplied,
+			status,
+		)
+	}()
+
+	err := service.rolloutManagedConfiguration(
+		ctx,
+		"managed-client",
+		config.ManagedClientConfig{
+			ClientID: "managed-client",
+			Configuration: config.ManagedConfiguration{
+				Revision: 2,
+				Proxies:  []config.ProxyConfig{},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-clientErrors; err != nil {
+		t.Fatal(err)
+	}
+	clientConnection.Close()
+	<-controlErrors
+}
+
+func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	service := &Service{
+		logger:          logging.New("test"),
+		clientRegistry:  session.NewRegistry(),
+		linkBroker:      broker,
+		managedSessions: make(map[string]*managedSession),
+	}
+	service.proxyRegistry = proxyregistry.New(
+		ctx,
+		logging.New("test"),
+		"127.0.0.1",
+		broker,
+		false,
+		config.DefaultServer().HTTP,
+	)
+	defer service.proxyRegistry.Close()
+	writer := control.NewWriter(serverConnection)
+	service.proxyRegistry.AttachAuthenticated(
+		"managed-client",
+		"session-one",
+		writer,
+		authentication.Context{
+			Mode:     authentication.ModeManaged,
+			ClientID: "managed-client",
+		},
+		0,
+	)
+	service.registerManagedSession(
+		"managed-client",
+		"session-one",
+		serverConnection,
+		writer,
+	)
+	defer service.unregisterManagedSession("managed-client", "session-one")
+
+	controlErrors := make(chan error, 1)
+	go func() {
+		_, err := service.serveControlMessages(
+			serverConnection,
+			"managed-client",
+			"session-one",
+			logging.New("test"),
+			writer,
+			[]string{"json-control"},
+			authentication.ModeManaged,
+		)
+		controlErrors <- err
+	}()
+	clientErrors := make(chan error, 1)
+	go func() {
+		envelope, err := protocol.ReadControl(clientConnection)
+		if err != nil {
+			clientErrors <- err
+			return
+		}
+		var preparation protocol.ManagedConfigPrepare
+		if err := protocol.DecodePayload(envelope, &preparation); err != nil {
+			clientErrors <- err
+			return
+		}
+		clientErrors <- protocol.WriteControl(
+			clientConnection,
+			protocol.MessageManagedConfigPrepared,
+			protocol.ManagedConfigStatus{
+				Revision: preparation.Revision + 1,
+				Digest:   preparation.Digest,
+			},
+		)
+	}()
+
+	err := service.rolloutManagedConfiguration(
+		ctx,
+		"managed-client",
+		config.ManagedClientConfig{
+			ClientID: "managed-client",
+			Configuration: config.ManagedConfiguration{
+				Revision: 2,
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("expected mismatched prepared status rejection, got %v", err)
+	}
+	if err := <-clientErrors; err != nil {
+		t.Fatal(err)
+	}
+	clientConnection.Close()
+	<-controlErrors
+}
+
+func TestConfigurationReloadWaitsForAuthenticationRegistrationBarrier(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	candidate := current
+	candidate.LogLevel = config.LogLevelDebug
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       current,
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+		managedSessions:     make(map[string]*managedSession),
+	}
+
+	service.authenticationBarrier.RLock()
+	results := make(chan error, 1)
+	go func() {
+		results <- service.applyConfigurationCandidate(candidate)
+	}()
+	select {
+	case err := <-results:
+		service.authenticationBarrier.RUnlock()
+		t.Fatalf("reload crossed the authentication registration barrier: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	service.authenticationBarrier.RUnlock()
+	select {
+	case err := <-results:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reload did not continue after registration barrier release")
+	}
+}
+
+func TestManagedConfigurationRevisionMustIncrease(t *testing.T) {
+	token := "managed-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.ManagedClients = map[string]config.ManagedClientConfig{
+		"managed-client": {
+			ClientID: "managed-client",
+			Token:    token,
+			Configuration: config.ManagedConfiguration{
+				Revision: 2,
+				Proxies:  []config.ProxyConfig{},
+			},
+		},
+	}
+	candidate := current
+	candidate.ManagedClients = map[string]config.ManagedClientConfig{
+		"managed-client": {
+			ClientID: "managed-client",
+			Token:    token,
+			Configuration: config.ManagedConfiguration{
+				Revision: 2,
+				Proxies: []config.ProxyConfig{{
+					Name:       "ssh",
+					Type:       "tcp",
+					LocalIP:    "127.0.0.1",
+					LocalPort:  22,
+					RemotePort: 22022,
+				}},
+			},
+		},
+	}
+	if err := validateManagedRevisionTransitions(current, candidate); err == nil {
+		t.Fatal("managed configuration changed without increasing revision")
+	}
+}
 
 type testStream struct {
 	net.Conn
@@ -88,6 +764,7 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 			}),
 			writer,
 			[]string{"tcp", "json-control"},
+			authentication.ModeShared,
 		)
 		results <- serverResult{gracefullyClosed: gracefullyClosed, err: err}
 	}()
@@ -145,6 +822,7 @@ func TestServeControlMessagesRejectsTCPMessageWithoutCapability(t *testing.T) {
 			logging.New("test"),
 			control.NewWriter(serverConnection),
 			[]string{"json-control"},
+			authentication.ModeShared,
 		)
 		results <- err
 	}()

@@ -36,13 +36,17 @@ const (
 type ProxyErrorCode string
 
 const (
-	ProxyErrorInvalidRequest   ProxyErrorCode = "invalid_request"
-	ProxyErrorInvalidProxy     ProxyErrorCode = "invalid_proxy"
-	ProxyErrorPortConflict     ProxyErrorCode = "port_conflict"
-	ProxyErrorCapacityExceeded ProxyErrorCode = "capacity_exceeded"
-	ProxyErrorSessionInactive  ProxyErrorCode = "session_inactive"
-	ProxyErrorHTTPDisabled     ProxyErrorCode = "http_listener_disabled"
-	ProxyErrorDomainConflict   ProxyErrorCode = "domain_conflict"
+	ProxyErrorInvalidRequest       ProxyErrorCode = "invalid_request"
+	ProxyErrorInvalidProxy         ProxyErrorCode = "invalid_proxy"
+	ProxyErrorPortConflict         ProxyErrorCode = "port_conflict"
+	ProxyErrorCapacityExceeded     ProxyErrorCode = "capacity_exceeded"
+	ProxyErrorSessionInactive      ProxyErrorCode = "session_inactive"
+	ProxyErrorHTTPDisabled         ProxyErrorCode = "http_listener_disabled"
+	ProxyErrorDomainConflict       ProxyErrorCode = "domain_conflict"
+	ProxyErrorProxyTypeNotAllowed  ProxyErrorCode = "proxy_type_not_allowed"
+	ProxyErrorRemotePortNotAllowed ProxyErrorCode = "remote_port_not_allowed"
+	ProxyErrorDomainNotAllowed     ProxyErrorCode = "domain_not_allowed"
+	ProxyErrorClientLimitExceeded  ProxyErrorCode = "client_limit_exceeded"
 )
 
 // ProxyDeclaration contains server-visible proxy configuration.

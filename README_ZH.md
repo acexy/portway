@@ -176,7 +176,7 @@ VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 
 - [技术概览](assets/docs/technical/README_ZH.md)
 - [安全性](assets/docs/security/README_ZH.md)
-- [路线图与待办事项](assets/docs/todo/README_ZH.md)
+- [未来计划](assets/docs/future/README_ZH.md)
 - 完整注释的配置示例：
   [client](config/client.yaml) 和 [server](config/server.yaml)
 

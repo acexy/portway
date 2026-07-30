@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"testing"
@@ -46,6 +48,23 @@ func TestClassifyControlProtocolError(t *testing.T) {
 	networkError := errors.New("network unavailable")
 	if classified := classifyControlProtocolError(networkError); classified != networkError {
 		t.Fatalf("network error changed to %v", classified)
+	}
+}
+
+func TestValidateManagedPreparationVerifiesDigest(t *testing.T) {
+	proxies := []protocol.ManagedProxy{}
+	digest := sha256.Sum256([]byte("[]"))
+	preparation := protocol.ManagedConfigPrepare{
+		Revision: 1,
+		Digest:   hex.EncodeToString(digest[:]),
+		Proxies:  proxies,
+	}
+	if _, _, err := validateManagedPreparation(preparation); err != nil {
+		t.Fatalf("valid managed preparation was rejected: %v", err)
+	}
+	preparation.Digest = hex.EncodeToString(make([]byte, sha256.Size))
+	if _, _, err := validateManagedPreparation(preparation); err == nil {
+		t.Fatal("managed preparation with invalid digest was accepted")
 	}
 }
 

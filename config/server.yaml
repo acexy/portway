@@ -152,9 +152,21 @@ security:
   # Never enable this when clients can bypass the trusted upstream proxy.
   http_client_ip_header: ""
 
-# Optional on the server. Shared by TCP and QUIC.
+# Optional authentication entries. TCP and QUIC use the same immutable
+# authentication snapshot. All configured Tokens and ClientIDs must be globally
+# unique across shared, governed, and managed entries.
 authentication:
-  # Optional. Leave empty to generate a cryptographically random 32-byte Token
-  # at startup and log the generated value once. A configured value must contain
-  # at least 32 bytes. Every client must use the same effective Token.
-  token: ""
+  # Optional. When present but empty, generate a cryptographically random
+  # 32-byte Token at startup and log it once. Omit this field to disable shared
+  # authentication when either client directory is configured.
+  shared_token: ""
+
+  # Optional. Every *.yaml file defines one ClientID, unique Token, proxy type
+  # allowlist, public port/domain policy, and resource limits.
+  # See config/governed-client.yaml for a complete record example.
+  governed_clients_path: "./governed"
+
+  # Optional. Every *.yaml file defines one ClientID, unique Token, revision,
+  # and complete server-owned proxy configuration.
+  # See config/managed-client.yaml for a complete record example.
+  managed_clients_path: "./managed"

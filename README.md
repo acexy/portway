@@ -187,7 +187,7 @@ VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 
 - [Technical overview](assets/docs/technical/README.md)
 - [Security](assets/docs/security/README.md)
-- [Roadmap and TODO](assets/docs/todo/README.md)
+- [Future plans](assets/docs/future/README.md)
 - Fully annotated configuration examples:
   [client](config/client.yaml) and [server](config/server.yaml)
 

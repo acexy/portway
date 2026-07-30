@@ -19,12 +19,12 @@ func (manager *Registry) newUDPBinding(
 		return nil, err
 	}
 	binding := &udpProxyBinding{
-		manager: manager,
-		clientID: clientID,
-		sessionID: sessionID,
-		bindingID: bindingID,
+		manager:     manager,
+		clientID:    clientID,
+		sessionID:   sessionID,
+		bindingID:   bindingID,
 		declaration: declaration,
-		endpoint: endpoint,
+		endpoint:    endpoint,
 	}
 	binding.runtime = proxyudp.NewBinding(
 		manager.context,
@@ -48,12 +48,14 @@ func (binding *udpProxyBinding) resolveTarget() (link.Target, error) {
 		return link.Target{}, errors.New("UDP proxy binding is inactive")
 	}
 	return link.Target{
-		ClientID: binding.clientID,
-		SessionID: binding.sessionID,
-		ProxyName: binding.declaration.Name,
-		ProxyType: protocol.ProxyTypeUDP,
-		BindingID: binding.bindingID,
-		Writer: state.writer,
+		ClientID:       binding.clientID,
+		SessionID:      binding.sessionID,
+		ProxyName:      binding.declaration.Name,
+		ProxyType:      protocol.ProxyTypeUDP,
+		BindingID:      binding.bindingID,
+		Writer:         state.writer,
+		Authentication: state.authentication,
+		MaxActiveLinks: state.maxActiveLinks,
 	}, nil
 }
 

@@ -16,15 +16,18 @@ import (
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
 
 const (
-	handshakeNonceSize  = 32
-	handshakeProofSize  = sha256.Size
-	handshakeHeaderSize = len(protocol.Magic) + 2 + handshakeNonceSize
-	handshakeTimeout    = 5 * time.Second
+	handshakeNonceSize    = 32
+	handshakeProofSize    = sha256.Size
+	handshakeSelectorSize = sha256.Size
+	handshakeVersion      = 1
+	handshakeHeaderSize   = len(protocol.Magic) + 2 + handshakeSelectorSize + handshakeNonceSize
+	handshakeTimeout      = 5 * time.Second
 )
 
 var (
@@ -51,7 +54,9 @@ func clientTokenHandshake(
 	defer rawConnection.SetDeadline(time.Time{})
 
 	clientHello := makeHandshakeHeader(role)
-	if _, err := rand.Read(clientHello[6:]); err != nil {
+	selector := authentication.Selector(token)
+	copy(clientHello[6:6+handshakeSelectorSize], selector[:])
+	if _, err := rand.Read(clientHello[6+handshakeSelectorSize:]); err != nil {
 		return nil, fmt.Errorf("generate client nonce: %w", err)
 	}
 	if err := writeFull(rawConnection, clientHello); err != nil {
@@ -78,7 +83,12 @@ func clientTokenHandshake(
 		return nil, fmt.Errorf("write client proof: %w", err)
 	}
 
-	clientKey, serverKey, err := deriveDirectionalKeys(token, clientHello[6:], serverHello[6:], role)
+	clientKey, serverKey, err := deriveDirectionalKeys(
+		token,
+		clientHello[6+handshakeSelectorSize:],
+		serverHello[6+handshakeSelectorSize:],
+		role,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -88,60 +98,92 @@ func clientTokenHandshake(
 func serverTokenHandshake(
 	ctx context.Context,
 	rawConnection net.Conn,
-	token string,
+	credentials *authentication.Store,
 	allowedRoles []protocol.Role,
 ) (*secureConnection, protocol.Role, error) {
+	secureConnection, role, _, err := serverTokenHandshakeContext(
+		ctx,
+		rawConnection,
+		credentials,
+		allowedRoles,
+	)
+	return secureConnection, role, err
+}
+
+func serverTokenHandshakeContext(
+	ctx context.Context,
+	rawConnection net.Conn,
+	credentials *authentication.Store,
+	allowedRoles []protocol.Role,
+) (*secureConnection, protocol.Role, authentication.Context, error) {
+	if credentials == nil {
+		return nil, protocol.RoleUnknown, authentication.Context{}, ErrAuthentication
+	}
 	if err := setHandshakeDeadline(ctx, rawConnection); err != nil {
-		return nil, protocol.RoleUnknown, err
+		return nil, protocol.RoleUnknown, authentication.Context{}, err
 	}
 	defer rawConnection.SetDeadline(time.Time{})
 
 	clientHello := make([]byte, handshakeHeaderSize)
 	if _, err := io.ReadFull(rawConnection, clientHello); err != nil {
-		return nil, protocol.RoleUnknown, fmt.Errorf("read client handshake: %w", err)
+		return nil, protocol.RoleUnknown, authentication.Context{}, fmt.Errorf("read client handshake: %w", err)
 	}
 	role := protocol.Role(clientHello[5])
 	if err := validateHandshakeHeader(clientHello, role); err != nil {
-		return nil, protocol.RoleUnknown, err
+		return nil, protocol.RoleUnknown, authentication.Context{}, err
 	}
 	if len(allowedRoles) > 0 && !coll.SliceContains(allowedRoles, role) {
-		return nil, protocol.RoleUnknown, fmt.Errorf("%w: unsupported connection role %d", ErrProtocol, role)
+		return nil, protocol.RoleUnknown, authentication.Context{}, fmt.Errorf("%w: unsupported connection role %d", ErrProtocol, role)
 	}
+	record, exists := credentials.Resolve(clientHello[6 : 6+handshakeSelectorSize])
+	if !exists {
+		// Continue with a fixed dummy key so unknown selectors and wrong Tokens
+		// have the same externally observable proof exchange.
+		record.Token = string(make([]byte, 32))
+	}
+	token := record.Token
 
 	serverHello := makeHandshakeHeader(role)
-	if _, err := rand.Read(serverHello[6:]); err != nil {
-		return nil, protocol.RoleUnknown, fmt.Errorf("generate server nonce: %w", err)
+	copy(serverHello[6:6+handshakeSelectorSize], clientHello[6:6+handshakeSelectorSize])
+	if _, err := rand.Read(serverHello[6+handshakeSelectorSize:]); err != nil {
+		return nil, protocol.RoleUnknown, authentication.Context{}, fmt.Errorf("generate server nonce: %w", err)
 	}
 	transcript := joinBytes(clientHello, serverHello)
 	serverProof := handshakeProof(token, "server", transcript)
 	if err := writeFull(rawConnection, joinBytes(serverHello, serverProof)); err != nil {
-		return nil, protocol.RoleUnknown, fmt.Errorf("write server handshake: %w", err)
+		return nil, protocol.RoleUnknown, authentication.Context{}, fmt.Errorf("write server handshake: %w", err)
 	}
 
 	clientProof := make([]byte, handshakeProofSize)
 	if _, err := io.ReadFull(rawConnection, clientProof); err != nil {
-		return nil, protocol.RoleUnknown, fmt.Errorf("read client proof: %w", err)
+		return nil, protocol.RoleUnknown, authentication.Context{}, fmt.Errorf("read client proof: %w", err)
 	}
 	expectedClientProof := handshakeProof(token, "client", transcript)
-	if subtle.ConstantTimeCompare(clientProof, expectedClientProof) != 1 {
-		return nil, protocol.RoleUnknown, ErrAuthentication
+	proofValid := subtle.ConstantTimeCompare(clientProof, expectedClientProof) == 1
+	if !exists || !proofValid {
+		return nil, protocol.RoleUnknown, authentication.Context{}, ErrAuthentication
 	}
 
-	clientKey, serverKey, err := deriveDirectionalKeys(token, clientHello[6:], serverHello[6:], role)
+	clientKey, serverKey, err := deriveDirectionalKeys(
+		token,
+		clientHello[6+handshakeSelectorSize:],
+		serverHello[6+handshakeSelectorSize:],
+		role,
+	)
 	if err != nil {
-		return nil, protocol.RoleUnknown, err
+		return nil, protocol.RoleUnknown, authentication.Context{}, err
 	}
 	secureConnection, err := newSecureConnection(rawConnection, clientKey, serverKey)
 	if err != nil {
-		return nil, protocol.RoleUnknown, err
+		return nil, protocol.RoleUnknown, authentication.Context{}, err
 	}
-	return secureConnection, role, nil
+	return secureConnection, role, record.Context, nil
 }
 
 func makeHandshakeHeader(role protocol.Role) []byte {
 	header := make([]byte, handshakeHeaderSize)
 	copy(header, protocol.Magic)
-	header[4] = protocol.MajorVersion
+	header[4] = handshakeVersion
 	header[5] = byte(role)
 	return header
 }
@@ -153,7 +195,7 @@ func validateHandshakeHeader(header []byte, expectedRole protocol.Role) error {
 	if string(header[:4]) != protocol.Magic {
 		return fmt.Errorf("%w: invalid handshake magic", ErrProtocol)
 	}
-	if header[4] != protocol.MajorVersion {
+	if header[4] != handshakeVersion {
 		return fmt.Errorf("%w: unsupported protocol version %d", ErrProtocol, header[4])
 	}
 	role := protocol.Role(header[5])

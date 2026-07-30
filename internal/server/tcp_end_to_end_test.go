@@ -40,9 +40,9 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 		Tunnel: config.TunnelConfig{
 			BindIP: "127.0.0.1",
 		},
-		LogLevel:      config.LogLevelInfo,
-		Authentication: config.AuthenticationConfig{
-			Token: token,
+		LogLevel: config.LogLevelInfo,
+		Authentication: config.ServerAuthenticationConfig{
+			SharedToken: &token,
 		},
 	})
 	go func() {
@@ -58,7 +58,7 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 			ServerAddress: serverAddress.String(),
 		},
 		LogLevel: config.LogLevelInfo,
-		Authentication: config.AuthenticationConfig{
+		Authentication: config.ClientAuthenticationConfig{
 			Token: token,
 		},
 		Proxies: []config.ProxyConfig{
@@ -107,6 +107,159 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not stop")
+	}
+}
+
+func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
+	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoListener.Close()
+	echoAddress := echoListener.Addr().(*net.TCPAddr)
+	echoContext, cancelEcho := context.WithCancel(context.Background())
+	defer cancelEcho()
+	go runEchoServer(echoContext, echoListener)
+
+	serverAddress := reserveTCPAddress(t)
+	sharedProxyAddress := reserveTCPAddress(t)
+	governedProxyAddress := reserveTCPAddress(t)
+	managedProxyAddress := reserveTCPAddress(t)
+	sharedToken := "shared-token-with-at-least-32-random-bytes"
+	governedToken := "governed-token-with-at-least-32-random-bytes"
+	managedToken := "managed-token-with-at-least-32-random-bytes"
+
+	serverConfiguration := config.DefaultServer()
+	serverConfiguration.Transport.ListenAddress = serverAddress.String()
+	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
+	serverConfiguration.Authentication.SharedToken = &sharedToken
+	serverConfiguration.GovernedClients = map[string]config.GovernedClientConfig{
+		"governed-authority": {
+			ClientID: "governed-authority",
+			Token:    governedToken,
+			Permissions: config.GovernedPermissions{
+				ProxyTypes: []string{"tcp"},
+				TCP: config.ProxyPermission{RemotePortRanges: []config.PortRange{{
+					Start: uint16(governedProxyAddress.Port),
+					End:   uint16(governedProxyAddress.Port),
+				}}},
+				Limits: config.PermissionLimits{MaxProxies: 1},
+			},
+		},
+	}
+	serverConfiguration.ManagedClients = map[string]config.ManagedClientConfig{
+		"managed-authority": {
+			ClientID: "managed-authority",
+			Token:    managedToken,
+			Configuration: config.ManagedConfiguration{
+				Revision: 1,
+				Proxies: []config.ProxyConfig{{
+					Name:       "managed-echo",
+					Type:       "tcp",
+					LocalIP:    "127.0.0.1",
+					LocalPort:  uint16(echoAddress.Port),
+					RemotePort: uint16(managedProxyAddress.Port),
+				}},
+			},
+		},
+	}
+
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverErrors := make(chan error, 1)
+	serverService := NewService(logging.New("test-multi-mode-server"), serverConfiguration)
+	go func() {
+		serverErrors <- serverService.Run(serverContext)
+	}()
+
+	type runningClient struct {
+		cancel context.CancelFunc
+		errors chan error
+	}
+	startClient := func(configuration config.ClientConfig) runningClient {
+		clientContext, cancel := context.WithCancel(context.Background())
+		errors := make(chan error, 1)
+		service := client.NewService(logging.New("test-multi-mode-client"), configuration)
+		go func() {
+			errors <- service.Run(clientContext)
+		}()
+		return runningClient{cancel: cancel, errors: errors}
+	}
+	clientConfiguration := func(
+		clientID string,
+		token string,
+		proxies []config.ProxyConfig,
+	) config.ClientConfig {
+		configuration := config.DefaultClient()
+		configuration.ClientID = clientID
+		configuration.Transport.ServerAddress = serverAddress.String()
+		configuration.Authentication.Token = token
+		configuration.Proxies = proxies
+		return configuration
+	}
+
+	clients := []runningClient{
+		startClient(clientConfiguration(
+			"shared-instance",
+			sharedToken,
+			[]config.ProxyConfig{{
+				Name:       "shared-echo",
+				Type:       "tcp",
+				LocalIP:    "127.0.0.1",
+				LocalPort:  uint16(echoAddress.Port),
+				RemotePort: uint16(sharedProxyAddress.Port),
+			}},
+		)),
+		startClient(clientConfiguration(
+			"untrusted-governed-client-id",
+			governedToken,
+			[]config.ProxyConfig{{
+				Name:       "governed-echo",
+				Type:       "tcp",
+				LocalIP:    "127.0.0.1",
+				LocalPort:  uint16(echoAddress.Port),
+				RemotePort: uint16(governedProxyAddress.Port),
+			}},
+		)),
+		startClient(clientConfiguration(
+			"untrusted-managed-client-id",
+			managedToken,
+			nil,
+		)),
+	}
+
+	for name, address := range map[string]string{
+		"shared":   sharedProxyAddress.String(),
+		"governed": governedProxyAddress.String(),
+		"managed":  managedProxyAddress.String(),
+	} {
+		connection := dialWithRetry(t, address, 10*time.Second)
+		message := []byte("multi-mode-" + name)
+		if _, err := connection.Write(message); err != nil {
+			connection.Close()
+			t.Fatal(err)
+		}
+		response := make([]byte, len(message))
+		if _, err := io.ReadFull(connection, response); err != nil {
+			connection.Close()
+			t.Fatal(err)
+		}
+		connection.Close()
+		if string(response) != string(message) {
+			t.Fatalf("%s proxy returned %q", name, response)
+		}
+	}
+
+	for _, running := range clients {
+		running.cancel()
+	}
+	for _, running := range clients {
+		if err := waitServiceResult(running.errors); err != nil {
+			t.Fatalf("client stopped with error: %v", err)
+		}
+	}
+	cancelServer()
+	if err := waitServiceResult(serverErrors); err != nil {
+		t.Fatalf("server stopped with error: %v", err)
 	}
 }
 

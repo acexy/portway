@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -35,6 +36,43 @@ func TestClientRegistryRejectsDuplicateActiveClient(t *testing.T) {
 	)
 	if sessionError == nil || sessionError.Code != protocol.SessionErrorClientIDAlreadyOnline {
 		t.Fatalf("expected duplicate client error, got %#v", sessionError)
+	}
+}
+
+func TestClientRegistryRevokesOnlyMatchingAuthenticationGeneration(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Now()
+	firstServer, firstPeer := net.Pipe()
+	defer firstServer.Close()
+	defer firstPeer.Close()
+	secondServer, secondPeer := net.Pipe()
+	defer secondServer.Close()
+	defer secondPeer.Close()
+	first := authentication.Context{
+		Mode:         authentication.ModeGoverned,
+		ClientID:     "client-one",
+		CredentialID: authentication.Selector("first-token-with-at-least-32-random-bytes"),
+		Generation:   1,
+	}
+	second := authentication.Context{
+		Mode:         authentication.ModeGoverned,
+		ClientID:     "client-two",
+		CredentialID: authentication.Selector("second-token-with-at-least-32-random-bytes"),
+		Generation:   1,
+	}
+	registry.RegisterAuthenticated(
+		"client-one", "", "session-one", firstServer, now, first,
+	)
+	registry.RegisterAuthenticated(
+		"client-two", "", "session-two", secondServer, now, second,
+	)
+
+	revoked := registry.RevokeAuthentication([]authentication.Context{first})
+	if len(revoked) != 1 || revoked[0].ClientID != "client-one" {
+		t.Fatalf("unexpected revoked sessions: %#v", revoked)
+	}
+	if !registry.Heartbeat("client-two", "session-two", now.Add(time.Second)) {
+		t.Fatal("unrelated session was revoked")
 	}
 }
 

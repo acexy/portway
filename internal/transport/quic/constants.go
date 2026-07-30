@@ -7,17 +7,18 @@ import (
 )
 
 const (
-	alpn                    = "portway"
-	authenticationMagic     = "PWQA"
-	authenticationNonceSize = 32
-	authenticationProofSize = 32
-	authenticationTimeout   = 5 * time.Second
+	alpn                       = "portway"
+	authenticationMagic        = "PWQA"
+	authenticationSelectorSize = 32
+	authenticationNonceSize    = 32
+	authenticationProofSize    = 32
+	authenticationTimeout      = 5 * time.Second
 
-	maxIncomingStreams      = 512
-	maxStreamReceiveWindow  = 6 * 1024 * 1024
-	maxConnectionWindow     = 32 * 1024 * 1024
-	maxIdleTimeout          = 90 * time.Second
-	keepAlivePeriod         = 20 * time.Second
+	maxIncomingStreams     = 512
+	maxStreamReceiveWindow = 6 * 1024 * 1024
+	maxConnectionWindow    = 32 * 1024 * 1024
+	maxIdleTimeout         = 90 * time.Second
+	keepAlivePeriod        = 20 * time.Second
 )
 
 const (
@@ -29,14 +30,14 @@ const (
 
 func defaultQUICConfig() *quicgo.Config {
 	return &quicgo.Config{
-		HandshakeIdleTimeout:        authenticationTimeout,
-		MaxIdleTimeout:              maxIdleTimeout,
-		MaxStreamReceiveWindow:      maxStreamReceiveWindow,
-		MaxConnectionReceiveWindow:  maxConnectionWindow,
-		MaxIncomingStreams:          maxIncomingStreams,
-		MaxIncomingUniStreams:       -1,
-		KeepAlivePeriod:              keepAlivePeriod,
-		Allow0RTT:                    false,
-		EnableDatagrams:              false,
+		HandshakeIdleTimeout:       authenticationTimeout,
+		MaxIdleTimeout:             maxIdleTimeout,
+		MaxStreamReceiveWindow:     maxStreamReceiveWindow,
+		MaxConnectionReceiveWindow: maxConnectionWindow,
+		MaxIncomingStreams:         maxIncomingStreams,
+		MaxIncomingUniStreams:      -1,
+		KeepAlivePeriod:            keepAlivePeriod,
+		Allow0RTT:                  false,
+		EnableDatagrams:            false,
 	}
 }

@@ -55,6 +55,14 @@ const (
 	MessageBindLink MessageType = "bind_link"
 	// MessageBindResult reports a RoleData binding result.
 	MessageBindResult MessageType = "bind_result"
+	// MessageManagedConfigPrepare stages one complete server-owned configuration.
+	MessageManagedConfigPrepare MessageType = "managed_config_prepare"
+	// MessageManagedConfigPrepared confirms that a managed configuration is valid.
+	MessageManagedConfigPrepared MessageType = "managed_config_prepared"
+	// MessageManagedConfigActivate activates one prepared managed configuration.
+	MessageManagedConfigActivate MessageType = "managed_config_activate"
+	// MessageManagedConfigApplied confirms activation of a managed configuration.
+	MessageManagedConfigApplied MessageType = "managed_config_applied"
 )
 
 // SessionErrorCode identifies a stable session registration or recovery failure.
@@ -87,10 +95,11 @@ type ClientHello struct {
 
 // ServerHello confirms the session and negotiated capabilities.
 type ServerHello struct {
-	ClientID     string   `json:"client_id"`
-	SessionID    string   `json:"session_id"`
-	Resumed      bool     `json:"resumed"`
-	Capabilities []string `json:"capabilities"`
+	ClientID       string   `json:"client_id"`
+	ManagementMode string   `json:"management_mode"`
+	SessionID      string   `json:"session_id"`
+	Resumed        bool     `json:"resumed"`
+	Capabilities   []string `json:"capabilities"`
 }
 
 // Heartbeat carries a monotonically increasing session sequence.

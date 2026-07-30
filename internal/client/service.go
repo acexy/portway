@@ -4,13 +4,17 @@ package client
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/acexy/golang-toolkit/util/coll"
@@ -54,10 +58,12 @@ func (sessionError *remoteSessionError) Error() string {
 // It owns the control connection, reconnect lifecycle, proxy registration,
 // and session-scoped TCP links.
 type Service struct {
-	logger        *logging.Logger
-	configuration config.ClientConfig
-	transport     transport.Client
+	logger         *logging.Logger
+	configuration  config.ClientConfig
+	transport      transport.Client
 	identification protocol.ClientIdentification
+	managedMutex   sync.RWMutex
+	managedStatus  protocol.ManagedConfigStatus
 }
 
 // NewService creates a client service.
@@ -242,13 +248,24 @@ func (s *Service) runControlSession(
 	if err := protocol.DecodePayload(envelope, &serverHello); err != nil {
 		return "", false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
 	}
-	if serverHello.ClientID != s.configuration.ClientID {
-		return "", false, fmt.Errorf(
-			"%w: server returned unexpected client ID: expected %q, got %q",
-			transport.ErrProtocol,
-			s.configuration.ClientID,
-			serverHello.ClientID,
-		)
+	if serverHello.ManagementMode == "" ||
+		serverHello.ManagementMode == "shared_token" {
+		if serverHello.ClientID != s.configuration.ClientID {
+			return "", false, fmt.Errorf(
+				"%w: server returned unexpected client ID: expected %q, got %q",
+				transport.ErrProtocol,
+				s.configuration.ClientID,
+				serverHello.ClientID,
+			)
+		}
+	} else {
+		if err := config.ValidateClientID(serverHello.ClientID); err != nil {
+			return "", false, fmt.Errorf(
+				"%w: server returned invalid authenticated client ID",
+				transport.ErrProtocol,
+			)
+		}
+		s.configuration.ClientID = serverHello.ClientID
 	}
 	if serverHello.SessionID == "" {
 		return "", false, fmt.Errorf(
@@ -266,8 +283,26 @@ func (s *Service) runControlSession(
 	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 		return "", false, fmt.Errorf("set proxy registration deadline: %w", err)
 	}
-	if err := s.syncProxies(connection, writer); err != nil {
-		return "", false, err
+	switch serverHello.ManagementMode {
+	case "", "shared_token", "governed":
+		if err := s.syncProxies(connection, writer); err != nil {
+			return "", false, err
+		}
+	case "managed":
+		if len(s.configuration.Proxies) != 0 {
+			return "", false, errors.New(
+				"managed clients cannot configure local proxies",
+			)
+		}
+		if err := s.receiveManagedConfiguration(connection, writer); err != nil {
+			return "", false, err
+		}
+	default:
+		return "", false, fmt.Errorf(
+			"%w: server returned unsupported management mode %q",
+			transport.ErrProtocol,
+			serverHello.ManagementMode,
+		)
 	}
 	if err := connection.SetDeadline(time.Time{}); err != nil {
 		return "", false, fmt.Errorf("clear control hello deadline: %w", err)
@@ -284,7 +319,112 @@ func (s *Service) runControlSession(
 		sessionLogger,
 		writer,
 		transportSession,
+		serverHello.ManagementMode,
 	)
+}
+
+func (s *Service) receiveManagedConfiguration(
+	connection net.Conn,
+	writer *control.Writer,
+) error {
+	envelope, err := protocol.ReadControl(connection)
+	if err != nil {
+		return classifyControlProtocolError(err)
+	}
+	if envelope.Type != protocol.MessageManagedConfigPrepare {
+		return fmt.Errorf(
+			"%w: expected %s, got %s",
+			transport.ErrProtocol,
+			protocol.MessageManagedConfigPrepare,
+			envelope.Type,
+		)
+	}
+	var preparation protocol.ManagedConfigPrepare
+	if err := protocol.DecodePayload(envelope, &preparation); err != nil {
+		return classifyControlProtocolError(err)
+	}
+	proxies, status, err := validateManagedPreparation(preparation)
+	if err != nil {
+		return err
+	}
+	if err := writer.Write(protocol.MessageManagedConfigPrepared, status); err != nil {
+		return err
+	}
+	envelope, err = protocol.ReadControl(connection)
+	if err != nil {
+		return classifyControlProtocolError(err)
+	}
+	if envelope.Type != protocol.MessageManagedConfigActivate {
+		return fmt.Errorf(
+			"%w: expected %s, got %s",
+			transport.ErrProtocol,
+			protocol.MessageManagedConfigActivate,
+			envelope.Type,
+		)
+	}
+	var activation protocol.ManagedConfigStatus
+	if err := protocol.DecodePayload(envelope, &activation); err != nil {
+		return classifyControlProtocolError(err)
+	}
+	if activation != status {
+		return fmt.Errorf("%w: managed configuration activation mismatch", transport.ErrProtocol)
+	}
+	s.configuration.Proxies = proxies
+	s.managedMutex.Lock()
+	s.managedStatus = status
+	s.managedMutex.Unlock()
+	if err := writer.Write(protocol.MessageManagedConfigApplied, status); err != nil {
+		return err
+	}
+	s.logger.InfoWithField("managed configuration applied", "revision", status.Revision)
+	return nil
+}
+
+func validateManagedPreparation(
+	preparation protocol.ManagedConfigPrepare,
+) ([]config.ProxyConfig, protocol.ManagedConfigStatus, error) {
+	if preparation.Revision == 0 || preparation.Digest == "" {
+		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(
+			"%w: invalid managed configuration generation",
+			transport.ErrProtocol,
+		)
+	}
+	digestBytes, err := json.Marshal(preparation.Proxies)
+	if err != nil {
+		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(
+			"encode managed configuration: %w",
+			err,
+		)
+	}
+	digestSum := sha256.Sum256(digestBytes)
+	if hex.EncodeToString(digestSum[:]) != preparation.Digest {
+		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(
+			"%w: managed configuration digest mismatch",
+			transport.ErrProtocol,
+		)
+	}
+	proxies := make([]config.ProxyConfig, 0, len(preparation.Proxies))
+	for _, managedProxy := range preparation.Proxies {
+		proxies = append(proxies, config.ProxyConfig{
+			Name:       managedProxy.Name,
+			Type:       string(managedProxy.Type),
+			LocalIP:    managedProxy.LocalIP,
+			LocalPort:  managedProxy.LocalPort,
+			RemotePort: managedProxy.RemotePort,
+			Domain:     managedProxy.Domain,
+		})
+	}
+	if err := config.ValidateManagedProxies(proxies); err != nil {
+		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(
+			"validate managed configuration: %w",
+			err,
+		)
+	}
+	status := protocol.ManagedConfigStatus{
+		Revision: preparation.Revision,
+		Digest:   preparation.Digest,
+	}
+	return proxies, status, nil
 }
 
 func currentClientIdentification() (protocol.ClientIdentification, error) {
@@ -315,6 +455,7 @@ func (s *Service) runControlLoop(
 	sessionLogger *logging.Logger,
 	writer *control.Writer,
 	transportSession transport.ClientSession,
+	managementMode string,
 ) error {
 	sessionContext, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
@@ -344,6 +485,8 @@ func (s *Service) runControlLoop(
 	lastPongAt := time.Now()
 	var sentSequence uint64
 	var acknowledgedSequence uint64
+	var pendingManagedProxies []config.ProxyConfig
+	var pendingManagedStatus *protocol.ManagedConfigStatus
 	for {
 		select {
 		case <-ctx.Done():
@@ -400,6 +543,105 @@ func (s *Service) runControlLoop(
 					return classifyControlProtocolError(err)
 				}
 				linkManager.cancelLink(cancellation.LinkID)
+			case protocol.MessageManagedConfigPrepare:
+				if managementMode != "managed" {
+					return fmt.Errorf(
+						"%w: unmanaged session received managed configuration",
+						transport.ErrProtocol,
+					)
+				}
+				var preparation protocol.ManagedConfigPrepare
+				if err := protocol.DecodePayload(envelope, &preparation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				proxies, status, err := validateManagedPreparation(preparation)
+				if err != nil {
+					return err
+				}
+				if pendingManagedStatus != nil {
+					if status != *pendingManagedStatus {
+						return fmt.Errorf(
+							"%w: conflicting managed configuration rollout is pending",
+							transport.ErrProtocol,
+						)
+					}
+					if err := writer.Write(
+						protocol.MessageManagedConfigPrepared,
+						status,
+					); err != nil {
+						return err
+					}
+					continue
+				}
+				s.managedMutex.RLock()
+				currentStatus := s.managedStatus
+				s.managedMutex.RUnlock()
+				if status.Revision < currentStatus.Revision ||
+					(status.Revision == currentStatus.Revision &&
+						status.Digest != currentStatus.Digest) {
+					return fmt.Errorf(
+						"%w: stale or conflicting managed configuration revision",
+						transport.ErrProtocol,
+					)
+				}
+				pendingManagedProxies = proxies
+				pendingManagedStatus = &status
+				if err := writer.Write(
+					protocol.MessageManagedConfigPrepared,
+					status,
+				); err != nil {
+					return err
+				}
+			case protocol.MessageManagedConfigActivate:
+				var activation protocol.ManagedConfigStatus
+				if err := protocol.DecodePayload(envelope, &activation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if pendingManagedStatus == nil {
+					s.managedMutex.RLock()
+					currentStatus := s.managedStatus
+					s.managedMutex.RUnlock()
+					if activation != currentStatus {
+						return fmt.Errorf(
+							"%w: managed configuration activation has no preparation",
+							transport.ErrProtocol,
+						)
+					}
+					if err := writer.Write(
+						protocol.MessageManagedConfigApplied,
+						activation,
+					); err != nil {
+						return err
+					}
+					continue
+				}
+				if activation != *pendingManagedStatus {
+					return fmt.Errorf(
+						"%w: managed configuration activation mismatch",
+						transport.ErrProtocol,
+					)
+				}
+				s.configuration.Proxies = append(
+					[]config.ProxyConfig(nil),
+					pendingManagedProxies...,
+				)
+				linkManager.updateProxies(pendingManagedProxies)
+				s.managedMutex.Lock()
+				s.managedStatus = activation
+				s.managedMutex.Unlock()
+				if err := writer.Write(
+					protocol.MessageManagedConfigApplied,
+					activation,
+				); err != nil {
+					return err
+				}
+				pendingManagedProxies = nil
+				pendingManagedStatus = nil
+				sessionLogger.InfoWithField(
+					"managed configuration applied",
+					"revision",
+					activation.Revision,
+				)
 			default:
 				return fmt.Errorf(
 					"%w: unsupported control message %q",

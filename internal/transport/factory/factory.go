@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/security/ipfilter"
 	"github.com/acexy/portway/internal/transport"
@@ -39,6 +40,7 @@ func NewClient(configuration config.ClientConfig) (transport.Client, error) {
 func NewServer(
 	ctx context.Context,
 	configuration config.ServerConfig,
+	credentials *authentication.Store,
 	maxConcurrentConnections int,
 	sourceFilter *ipfilter.Filter,
 ) (transport.Server, error) {
@@ -47,7 +49,7 @@ func NewServer(
 		return transporttoken.NewServer(
 			ctx,
 			configuration.Transport.ListenAddress,
-			configuration.Authentication.Token,
+			credentials,
 			maxConcurrentConnections,
 			sourceFilter,
 		)
@@ -55,10 +57,10 @@ func NewServer(
 		return transportquic.NewServer(
 			ctx,
 			transportquic.ServerConfig{
-				Address:  configuration.Transport.ListenAddress,
-				CertFile: configuration.Transport.QUIC.CertFile,
-				KeyFile:  configuration.Transport.QUIC.KeyFile,
-				Token:    configuration.Authentication.Token,
+				Address:     configuration.Transport.ListenAddress,
+				CertFile:    configuration.Transport.QUIC.CertFile,
+				KeyFile:     configuration.Transport.QUIC.KeyFile,
+				Credentials: credentials,
 			},
 			maxConcurrentConnections,
 			sourceFilter,

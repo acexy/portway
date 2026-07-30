@@ -29,6 +29,8 @@ func (manager *Registry) openVisitor(
 	}
 	writer := state.writer
 	sessionID := state.sessionID
+	authenticationContext := state.authentication
+	maxActiveLinks := state.maxActiveLinks
 	manager.mutex.Unlock()
 
 	err := manager.linkBroker.ServeStream(
@@ -36,6 +38,8 @@ func (manager *Registry) openVisitor(
 			ClientID: binding.clientID, SessionID: sessionID,
 			ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeTCP,
 			BindingID: binding.bindingID, Writer: writer,
+			Authentication: authenticationContext,
+			MaxActiveLinks: maxActiveLinks,
 		},
 		func() { visitor.Close() },
 		func(ctx context.Context, stream net.Conn) error {

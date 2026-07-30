@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -17,13 +18,15 @@ type clientRecord struct {
 	connection        net.Conn
 	lastHeartbeatAt   time.Time
 	suspendedAt       time.Time
+	authentication    authentication.Context
 }
 
 // ExpiredClient identifies a session whose recovery window elapsed.
 type ExpiredClient struct {
-	ClientID   string
-	SessionID  string
-	Connection net.Conn
+	ClientID       string
+	SessionID      string
+	Connection     net.Conn
+	Authentication authentication.Context
 }
 
 // Client identifies one current client session.
@@ -52,6 +55,25 @@ func (registry *Registry) Register(
 	connection net.Conn,
 	now time.Time,
 ) (resumed bool, created bool, previousConnection net.Conn, sessionError *protocol.SessionError) {
+	return registry.RegisterAuthenticated(
+		clientID,
+		resumeSessionID,
+		sessionID,
+		connection,
+		now,
+		authentication.Context{Mode: authentication.ModeShared},
+	)
+}
+
+// RegisterAuthenticated registers a Session and binds its transport authentication record.
+func (registry *Registry) RegisterAuthenticated(
+	clientID string,
+	resumeSessionID string,
+	sessionID string,
+	connection net.Conn,
+	now time.Time,
+	authenticationContext authentication.Context,
+) (resumed bool, created bool, previousConnection net.Conn, sessionError *protocol.SessionError) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 
@@ -70,6 +92,7 @@ func (registry *Registry) Register(
 			state:           stateActive,
 			connection:      connection,
 			lastHeartbeatAt: now,
+			authentication:  authenticationContext,
 		}
 		return false, true, nil, nil
 	}
@@ -103,7 +126,45 @@ func (registry *Registry) Register(
 	record.connection = connection
 	record.lastHeartbeatAt = now
 	record.suspendedAt = time.Time{}
+	record.authentication = authenticationContext
 	return true, false, previousConnection, nil
+}
+
+// RevokeAuthentication removes sessions authenticated by the specified records.
+func (registry *Registry) RevokeAuthentication(
+	contexts []authentication.Context,
+) []ExpiredClient {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+
+	type revokedRecord struct {
+		credentialID [32]byte
+		generation   uint64
+	}
+	revokedCredentials := make(map[revokedRecord]struct{}, len(contexts))
+	for _, context := range contexts {
+		revokedCredentials[revokedRecord{
+			credentialID: context.CredentialID,
+			generation:   context.Generation,
+		}] = struct{}{}
+	}
+	revoked := make([]ExpiredClient, 0)
+	for clientID, record := range registry.clients {
+		if _, exists := revokedCredentials[revokedRecord{
+			credentialID: record.authentication.CredentialID,
+			generation:   record.authentication.Generation,
+		}]; !exists {
+			continue
+		}
+		revoked = append(revoked, ExpiredClient{
+			ClientID:       clientID,
+			SessionID:      record.sessionID,
+			Connection:     record.connection,
+			Authentication: record.authentication,
+		})
+		delete(registry.clients, clientID)
+	}
+	return revoked
 }
 
 func (registry *Registry) Heartbeat(clientID string, sessionID string, now time.Time) bool {
@@ -165,9 +226,10 @@ func (registry *Registry) Sweep(
 		if record.state == stateSuspended && now.Sub(record.suspendedAt) >= recoveryWindow {
 			delete(registry.clients, clientID)
 			expiredClients = append(expiredClients, ExpiredClient{
-				ClientID:   clientID,
-				SessionID:  record.sessionID,
-				Connection: record.connection,
+				ClientID:       clientID,
+				SessionID:      record.sessionID,
+				Connection:     record.connection,
+				Authentication: record.authentication,
 			})
 		}
 	}

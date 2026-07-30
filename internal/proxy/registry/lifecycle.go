@@ -1,5 +1,7 @@
 package registry
 
+import "sync"
+
 import proxytcp "github.com/acexy/portway/internal/proxy/tcp"
 import proxyudp "github.com/acexy/portway/internal/proxy/udp"
 
@@ -12,6 +14,17 @@ func (manager *Registry) Activate(clientID string, sessionID string) {
 		return
 	}
 	state.active = true
+}
+
+// Deactivate rejects new traffic without releasing the current proxy generation.
+func (manager *Registry) Deactivate(clientID string, sessionID string) {
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	state, exists := manager.clients[clientID]
+	if !exists || state.sessionID != sessionID {
+		return
+	}
+	state.active = false
 }
 
 // Suspend rejects new traffic and closes links for a disconnected session.
@@ -45,6 +58,12 @@ func (manager *Registry) Suspend(clientID string, sessionID string) {
 
 // Remove permanently releases every proxy owned by one session.
 func (manager *Registry) Remove(clientID string, sessionID string) {
+	manager.Detach(clientID, sessionID)()
+}
+
+// Detach atomically removes a Session's routes and returns an idempotent
+// cleanup callback for potentially blocking resource closure outside locks.
+func (manager *Registry) Detach(clientID string, sessionID string) func() {
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
 
@@ -52,7 +71,7 @@ func (manager *Registry) Remove(clientID string, sessionID string) {
 	state, exists := manager.clients[clientID]
 	if !exists || state.sessionID != sessionID {
 		manager.mutex.Unlock()
-		return
+		return func() {}
 	}
 	delete(manager.clients, clientID)
 	endpoints := make(map[uint16]*proxytcp.Endpoint, len(state.tcpProxies))
@@ -84,14 +103,19 @@ func (manager *Registry) Remove(clientID string, sessionID string) {
 	}
 	manager.mutex.Unlock()
 
-	closeTCPEndpoints(endpoints)
-	closeUDPEndpoints(udpEndpoints)
-	manager.linkBroker.CancelSession(clientID, sessionID)
-	for _, binding := range httpBindings {
-		binding.close()
-	}
-	for _, binding := range udpBindings {
-		binding.close()
+	var closeOnce sync.Once
+	return func() {
+		closeOnce.Do(func() {
+			closeTCPEndpoints(endpoints)
+			closeUDPEndpoints(udpEndpoints)
+			manager.linkBroker.CancelSession(clientID, sessionID)
+			for _, binding := range httpBindings {
+				binding.close()
+			}
+			for _, binding := range udpBindings {
+				binding.close()
+			}
+		})
 	}
 }
 

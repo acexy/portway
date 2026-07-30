@@ -11,10 +11,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/security/ipfilter"
 )
+
+func testAuthenticationStore(t *testing.T, token string) *authentication.Store {
+	t.Helper()
+	snapshot, err := authentication.NewSnapshot([]authentication.Record{{
+		Context: authentication.Context{Mode: authentication.ModeShared},
+		Token:   token,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authentication.NewStore(snapshot)
+}
 
 func TestTCPServerRejectsDeniedSourceBeforeAuthentication(t *testing.T) {
 	rulesPath := filepath.Join(t.TempDir(), "deny.txt")
@@ -35,7 +48,7 @@ func TestTCPServerRejectsDeniedSourceBeforeAuthentication(t *testing.T) {
 	server, err := NewServer(
 		ctx,
 		"127.0.0.1:0",
-		"test-token-with-at-least-32-random-bytes",
+		testAuthenticationStore(t, "test-token-with-at-least-32-random-bytes"),
 		8,
 		sourceFilter,
 	)
@@ -71,7 +84,7 @@ func TestTokenHandshakeAndEncryptedExchange(t *testing.T) {
 		connection, role, err := serverTokenHandshake(
 			context.Background(),
 			serverRaw,
-			"test-token-with-at-least-32-random-bytes",
+			testAuthenticationStore(t, "test-token-with-at-least-32-random-bytes"),
 			nil,
 		)
 		serverResults <- serverResult{connection: connection, role: role, err: err}
@@ -125,7 +138,7 @@ func TestTokenHandshakeRejectsMismatchedToken(t *testing.T) {
 		_, _, err := serverTokenHandshake(
 			context.Background(),
 			serverRaw,
-			"server-token-with-at-least-32-random-bytes",
+			testAuthenticationStore(t, "server-token-with-at-least-32-random-bytes"),
 			nil,
 		)
 		serverErrors <- err
@@ -146,6 +159,35 @@ func TestTokenHandshakeRejectsMismatchedToken(t *testing.T) {
 	}
 }
 
+func TestTokenHandshakeRejectsUnknownSelectorWithDummyToken(t *testing.T) {
+	t.Parallel()
+
+	clientRaw, serverRaw := net.Pipe()
+	defer clientRaw.Close()
+	defer serverRaw.Close()
+
+	serverErrors := make(chan error, 1)
+	go func() {
+		_, _, _, err := serverTokenHandshakeContext(
+			context.Background(),
+			serverRaw,
+			testAuthenticationStore(t, "test-token-with-at-least-32-random-bytes"),
+			nil,
+		)
+		serverErrors <- err
+	}()
+
+	_, _ = clientTokenHandshake(
+		context.Background(),
+		clientRaw,
+		string(make([]byte, 32)),
+		protocol.RoleControl,
+	)
+	if err := <-serverErrors; !errors.Is(err, ErrAuthentication) {
+		t.Fatalf("expected unknown selector authentication rejection, got %v", err)
+	}
+}
+
 func TestTokenHandshakeRejectsDisallowedRoleBeforeProof(t *testing.T) {
 	t.Parallel()
 
@@ -158,7 +200,7 @@ func TestTokenHandshakeRejectsDisallowedRoleBeforeProof(t *testing.T) {
 		_, _, err := serverTokenHandshake(
 			context.Background(),
 			serverRaw,
-			"test-token-with-at-least-32-random-bytes",
+			testAuthenticationStore(t, "test-token-with-at-least-32-random-bytes"),
 			[]protocol.Role{protocol.RoleControl},
 		)
 		serverRaw.Close()

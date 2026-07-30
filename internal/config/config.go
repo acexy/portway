@@ -2,16 +2,22 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/transport"
 	"gopkg.in/yaml.v3"
 )
@@ -33,8 +39,11 @@ const (
 )
 
 const (
-	generatedTokenBytes    = 32
-	generatedClientIDBytes = 16
+	generatedTokenBytes         = 32
+	generatedClientIDBytes      = 16
+	maxAuthenticationFiles      = 4096
+	maxAuthenticationFileBytes  = 4 * 1024 * 1024
+	maxAuthenticationTotalBytes = 64 * 1024 * 1024
 )
 
 var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -43,9 +52,74 @@ var httpHeaderNamePattern = regexp.MustCompile(
 	"^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$",
 )
 
-// AuthenticationConfig configures the shared Token identity proof.
-type AuthenticationConfig struct {
+// ClientAuthenticationConfig configures the client credential.
+type ClientAuthenticationConfig struct {
+	// Token selects and proves the server-owned authentication record.
 	Token string `yaml:"token"`
+}
+
+// ServerAuthenticationConfig configures server authentication sources.
+type ServerAuthenticationConfig struct {
+	// SharedToken enables the shared authentication entry.
+	SharedToken *string `yaml:"shared_token"`
+	// GovernedClientsPath contains per-client Token and permission files.
+	GovernedClientsPath string `yaml:"governed_clients_path"`
+	// ManagedClientsPath contains per-client Token and locked configuration files.
+	ManagedClientsPath string `yaml:"managed_clients_path"`
+}
+
+// PortRange is one inclusive public port authorization range.
+type PortRange struct {
+	Start uint16 `yaml:"start"`
+	End   uint16 `yaml:"end"`
+}
+
+// ProxyPermission configures public port ranges for one proxy type.
+type ProxyPermission struct {
+	RemotePortRanges []PortRange `yaml:"remote_port_ranges"`
+}
+
+// HTTPPermission configures authorized exact or single-label wildcard domains.
+type HTTPPermission struct {
+	Domains []string `yaml:"domains"`
+}
+
+// PermissionLimits configures per-client resource ceilings.
+type PermissionLimits struct {
+	MaxProxies     int `yaml:"max_proxies"`
+	MaxTCPProxies  int `yaml:"max_tcp_proxies"`
+	MaxUDPProxies  int `yaml:"max_udp_proxies"`
+	MaxHTTPProxies int `yaml:"max_http_proxies"`
+	MaxActiveLinks int `yaml:"max_active_links"`
+}
+
+// GovernedPermissions restricts one client's proxy declarations.
+type GovernedPermissions struct {
+	ProxyTypes []string         `yaml:"proxy_types"`
+	TCP        ProxyPermission  `yaml:"tcp"`
+	UDP        ProxyPermission  `yaml:"udp"`
+	HTTP       HTTPPermission   `yaml:"http"`
+	Limits     PermissionLimits `yaml:"limits"`
+}
+
+// GovernedClientConfig defines one independently authenticated governed client.
+type GovernedClientConfig struct {
+	ClientID    string              `yaml:"client_id"`
+	Token       string              `yaml:"token"`
+	Permissions GovernedPermissions `yaml:"permissions"`
+}
+
+// ManagedConfiguration is the complete server-owned client proxy generation.
+type ManagedConfiguration struct {
+	Revision uint64        `yaml:"revision"`
+	Proxies  []ProxyConfig `yaml:"proxies"`
+}
+
+// ManagedClientConfig defines one independently authenticated managed client.
+type ManagedClientConfig struct {
+	ClientID      string               `yaml:"client_id"`
+	Token         string               `yaml:"token"`
+	Configuration ManagedConfiguration `yaml:"configuration"`
 }
 
 // QUICClientTransportConfig configures the client side of the QUIC transport.
@@ -86,11 +160,11 @@ type ProxyConfig struct {
 
 // ClientConfig contains the complete client configuration.
 type ClientConfig struct {
-	ClientID       string               `yaml:"client_id"`
-	Transport      ClientTransportConfig `yaml:"transport"`
-	LogLevel       LogLevel             `yaml:"log_level"`
-	Authentication AuthenticationConfig `yaml:"authentication"`
-	Proxies        []ProxyConfig        `yaml:"proxies"`
+	ClientID       string                     `yaml:"client_id"`
+	Transport      ClientTransportConfig      `yaml:"transport"`
+	LogLevel       LogLevel                   `yaml:"log_level"`
+	Authentication ClientAuthenticationConfig `yaml:"authentication"`
+	Proxies        []ProxyConfig              `yaml:"proxies"`
 }
 
 // TunnelConfig configures public proxy listeners owned by the server.
@@ -101,7 +175,7 @@ type TunnelConfig struct {
 
 // SecurityConfig configures server-side source filtering.
 type SecurityConfig struct {
-	IPDenyFile        string `yaml:"ip_deny_file"`
+	IPDenyFile         string `yaml:"ip_deny_file"`
 	HTTPClientIPHeader string `yaml:"http_client_ip_header"`
 }
 
@@ -123,13 +197,24 @@ func EnsureClientID(configuration *ClientConfig) (string, bool, error) {
 
 // ServerConfig contains the complete server configuration.
 type ServerConfig struct {
-	Transport      ServerTransportConfig `yaml:"transport"`
-	Tunnel         TunnelConfig          `yaml:"tunnel"`
-	HTTP           HTTPConfig            `yaml:"http"`
-	UDP            UDPConfig             `yaml:"udp"`
-	Security       SecurityConfig        `yaml:"security"`
-	LogLevel       LogLevel              `yaml:"log_level"`
-	Authentication AuthenticationConfig  `yaml:"authentication"`
+	Transport      ServerTransportConfig      `yaml:"transport"`
+	Tunnel         TunnelConfig               `yaml:"tunnel"`
+	HTTP           HTTPConfig                 `yaml:"http"`
+	UDP            UDPConfig                  `yaml:"udp"`
+	Security       SecurityConfig             `yaml:"security"`
+	LogLevel       LogLevel                   `yaml:"log_level"`
+	Authentication ServerAuthenticationConfig `yaml:"authentication"`
+	// SourcePath is the main file used for server hot reload.
+	SourcePath string `yaml:"-"`
+	// SourceDigest identifies the complete main and authentication file generation.
+	SourceDigest string `yaml:"-"`
+	// Generation increments for every published semantic configuration change.
+	Generation uint64 `yaml:"-"`
+	// SharedTokenGenerated reports that an empty source value was generated at startup.
+	SharedTokenGenerated bool `yaml:"-"`
+	// GovernedClients and ManagedClients are validated immutable source records.
+	GovernedClients map[string]GovernedClientConfig `yaml:"-"`
+	ManagedClients  map[string]ManagedClientConfig  `yaml:"-"`
 }
 
 // DefaultClient returns the client configuration used when no file exists.
@@ -155,18 +240,18 @@ func DefaultServer() ServerConfig {
 		},
 		LogLevel: LogLevelInfo,
 		HTTP: HTTPConfig{
-			ReadHeaderTimeout:               httpDefaultReadHeaderTimeout,
-			GracefulShutdownTimeout:         httpDefaultGracefulShutdownTimeout,
-			MaxHeaderBytes:                  httpDefaultMaxHeaderBytes,
-			MaxConcurrentRequests:           httpDefaultMaxConcurrentRequests,
-			MaxConcurrentRequestsPerClient:  httpDefaultMaxConcurrentRequestsPerClient,
-			MaxConcurrentRequestsPerDomain:  httpDefaultMaxConcurrentRequestsPerDomain,
-			MaxIdleConnections:              httpDefaultMaxIdleConnections,
-			MaxIdleConnectionsPerDomain:     httpDefaultMaxIdleConnectionsPerDomain,
-			MaxUpgradeConnections:           httpDefaultMaxUpgradeConnections,
-			MaxUpgradeConnectionsPerClient:  httpDefaultMaxUpgradeConnectionsPerClient,
-			MaxUpgradeConnectionsPerDomain:  httpDefaultMaxUpgradeConnectionsPerDomain,
-			MaxConcurrentHTTP2Streams:       httpDefaultMaxConcurrentHTTP2Streams,
+			ReadHeaderTimeout:              httpDefaultReadHeaderTimeout,
+			GracefulShutdownTimeout:        httpDefaultGracefulShutdownTimeout,
+			MaxHeaderBytes:                 httpDefaultMaxHeaderBytes,
+			MaxConcurrentRequests:          httpDefaultMaxConcurrentRequests,
+			MaxConcurrentRequestsPerClient: httpDefaultMaxConcurrentRequestsPerClient,
+			MaxConcurrentRequestsPerDomain: httpDefaultMaxConcurrentRequestsPerDomain,
+			MaxIdleConnections:             httpDefaultMaxIdleConnections,
+			MaxIdleConnectionsPerDomain:    httpDefaultMaxIdleConnectionsPerDomain,
+			MaxUpgradeConnections:          httpDefaultMaxUpgradeConnections,
+			MaxUpgradeConnectionsPerClient: httpDefaultMaxUpgradeConnectionsPerClient,
+			MaxUpgradeConnectionsPerDomain: httpDefaultMaxUpgradeConnectionsPerDomain,
+			MaxConcurrentHTTP2Streams:      httpDefaultMaxConcurrentHTTP2Streams,
 		},
 		UDP: DefaultUDPConfig(),
 	}
@@ -187,29 +272,138 @@ func LoadClient(path string, allowMissing bool) (ClientConfig, error) {
 // LoadServer loads a server configuration and overlays it on safe defaults.
 func LoadServer(path string, allowMissing bool) (ServerConfig, error) {
 	configuration := DefaultServer()
+	initialDigest, initialExists, err := configurationFileDigest(path, allowMissing)
+	if err != nil {
+		return ServerConfig{}, err
+	}
 	if err := loadYAML(path, allowMissing, &configuration); err != nil {
 		return ServerConfig{}, err
 	}
 	if err := validateServer(configuration); err != nil {
 		return ServerConfig{}, err
 	}
+	if _, err := os.Stat(path); err == nil {
+		configuration.SourcePath = path
+	} else if !allowMissing || !errors.Is(err, os.ErrNotExist) {
+		return ServerConfig{}, fmt.Errorf("stat configuration %q: %w", path, err)
+	}
+	before, err := serverSourceManifest(configuration)
+	if err != nil {
+		return ServerConfig{}, err
+	}
+	if initialExists && before.mainDigest != initialDigest {
+		return ServerConfig{}, errors.New("configuration files changed while loading")
+	}
+	if err := loadServerAuthenticationFiles(&configuration); err != nil {
+		return ServerConfig{}, err
+	}
+	after, err := serverSourceManifest(configuration)
+	if err != nil {
+		return ServerConfig{}, err
+	}
+	if before.digest != after.digest {
+		return ServerConfig{}, errors.New("configuration files changed while loading")
+	}
+	configuration.SourceDigest = hex.EncodeToString(after.digest[:])
 	return configuration, nil
+}
+
+type sourceManifest struct {
+	mainDigest [sha256.Size]byte
+	digest     [sha256.Size]byte
+}
+
+func serverSourceManifest(configuration ServerConfig) (sourceManifest, error) {
+	hasher := sha256.New()
+	manifest := sourceManifest{}
+	if configuration.SourcePath != "" {
+		digest, _, err := configurationFileDigest(configuration.SourcePath, false)
+		if err != nil {
+			return sourceManifest{}, err
+		}
+		manifest.mainDigest = digest
+		hasher.Write([]byte(filepath.Clean(configuration.SourcePath)))
+		hasher.Write(digest[:])
+	}
+	baseDirectory := "."
+	if configuration.SourcePath != "" {
+		baseDirectory = filepath.Dir(configuration.SourcePath)
+	}
+	paths := []string{
+		resolveConfigurationPath(baseDirectory, configuration.Authentication.GovernedClientsPath),
+		resolveConfigurationPath(baseDirectory, configuration.Authentication.ManagedClientsPath),
+	}
+	for _, directory := range paths {
+		if directory == "" {
+			continue
+		}
+		files, err := authenticationFiles(directory)
+		if err != nil {
+			return sourceManifest{}, err
+		}
+		hasher.Write([]byte(filepath.Clean(directory)))
+		for _, file := range files {
+			data, err := readAuthenticationFile(file)
+			if err != nil {
+				return sourceManifest{}, err
+			}
+			digest := sha256.Sum256(data)
+			hasher.Write([]byte(filepath.Base(file)))
+			hasher.Write(digest[:])
+		}
+	}
+	copy(manifest.digest[:], hasher.Sum(nil))
+	return manifest, nil
+}
+
+func configurationFileDigest(
+	path string,
+	allowMissing bool,
+) ([sha256.Size]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if allowMissing && errors.Is(err, os.ErrNotExist) {
+			return [sha256.Size]byte{}, false, nil
+		}
+		return [sha256.Size]byte{}, false, fmt.Errorf("read configuration %q: %w", path, err)
+	}
+	return sha256.Sum256(data), true, nil
 }
 
 // EnsureServerToken generates a token when token mode has no configured value.
 func EnsureServerToken(configuration *ServerConfig) (string, bool, error) {
-	if configuration.Authentication.Token != "" {
-		return configuration.Authentication.Token, false, nil
+	if configuration.Authentication.SharedToken != nil {
+		if *configuration.Authentication.SharedToken != "" {
+			return *configuration.Authentication.SharedToken, false, nil
+		}
+		token, err := generateToken()
+		if err != nil {
+			return "", false, err
+		}
+		configuration.Authentication.SharedToken = &token
+		configuration.SharedTokenGenerated = true
+		return token, true, nil
+	}
+	if configuration.Authentication.GovernedClientsPath != "" ||
+		configuration.Authentication.ManagedClientsPath != "" {
+		return "", false, nil
 	}
 
+	token, err := generateToken()
+	if err != nil {
+		return "", false, err
+	}
+	configuration.Authentication.SharedToken = &token
+	configuration.SharedTokenGenerated = true
+	return token, true, nil
+}
+
+func generateToken() (string, error) {
 	randomBytes := make([]byte, generatedTokenBytes)
 	if _, err := rand.Read(randomBytes); err != nil {
-		return "", false, fmt.Errorf("generate server token: %w", err)
+		return "", fmt.Errorf("generate server token: %w", err)
 	}
-
-	token := base64.RawURLEncoding.EncodeToString(randomBytes)
-	configuration.Authentication.Token = token
-	return token, true, nil
+	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }
 
 func loadYAML(path string, allowMissing bool, destination any) error {
@@ -221,8 +415,11 @@ func loadYAML(path string, allowMissing bool, destination any) error {
 		return fmt.Errorf("open configuration %q: %w", path, err)
 	}
 	defer file.Close()
+	return decodeYAML(path, file, destination)
+}
 
-	decoder := yaml.NewDecoder(file)
+func decodeYAML(path string, reader io.Reader, destination any) error {
+	decoder := yaml.NewDecoder(reader)
 	decoder.KnownFields(true)
 	if err := decoder.Decode(destination); err != nil {
 		return fmt.Errorf("decode configuration %q: %w", path, err)
@@ -238,6 +435,14 @@ func loadYAML(path string, allowMissing bool, destination any) error {
 	return nil
 }
 
+func loadAuthenticationYAML(path string, destination any) error {
+	data, err := readAuthenticationFile(path)
+	if err != nil {
+		return err
+	}
+	return decodeYAML(path, bytes.NewReader(data), destination)
+}
+
 func validateClient(configuration ClientConfig) error {
 	if err := validateLogLevel(configuration.LogLevel); err != nil {
 		return err
@@ -250,7 +455,7 @@ func validateClient(configuration ClientConfig) error {
 	if err := validateClientTransport(configuration.Transport); err != nil {
 		return err
 	}
-	if err := validateAuthentication(configuration.Authentication, false); err != nil {
+	if err := validateClientAuthentication(configuration.Authentication); err != nil {
 		return err
 	}
 	proxyNames := make(map[string]struct{}, len(configuration.Proxies))
@@ -355,7 +560,7 @@ func validateServer(configuration ServerConfig) error {
 	if net.ParseIP(configuration.Tunnel.BindIP) == nil {
 		return errors.New("tunnel.bind_ip must be an IP address")
 	}
-	return validateAuthentication(configuration.Authentication, true)
+	return validateServerAuthentication(configuration.Authentication)
 }
 
 func validateClientTransport(configuration ClientTransportConfig) error {
@@ -413,15 +618,426 @@ func validateLogLevel(logLevel LogLevel) error {
 	}
 }
 
-func validateAuthentication(authentication AuthenticationConfig, server bool) error {
+func validateClientAuthentication(authentication ClientAuthenticationConfig) error {
 	if authentication.Token == "" {
-		if server {
-			return nil
-		}
 		return errors.New("authentication.token is required")
 	}
 	if len(authentication.Token) < generatedTokenBytes {
 		return fmt.Errorf("authentication.token must contain at least %d bytes", generatedTokenBytes)
 	}
 	return nil
+}
+
+func validateServerAuthentication(authentication ServerAuthenticationConfig) error {
+	if authentication.SharedToken != nil &&
+		*authentication.SharedToken != "" &&
+		len(*authentication.SharedToken) < generatedTokenBytes {
+		return fmt.Errorf(
+			"authentication.shared_token must contain at least %d bytes",
+			generatedTokenBytes,
+		)
+	}
+	return nil
+}
+
+// BuildAuthenticationSnapshot builds the immutable runtime authentication index.
+func BuildAuthenticationSnapshot(configuration ServerConfig) (*authentication.Snapshot, error) {
+	records := make(
+		[]authentication.Record,
+		0,
+		1+len(configuration.GovernedClients)+len(configuration.ManagedClients),
+	)
+	sharedToken := ""
+	if configuration.Authentication.SharedToken != nil {
+		sharedToken = *configuration.Authentication.SharedToken
+	}
+	if sharedToken != "" {
+		records = append(records, authentication.Record{
+			Context: authentication.Context{Mode: authentication.ModeShared},
+			Token:   sharedToken,
+		})
+	}
+	for _, client := range configuration.GovernedClients {
+		records = append(records, authentication.Record{
+			Context: authentication.Context{
+				Mode:     authentication.ModeGoverned,
+				ClientID: client.ClientID,
+			},
+			Token: client.Token,
+		})
+	}
+	for _, client := range configuration.ManagedClients {
+		records = append(records, authentication.Record{
+			Context: authentication.Context{
+				Mode:     authentication.ModeManaged,
+				ClientID: client.ClientID,
+			},
+			Token: client.Token,
+		})
+	}
+	return authentication.NewSnapshot(records)
+}
+
+func loadServerAuthenticationFiles(configuration *ServerConfig) error {
+	baseDirectory := "."
+	if configuration.SourcePath != "" {
+		baseDirectory = filepath.Dir(configuration.SourcePath)
+	}
+	governedClients, err := loadGovernedClients(
+		resolveConfigurationPath(baseDirectory, configuration.Authentication.GovernedClientsPath),
+	)
+	if err != nil {
+		return err
+	}
+	managedClients, err := loadManagedClients(
+		resolveConfigurationPath(baseDirectory, configuration.Authentication.ManagedClientsPath),
+	)
+	if err != nil {
+		return err
+	}
+	for clientID := range governedClients {
+		if _, duplicate := managedClients[clientID]; duplicate {
+			return fmt.Errorf("client_id %q is configured in both governed and managed modes", clientID)
+		}
+	}
+	configuration.GovernedClients = governedClients
+	configuration.ManagedClients = managedClients
+	if _, err := BuildAuthenticationSnapshot(*configuration); err != nil {
+		return err
+	}
+	return nil
+}
+
+func resolveConfigurationPath(baseDirectory string, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(baseDirectory, path)
+}
+
+func loadGovernedClients(path string) (map[string]GovernedClientConfig, error) {
+	clients := make(map[string]GovernedClientConfig)
+	if path == "" {
+		return clients, nil
+	}
+	files, err := authenticationFiles(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, file := range files {
+		var client GovernedClientConfig
+		if err := loadAuthenticationYAML(file, &client); err != nil {
+			return nil, err
+		}
+		if err := validateAuthenticationClientFile(file, client.ClientID, client.Token); err != nil {
+			return nil, err
+		}
+		if err := validateGovernedPermissions(client.Permissions); err != nil {
+			return nil, fmt.Errorf("validate governed client %q: %w", client.ClientID, err)
+		}
+		if _, duplicate := clients[client.ClientID]; duplicate {
+			return nil, fmt.Errorf("client_id %q is duplicated", client.ClientID)
+		}
+		clients[client.ClientID] = client
+	}
+	return clients, nil
+}
+
+func loadManagedClients(path string) (map[string]ManagedClientConfig, error) {
+	clients := make(map[string]ManagedClientConfig)
+	if path == "" {
+		return clients, nil
+	}
+	files, err := authenticationFiles(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, file := range files {
+		var client ManagedClientConfig
+		if err := loadAuthenticationYAML(file, &client); err != nil {
+			return nil, err
+		}
+		if err := validateAuthenticationClientFile(file, client.ClientID, client.Token); err != nil {
+			return nil, err
+		}
+		if client.Configuration.Revision == 0 {
+			return nil, fmt.Errorf(
+				"validate managed client %q: configuration.revision must be greater than zero",
+				client.ClientID,
+			)
+		}
+		if err := validateManagedProxies(client.Configuration.Proxies); err != nil {
+			return nil, fmt.Errorf("validate managed client %q: %w", client.ClientID, err)
+		}
+		if _, duplicate := clients[client.ClientID]; duplicate {
+			return nil, fmt.Errorf("client_id %q is duplicated", client.ClientID)
+		}
+		clients[client.ClientID] = client
+	}
+	return clients, nil
+}
+
+func authenticationFiles(path string) ([]string, error) {
+	directoryInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect authentication directory %q: %w", path, err)
+	}
+	if directoryInfo.Mode()&os.ModeSymlink != 0 || !directoryInfo.IsDir() {
+		return nil, fmt.Errorf(
+			"authentication directory %q must be a directory without symbolic links",
+			path,
+		)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("read authentication directory %q: %w", path, err)
+	}
+	files := make([]string, 0, len(entries))
+	var totalBytes int64
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return nil, fmt.Errorf(
+				"authentication file %q must be a regular file without symbolic links",
+				filepath.Join(path, entry.Name()),
+			)
+		}
+		if len(files) >= maxAuthenticationFiles {
+			return nil, fmt.Errorf(
+				"authentication directory %q exceeds %d YAML files",
+				path,
+				maxAuthenticationFiles,
+			)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("inspect authentication file %q: %w", entry.Name(), err)
+		}
+		if info.Size() > maxAuthenticationFileBytes {
+			return nil, fmt.Errorf(
+				"authentication file %q exceeds %d bytes",
+				entry.Name(),
+				maxAuthenticationFileBytes,
+			)
+		}
+		totalBytes += info.Size()
+		if totalBytes > maxAuthenticationTotalBytes {
+			return nil, fmt.Errorf(
+				"authentication directory %q exceeds %d total bytes",
+				path,
+				maxAuthenticationTotalBytes,
+			)
+		}
+		files = append(files, filepath.Join(path, entry.Name()))
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func readAuthenticationFile(path string) ([]byte, error) {
+	directory := filepath.Dir(path)
+	name := filepath.Base(path)
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, fmt.Errorf("open authentication directory %q: %w", directory, err)
+	}
+	defer root.Close()
+
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, fmt.Errorf("inspect authentication file %q: %w", path, err)
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf(
+			"authentication file %q must be a regular file without symbolic links",
+			path,
+		)
+	}
+	if before.Size() > maxAuthenticationFileBytes {
+		return nil, fmt.Errorf(
+			"authentication file %q exceeds %d bytes",
+			name,
+			maxAuthenticationFileBytes,
+		)
+	}
+
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("open authentication file %q: %w", path, err)
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect opened authentication file %q: %w", path, err)
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("authentication file %q changed while opening", path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxAuthenticationFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read authentication file %q: %w", path, err)
+	}
+	if len(data) > maxAuthenticationFileBytes {
+		return nil, fmt.Errorf(
+			"authentication file %q exceeds %d bytes",
+			name,
+			maxAuthenticationFileBytes,
+		)
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect read authentication file %q: %w", path, err)
+	}
+	if !os.SameFile(opened, after) || opened.Size() != after.Size() ||
+		!opened.ModTime().Equal(after.ModTime()) {
+		return nil, fmt.Errorf("authentication file %q changed while reading", path)
+	}
+	return data, nil
+}
+
+func validateAuthenticationClientFile(path string, clientID string, token string) error {
+	if err := ValidateClientID(clientID); err != nil {
+		return fmt.Errorf("validate authentication file %q: %w", path, err)
+	}
+	expectedName := clientID + ".yaml"
+	if filepath.Base(path) != expectedName {
+		return fmt.Errorf(
+			"authentication file %q must be named %q",
+			path,
+			expectedName,
+		)
+	}
+	if len(token) < generatedTokenBytes {
+		return fmt.Errorf(
+			"authentication file %q token must contain at least %d bytes",
+			path,
+			generatedTokenBytes,
+		)
+	}
+	return nil
+}
+
+func validateGovernedPermissions(permissions GovernedPermissions) error {
+	types := make(map[string]struct{}, len(permissions.ProxyTypes))
+	for _, proxyType := range permissions.ProxyTypes {
+		switch proxyType {
+		case "tcp", "udp", "http":
+		default:
+			return fmt.Errorf("permissions.proxy_types contains unsupported type %q", proxyType)
+		}
+		if _, duplicate := types[proxyType]; duplicate {
+			return fmt.Errorf("permissions.proxy_types contains duplicate type %q", proxyType)
+		}
+		types[proxyType] = struct{}{}
+	}
+	if err := validatePortRanges("permissions.tcp.remote_port_ranges", permissions.TCP.RemotePortRanges); err != nil {
+		return err
+	}
+	if err := validatePortRanges("permissions.udp.remote_port_ranges", permissions.UDP.RemotePortRanges); err != nil {
+		return err
+	}
+	for index, domain := range permissions.HTTP.Domains {
+		if strings.HasPrefix(domain, "*.") {
+			if err := ValidateHTTPDomain(strings.TrimPrefix(domain, "*.")); err != nil {
+				return fmt.Errorf("permissions.http.domains[%d]: invalid wildcard domain", index)
+			}
+			continue
+		}
+		if err := ValidateHTTPDomain(domain); err != nil {
+			return fmt.Errorf("permissions.http.domains[%d]: %w", index, err)
+		}
+	}
+	limits := permissions.Limits
+	if limits.MaxProxies < 0 || limits.MaxTCPProxies < 0 ||
+		limits.MaxUDPProxies < 0 || limits.MaxHTTPProxies < 0 ||
+		limits.MaxActiveLinks < 0 {
+		return errors.New("permissions limits must not be negative")
+	}
+	return nil
+}
+
+func validatePortRanges(field string, ranges []PortRange) error {
+	sortedRanges := append([]PortRange(nil), ranges...)
+	sort.Slice(sortedRanges, func(left int, right int) bool {
+		return sortedRanges[left].Start < sortedRanges[right].Start
+	})
+	var previousEnd uint16
+	for index, portRange := range sortedRanges {
+		if portRange.Start == 0 || portRange.End == 0 || portRange.Start > portRange.End {
+			return fmt.Errorf("%s[%d] is invalid", field, index)
+		}
+		if index > 0 && portRange.Start <= previousEnd {
+			return fmt.Errorf("%s contains overlapping ranges", field)
+		}
+		previousEnd = portRange.End
+	}
+	return nil
+}
+
+func validateManagedProxies(proxies []ProxyConfig) error {
+	names := make(map[string]struct{}, len(proxies))
+	tcpPorts := make(map[uint16]struct{})
+	udpPorts := make(map[uint16]struct{})
+	httpDomains := make(map[string]struct{})
+	for index, proxy := range proxies {
+		if proxy.Name == "" || !proxyNamePattern.MatchString(proxy.Name) {
+			return fmt.Errorf("configuration.proxies[%d].name has an invalid format", index)
+		}
+		if _, duplicate := names[proxy.Name]; duplicate {
+			return fmt.Errorf("configuration.proxies[%d].name is duplicated", index)
+		}
+		names[proxy.Name] = struct{}{}
+		switch proxy.Type {
+		case "tcp":
+			if proxy.RemotePort == 0 || proxy.Domain != "" {
+				return fmt.Errorf("configuration.proxies[%d] has invalid %s fields", index, proxy.Type)
+			}
+			if _, duplicate := tcpPorts[proxy.RemotePort]; duplicate {
+				return fmt.Errorf(
+					"configuration.proxies[%d].remote_port is duplicated for tcp",
+					index,
+				)
+			}
+			tcpPorts[proxy.RemotePort] = struct{}{}
+		case "udp":
+			if proxy.RemotePort == 0 || proxy.Domain != "" {
+				return fmt.Errorf("configuration.proxies[%d] has invalid %s fields", index, proxy.Type)
+			}
+			if _, duplicate := udpPorts[proxy.RemotePort]; duplicate {
+				return fmt.Errorf(
+					"configuration.proxies[%d].remote_port is duplicated for udp",
+					index,
+				)
+			}
+			udpPorts[proxy.RemotePort] = struct{}{}
+		case "http":
+			if proxy.RemotePort != 0 {
+				return fmt.Errorf("configuration.proxies[%d].remote_port is not allowed for http", index)
+			}
+			if err := ValidateHTTPDomain(proxy.Domain); err != nil {
+				return fmt.Errorf("configuration.proxies[%d].domain: %w", index, err)
+			}
+			if _, duplicate := httpDomains[proxy.Domain]; duplicate {
+				return fmt.Errorf(
+					"configuration.proxies[%d].domain is duplicated",
+					index,
+				)
+			}
+			httpDomains[proxy.Domain] = struct{}{}
+		default:
+			return fmt.Errorf("configuration.proxies[%d].type is invalid", index)
+		}
+		if net.ParseIP(proxy.LocalIP) == nil || proxy.LocalPort == 0 {
+			return fmt.Errorf("configuration.proxies[%d] has invalid local target", index)
+		}
+	}
+	return nil
+}
+
+// ValidateManagedProxies validates a complete server-owned client proxy set.
+func ValidateManagedProxies(proxies []ProxyConfig) error {
+	return validateManagedProxies(proxies)
 }
