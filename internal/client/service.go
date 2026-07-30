@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"os"
+	"runtime"
 	"time"
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
+	"github.com/acexy/portway/internal/buildinfo"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -54,6 +57,7 @@ type Service struct {
 	logger        *logging.Logger
 	configuration config.ClientConfig
 	transport     transport.Client
+	identification protocol.ClientIdentification
 }
 
 // NewService creates a client service.
@@ -66,6 +70,12 @@ func NewService(logger *logging.Logger, configuration config.ClientConfig) *Serv
 
 // Run runs the client until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
+	identification, err := currentClientIdentification()
+	if err != nil {
+		return err
+	}
+	s.identification = identification
+
 	transportClient, err := transportfactory.NewClient(s.configuration)
 	if err != nil {
 		return err
@@ -168,6 +178,38 @@ func (s *Service) runControlSession(
 	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 		return "", false, fmt.Errorf("set control hello deadline: %w", err)
 	}
+	envelope, err := protocol.ReadControl(connection)
+	if err != nil {
+		return "", false, classifyControlProtocolError(err)
+	}
+	if envelope.Type != protocol.MessageServerIdentification {
+		return "", false, fmt.Errorf(
+			"%w: expected %s, got %s",
+			transport.ErrProtocol,
+			protocol.MessageServerIdentification,
+			envelope.Type,
+		)
+	}
+	var serverIdentification protocol.ServerIdentification
+	if err := protocol.DecodePayload(envelope, &serverIdentification); err != nil {
+		return "", false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
+	}
+	if err := protocol.ValidateServerIdentification(serverIdentification); err != nil {
+		return "", false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
+	}
+	if err := protocol.WriteControl(
+		connection,
+		protocol.MessageClientIdentification,
+		s.identification,
+	); err != nil {
+		return "", false, err
+	}
+	s.logger.TraceWithField(
+		"server identification accepted",
+		"server_version",
+		serverIdentification.Version,
+	)
+
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
 		ClientID:        s.configuration.ClientID,
 		ResumeSessionID: resumeSessionID,
@@ -181,7 +223,7 @@ func (s *Service) runControlSession(
 		resumeSessionID != "",
 	)
 
-	envelope, err := protocol.ReadControl(connection)
+	envelope, err = protocol.ReadControl(connection)
 	if err != nil {
 		return "", false, classifyControlProtocolError(err)
 	}
@@ -243,6 +285,27 @@ func (s *Service) runControlSession(
 		writer,
 		transportSession,
 	)
+}
+
+func currentClientIdentification() (protocol.ClientIdentification, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return protocol.ClientIdentification{}, fmt.Errorf("get client hostname: %w", err)
+	}
+	identification := protocol.ClientIdentification{
+		Product:  protocol.ProductClient,
+		Version:  buildinfo.Current().Version,
+		OS:       protocol.OperatingSystem(runtime.GOOS),
+		Arch:     protocol.Architecture(runtime.GOARCH),
+		Hostname: hostname,
+	}
+	if err := protocol.ValidateClientIdentification(identification); err != nil {
+		return protocol.ClientIdentification{}, fmt.Errorf(
+			"build client identification: %w",
+			err,
+		)
+	}
+	return identification, nil
 }
 
 func (s *Service) runControlLoop(

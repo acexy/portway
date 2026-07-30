@@ -1,13 +1,67 @@
 package server
 
 import (
+	"context"
 	"net"
+	"strings"
 	"testing"
 
-	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/control"
+	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/transport"
 )
+
+type testStream struct {
+	net.Conn
+}
+
+func (stream testStream) CloseWrite() error {
+	return stream.Close()
+}
+
+func TestHandleConnectionRejectsInvalidClientIdentification(t *testing.T) {
+	t.Parallel()
+
+	clientConnection, serverConnection := net.Pipe()
+	defer clientConnection.Close()
+
+	service := &Service{}
+	results := make(chan error, 1)
+	go func() {
+		results <- service.handleConnection(context.Background(), transport.Inbound{
+			Stream:        testStream{Conn: serverConnection},
+			Role:          protocol.RoleControl,
+			RemoteAddress: "pipe",
+		})
+	}()
+
+	envelope, err := protocol.ReadControl(clientConnection)
+	if err != nil {
+		t.Fatalf("read server identification: %v", err)
+	}
+	if envelope.Type != protocol.MessageServerIdentification {
+		t.Fatalf("unexpected response type: %s", envelope.Type)
+	}
+	if err := protocol.WriteControl(
+		clientConnection,
+		protocol.MessageClientIdentification,
+		protocol.ClientIdentification{
+			Product:  protocol.ProductClient,
+			Version:  "v0.0.1",
+			OS:       protocol.OperatingSystemDarwin,
+			Arch:     protocol.ArchitectureARM64,
+			Hostname: "invalid\nhostname",
+		},
+	); err != nil {
+		t.Fatalf("write client identification: %v", err)
+	}
+
+	err = <-results
+	if err == nil || !strings.Contains(err.Error(), "control characters") {
+		t.Fatalf("unexpected identification validation error: %v", err)
+	}
+}
 
 func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 	t.Parallel()

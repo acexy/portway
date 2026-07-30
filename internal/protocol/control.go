@@ -27,6 +27,10 @@ const (
 	MessageClientHello MessageType = "client_hello"
 	// MessageServerHello confirms control protocol negotiation.
 	MessageServerHello MessageType = "server_hello"
+	// MessageServerIdentification declares the server product and version.
+	MessageServerIdentification MessageType = "server_identification"
+	// MessageClientIdentification declares the client product and runtime environment.
+	MessageClientIdentification MessageType = "client_identification"
 	// MessagePing checks that a control session remains responsive.
 	MessagePing MessageType = "ping"
 	// MessagePong acknowledges a ping.

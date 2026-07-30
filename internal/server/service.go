@@ -15,6 +15,7 @@ import (
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
+	"github.com/acexy/portway/internal/buildinfo"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -205,7 +206,36 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		return fmt.Errorf("set control hello deadline: %w", err)
 	}
 
+	if err := protocol.WriteControl(
+		connection,
+		protocol.MessageServerIdentification,
+		protocol.ServerIdentification{
+			Product: protocol.ProductServer,
+			Version: buildinfo.Current().Version,
+		},
+	); err != nil {
+		return fmt.Errorf("write server identification: %w", err)
+	}
 	envelope, err := protocol.ReadControl(connection)
+	if err != nil {
+		return err
+	}
+	if envelope.Type != protocol.MessageClientIdentification {
+		return fmt.Errorf(
+			"expected %s, got %s",
+			protocol.MessageClientIdentification,
+			envelope.Type,
+		)
+	}
+	var clientIdentification protocol.ClientIdentification
+	if err := protocol.DecodePayload(envelope, &clientIdentification); err != nil {
+		return err
+	}
+	if err := protocol.ValidateClientIdentification(clientIdentification); err != nil {
+		return fmt.Errorf("validate client identification: %w", err)
+	}
+
+	envelope, err = protocol.ReadControl(connection)
 	if err != nil {
 		return err
 	}
@@ -233,8 +263,11 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		return err
 	}
 	sessionLogger := s.logger.WithFields(map[string]any{
-		"client_id":  clientHello.ClientID,
-		"session_id": sessionID,
+		"client_id":      clientHello.ClientID,
+		"session_id":     sessionID,
+		"client_version": clientIdentification.Version,
+		"platform":       string(clientIdentification.OS) + "-" + string(clientIdentification.Arch),
+		"hostname":       clientIdentification.Hostname,
 	})
 	sessionLogger.TraceWithFields("client hello received", map[string]any{
 		"resume":            clientHello.ResumeSessionID != "",
