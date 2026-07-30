@@ -126,6 +126,7 @@ type ServerConfig struct {
 	Transport      ServerTransportConfig `yaml:"transport"`
 	Tunnel         TunnelConfig          `yaml:"tunnel"`
 	HTTP           HTTPConfig            `yaml:"http"`
+	UDP            UDPConfig             `yaml:"udp"`
 	Security       SecurityConfig        `yaml:"security"`
 	LogLevel       LogLevel              `yaml:"log_level"`
 	Authentication AuthenticationConfig  `yaml:"authentication"`
@@ -167,6 +168,7 @@ func DefaultServer() ServerConfig {
 			MaxUpgradeConnectionsPerDomain:  httpDefaultMaxUpgradeConnectionsPerDomain,
 			MaxConcurrentHTTP2Streams:       httpDefaultMaxConcurrentHTTP2Streams,
 		},
+		UDP: DefaultUDPConfig(),
 	}
 }
 
@@ -264,9 +266,13 @@ func validateClient(configuration ClientConfig) error {
 		}
 		proxyNames[proxy.Name] = struct{}{}
 		switch proxy.Type {
-		case "tcp":
+		case "tcp", "udp":
 			if proxy.Domain != "" {
-				return fmt.Errorf("proxies[%d].domain is not allowed for tcp", index)
+				return fmt.Errorf(
+					"proxies[%d].domain is not allowed for %s",
+					index,
+					proxy.Type,
+				)
 			}
 			if proxy.RemotePort == 0 {
 				return fmt.Errorf("proxies[%d].remote_port must be between 1 and 65535", index)
@@ -279,7 +285,7 @@ func validateClient(configuration ClientConfig) error {
 				return fmt.Errorf("proxies[%d].domain: %w", index, err)
 			}
 		default:
-			return fmt.Errorf("proxies[%d].type must be tcp or http", index)
+			return fmt.Errorf("proxies[%d].type must be tcp, udp, or http", index)
 		}
 		if proxy.LocalIP == "" {
 			configuration.Proxies[index].LocalIP = "127.0.0.1"
@@ -313,6 +319,9 @@ func validateServer(configuration ServerConfig) error {
 		return errors.New("tunnel.http_listen_address must differ from transport.listen_address")
 	}
 	if err := validateHTTPConfig(configuration.HTTP); err != nil {
+		return err
+	}
+	if err := validateUDPConfig(configuration.UDP); err != nil {
 		return err
 	}
 	if strings.TrimSpace(configuration.Security.HTTPClientIPHeader) !=

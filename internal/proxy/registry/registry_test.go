@@ -168,6 +168,88 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 	}
 }
 
+func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestTCPProxyManager(t)
+	existingPort := uint16(reserveUDPAddress(t).Port)
+	manager.Attach("client-one", "session-one", nil)
+	initial := manager.Sync(
+		"client-one",
+		"session-one",
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{
+				udpProxyDeclaration("existing", existingPort),
+			},
+		},
+	)
+	if initial.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("initial UDP synchronization failed: %+v", initial.Error)
+	}
+	originalEndpoint := manager.udpEndpoints[existingPort]
+	occupiedConnection, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP: net.ParseIP("127.0.0.1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupiedConnection.Close()
+	occupiedPort := uint16(occupiedConnection.LocalAddr().(*net.UDPAddr).Port)
+
+	rejected := manager.Sync(
+		"client-one",
+		"session-one",
+		"request-two",
+		protocol.SyncProxies{
+			Revision: 2,
+			Proxies: []protocol.ProxyDeclaration{
+				udpProxyDeclaration("existing", existingPort),
+				udpProxyDeclaration("conflicting", occupiedPort),
+			},
+		},
+	)
+	if rejected.Status != protocol.ProxySyncStatusRejected ||
+		rejected.Error == nil ||
+		rejected.Error.Code != protocol.ProxyErrorPortConflict {
+		t.Fatalf("expected UDP port conflict, got %+v", rejected)
+	}
+	state := manager.clients["client-one"]
+	if state.revision != 1 ||
+		len(state.udpProxies) != 1 ||
+		state.udpProxies["existing"] == nil ||
+		manager.udpEndpoints[existingPort] != originalEndpoint {
+		t.Fatal("rejected synchronization changed the previous UDP proxy state")
+	}
+}
+
+func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	manager.Attach("client-one", "session-one", nil)
+	result := manager.Sync(
+		"client-one",
+		"session-one",
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration("tcp-service", port),
+				udpProxyDeclaration("udp-service", port),
+			},
+		},
+	)
+	if result.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("TCP and UDP numeric port sharing failed: %+v", result.Error)
+	}
+	if manager.endpoints[port] == nil || manager.udpEndpoints[port] == nil {
+		t.Fatal("TCP or UDP endpoint was not published")
+	}
+}
+
 func newTestTCPProxyManager(t *testing.T) *Registry {
 	t.Helper()
 
@@ -195,6 +277,14 @@ func tcpProxyDeclaration(name string, port uint16) protocol.ProxyDeclaration {
 	}
 }
 
+func udpProxyDeclaration(name string, port uint16) protocol.ProxyDeclaration {
+	return protocol.ProxyDeclaration{
+		Name: name,
+		Type: protocol.ProxyTypeUDP,
+		RemotePort: port,
+	}
+}
+
 func reserveTCPAddress(t *testing.T) *net.TCPAddr {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -203,6 +293,21 @@ func reserveTCPAddress(t *testing.T) *net.TCPAddr {
 	}
 	address := listener.Addr().(*net.TCPAddr)
 	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
+
+func reserveUDPAddress(t *testing.T) *net.UDPAddr {
+	t.Helper()
+	connection, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP: net.ParseIP("127.0.0.1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := connection.LocalAddr().(*net.UDPAddr)
+	if err := connection.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return address

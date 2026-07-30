@@ -3,18 +3,13 @@
 This document summarizes the next public development priorities for Portway.
 Items are directional and do not represent release-date commitments.
 
-## Next core protocol: UDP
+## UDP hardening
 
-- [ ] Add UDP proxy registration and configuration.
-- [ ] Preserve UDP datagram boundaries end to end.
-- [ ] Define bounded UDP session ownership and idle expiration.
-- [ ] Support UDP forwarding over both TCP and QUIC transports.
-- [ ] Apply authentication, atomic registration, source IP filtering, and
-      lifecycle rules consistently with existing proxy types.
-- [ ] Define queue limits, overflow behavior, maximum datagram sizes, and
-      operator-visible errors.
-- [ ] Add deterministic tests for session expiry, cancellation, packet loss,
-      queue overflow, and resource release.
+- [ ] Add repeatable packet-loss, congestion, queue-overflow, and high-source-
+      cardinality load scenarios.
+- [ ] Add long-running Association expiry and resource-trend verification.
+- [ ] Measure whether native QUIC Datagram support provides enough benefit to
+      justify an additional transport capability.
 
 ## Performance
 

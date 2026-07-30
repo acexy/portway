@@ -25,6 +25,8 @@ type Target struct {
 	ProxyType  protocol.ProxyType
 	BindingID  string
 	Writer     *control.Writer
+	MaxDatagramSize int
+	WriteTimeout time.Duration
 }
 
 type brokerPendingLink struct {
@@ -72,6 +74,27 @@ func (broker *Broker) ServeStream(
 ) error {
 	_, err := broker.request(target, onCancel, nil, handler)
 	return err
+}
+
+// ServeStreamContext requests one stream and cancels its pending or active
+// state when the supplied context ends.
+func (broker *Broker) ServeStreamContext(
+	ctx context.Context,
+	target Target,
+	onCancel func(),
+	handler func(context.Context, net.Conn) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	linkID, err := broker.request(target, onCancel, nil, handler)
+	if err != nil {
+		return err
+	}
+	context.AfterFunc(ctx, func() {
+		broker.cancelAny(linkID, ctx.Err())
+	})
+	return nil
 }
 
 func (broker *Broker) OpenStream(ctx context.Context, target Target) (net.Conn, error) {
@@ -125,6 +148,8 @@ func (broker *Broker) request(
 		BindingID:       target.BindingID,
 		Ticket:          ticket,
 		ExpiresAtUnixMS: time.Now().Add(pendingTimeout).UnixMilli(),
+		MaxDatagramSize: uint32(target.MaxDatagramSize),
+		WriteTimeoutMS:  uint32(target.WriteTimeout.Milliseconds()),
 	}); err != nil {
 		broker.cancel(linkID, false, err)
 		return "", err
@@ -227,6 +252,34 @@ func (broker *Broker) cancel(linkID string, notify bool, err error) {
 			Reason: "link_cancelled",
 		})
 	}
+}
+
+func (broker *Broker) cancelAny(linkID string, err error) {
+	broker.mutex.Lock()
+	active := broker.active[linkID]
+	if active != nil {
+		broker.mutex.Unlock()
+		active.connection.Close()
+		return
+	}
+	pending := broker.pending[linkID]
+	if pending == nil {
+		broker.mutex.Unlock()
+		return
+	}
+	delete(broker.pending, linkID)
+	broker.mutex.Unlock()
+	pending.timer.Stop()
+	if pending.onCancel != nil {
+		pending.onCancel()
+	}
+	if pending.ready != nil {
+		pending.ready <- linkOpenResult{err: err}
+	}
+	_ = pending.target.Writer.Write(protocol.MessageCancelLink, protocol.CancelLink{
+		LinkID: linkID,
+		Reason: "link_cancelled",
+	})
 }
 
 func (broker *Broker) CancelSession(clientID string, sessionID string) {

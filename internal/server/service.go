@@ -87,13 +87,14 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
-	s.proxyRegistry = proxyregistry.New(
+	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,
 		s.logger,
 		s.configuration.Tunnel.BindIP,
 		s.linkBroker,
 		s.configuration.Tunnel.HTTPListenAddress != "",
 		s.configuration.HTTP,
+		s.configuration.UDP,
 		sourceFilter,
 	)
 	defer s.proxyRegistry.Close()
@@ -410,16 +411,13 @@ func (s *Service) serveControlMessages(
 				result.Revision,
 			)
 		case protocol.MessageLinkFailed:
-			if !coll.SliceContains(negotiatedCapabilities, "tcp") {
-				return false, errors.New("TCP link failure requires negotiated tcp capability")
-			}
 			var failure protocol.LinkFailed
 			if err := protocol.DecodePayload(envelope, &failure); err != nil {
 				return false, err
 			}
 			s.linkBroker.ReportFailure(clientID, sessionID, failure)
 			sessionLogger.WithField("link_id", failure.LinkID).TraceWithField(
-				"TCP link setup failed",
+				"proxy link setup failed",
 				"error_code",
 				failure.Code,
 			)
@@ -489,6 +487,7 @@ func writeSessionError(connection net.Conn, sessionError protocol.SessionError) 
 func negotiateCapabilities(clientCapabilities []string) []string {
 	supported := map[string]struct{}{
 		"tcp":          {},
+		"udp":          {},
 		"http":         {},
 		"json-control": {},
 	}

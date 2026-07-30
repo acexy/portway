@@ -29,6 +29,8 @@ type OpenLink struct {
 	BindingID       string `json:"binding_id"`
 	Ticket          string `json:"ticket"`
 	ExpiresAtUnixMS int64  `json:"expires_at_unix_ms"`
+	MaxDatagramSize uint32 `json:"max_datagram_size,omitempty"`
+	WriteTimeoutMS  uint32 `json:"write_timeout_ms,omitempty"`
 }
 
 // CancelLink asks a client to cancel an unbound link.

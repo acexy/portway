@@ -8,6 +8,8 @@ const (
 	ProxyTypeTCP ProxyType = "tcp"
 	// ProxyTypeHTTP identifies an HTTP domain-routing proxy.
 	ProxyTypeHTTP ProxyType = "http"
+	// ProxyTypeUDP identifies a UDP datagram proxy.
+	ProxyTypeUDP ProxyType = "udp"
 )
 
 // ProxySyncStatus identifies the result of an atomic proxy declaration.

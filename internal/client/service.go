@@ -171,7 +171,7 @@ func (s *Service) runControlSession(
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
 		ClientID:        s.configuration.ClientID,
 		ResumeSessionID: resumeSessionID,
-		Capabilities:    []string{"tcp", "http", "json-control"},
+		Capabilities:    []string{"tcp", "udp", "http", "json-control"},
 	}); err != nil {
 		return "", false, err
 	}

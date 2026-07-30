@@ -20,6 +20,7 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	proxyhttp "github.com/acexy/portway/internal/proxy/http"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
+	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 	"github.com/acexy/portway/internal/security/ipfilter"
 )
 
@@ -36,6 +37,10 @@ type Registry struct {
 	clients             map[string]*clientState
 	endpoints           map[uint16]*proxytcp.Endpoint
 	endpointBindings    map[uint16]*tcpProxyBinding
+	udpEndpoints        map[uint16]*proxyudp.Endpoint
+	udpEndpointBindings map[uint16]*udpProxyBinding
+	udpConfiguration    config.UDPConfig
+	udpLimiter          *proxyudp.Limiter
 	httpEnabled         bool
 	httpConfiguration   config.HTTPConfig
 	httpDomains         map[string]*httpProxyBinding
@@ -54,6 +59,7 @@ type clientState struct {
 	lastRequestID   string
 	lastResult      protocol.SyncResult
 	tcpProxies      map[string]*tcpProxyBinding
+	udpProxies      map[string]*udpProxyBinding
 	httpProxies     map[string]*httpProxyBinding
 }
 
@@ -74,6 +80,16 @@ type httpProxyBinding struct {
 	runtime     *proxyhttp.Binding
 }
 
+type udpProxyBinding struct {
+	manager     *Registry
+	clientID    string
+	sessionID   string
+	bindingID   string
+	declaration protocol.ProxyDeclaration
+	endpoint    *proxyudp.Endpoint
+	runtime     *proxyudp.Binding
+}
+
 // New creates a proxy registry.
 func New(
 	ctx context.Context,
@@ -82,6 +98,51 @@ func New(
 	broker *link.Broker,
 	httpEnabled bool,
 	httpConfiguration config.HTTPConfig,
+	sourceFilters ...*ipfilter.Filter,
+) *Registry {
+	return newRegistry(
+		ctx,
+		logger,
+		proxyBindIP,
+		broker,
+		httpEnabled,
+		httpConfiguration,
+		config.DefaultUDPConfig(),
+		sourceFilters...,
+	)
+}
+
+// NewConfigured creates a registry with explicit HTTP and UDP resource limits.
+func NewConfigured(
+	ctx context.Context,
+	logger *logging.Logger,
+	proxyBindIP string,
+	broker *link.Broker,
+	httpEnabled bool,
+	httpConfiguration config.HTTPConfig,
+	udpConfiguration config.UDPConfig,
+	sourceFilters ...*ipfilter.Filter,
+) *Registry {
+	return newRegistry(
+		ctx,
+		logger,
+		proxyBindIP,
+		broker,
+		httpEnabled,
+		httpConfiguration,
+		udpConfiguration,
+		sourceFilters...,
+	)
+}
+
+func newRegistry(
+	ctx context.Context,
+	logger *logging.Logger,
+	proxyBindIP string,
+	broker *link.Broker,
+	httpEnabled bool,
+	httpConfiguration config.HTTPConfig,
+	udpConfiguration config.UDPConfig,
 	sourceFilters ...*ipfilter.Filter,
 ) *Registry {
 	var sourceFilter *ipfilter.Filter
@@ -95,11 +156,15 @@ func New(
 		linkBroker:    broker,
 		httpEnabled:   httpEnabled,
 		httpConfiguration: httpConfiguration,
+		udpConfiguration: udpConfiguration,
+		udpLimiter: proxyudp.NewLimiter(udpConfiguration),
 		sourceFilter: sourceFilter,
 		httpDomains:   make(map[string]*httpProxyBinding),
 		clients:       make(map[string]*clientState),
 		endpoints:     make(map[uint16]*proxytcp.Endpoint),
 		endpointBindings: make(map[uint16]*tcpProxyBinding),
+		udpEndpoints: make(map[uint16]*proxyudp.Endpoint),
+		udpEndpointBindings: make(map[uint16]*udpProxyBinding),
 	}
 }
 
@@ -115,6 +180,7 @@ func (manager *Registry) Attach(
 	if !exists {
 		state = &clientState{
 			tcpProxies: make(map[string]*tcpProxyBinding),
+			udpProxies: make(map[string]*udpProxyBinding),
 			httpProxies: make(map[string]*httpProxyBinding),
 		}
 		manager.clients[clientID] = state
@@ -212,6 +278,10 @@ func (manager *Registry) Sync(
 	for name, binding := range state.tcpProxies {
 		existingProxies[name] = binding
 	}
+	existingUDPProxies := make(map[string]*udpProxyBinding, len(state.udpProxies))
+	for name, binding := range state.udpProxies {
+		existingUDPProxies[name] = binding
+	}
 	existingHTTPProxies := make(map[string]*httpProxyBinding, len(state.httpProxies))
 	for name, binding := range state.httpProxies {
 		existingHTTPProxies[name] = binding
@@ -220,6 +290,7 @@ func (manager *Registry) Sync(
 
 	declarationsByName := make(map[string]protocol.ProxyDeclaration, len(request.Proxies))
 	declarationsByPort := make(map[uint16]protocol.ProxyDeclaration, len(request.Proxies))
+	declarationsByUDPPort := make(map[uint16]protocol.ProxyDeclaration, len(request.Proxies))
 	for _, declaration := range request.Proxies {
 		if !tcpProxyNamePattern.MatchString(declaration.Name) {
 			return rejectedSyncResult(
@@ -233,6 +304,10 @@ func (manager *Registry) Sync(
 		case protocol.ProxyTypeTCP:
 			if declaration.RemotePort == 0 || declaration.Domain != "" {
 				return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid TCP proxy declaration")
+			}
+		case protocol.ProxyTypeUDP:
+			if declaration.RemotePort == 0 || declaration.Domain != "" {
+				return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid UDP proxy declaration")
 			}
 		case protocol.ProxyTypeHTTP:
 			if declaration.RemotePort != 0 || config.ValidateHTTPDomain(declaration.Domain) != nil {
@@ -262,6 +337,17 @@ func (manager *Registry) Sync(
 				)
 			}
 			declarationsByPort[declaration.RemotePort] = declaration
+		}
+		if declaration.Type == protocol.ProxyTypeUDP {
+			if _, duplicate := declarationsByUDPPort[declaration.RemotePort]; duplicate {
+				return rejectedSyncResult(
+					request.Revision,
+					protocol.ProxyErrorInvalidProxy,
+					declaration.Name,
+					"duplicate UDP remote port",
+				)
+			}
+			declarationsByUDPPort[declaration.RemotePort] = declaration
 		}
 		declarationsByName[declaration.Name] = declaration
 	}
@@ -299,6 +385,31 @@ func (manager *Registry) Sync(
 	}
 	manager.mutex.Unlock()
 
+	manager.mutex.Lock()
+	reusableUDPEndpoints := make(map[uint16]*proxyudp.Endpoint, len(request.Proxies))
+	for _, declaration := range request.Proxies {
+		if declaration.Type != protocol.ProxyTypeUDP {
+			continue
+		}
+		endpoint := manager.udpEndpoints[declaration.RemotePort]
+		if endpoint == nil {
+			continue
+		}
+		currentBinding := manager.udpEndpointBindings[declaration.RemotePort]
+		if currentBinding == nil || currentBinding.clientID != clientID ||
+			existingUDPProxies[currentBinding.declaration.Name] != currentBinding {
+			manager.mutex.Unlock()
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorPortConflict,
+				declaration.Name,
+				"UDP remote port is unavailable",
+			)
+		}
+		reusableUDPEndpoints[declaration.RemotePort] = endpoint
+	}
+	manager.mutex.Unlock()
+
 	newEndpoints := make(map[uint16]*proxytcp.Endpoint)
 	for _, declaration := range request.Proxies {
 		if declaration.Type != protocol.ProxyTypeTCP {
@@ -325,12 +436,42 @@ func (manager *Registry) Sync(
 		}
 		newEndpoints[declaration.RemotePort] = endpoint
 	}
+	newUDPEndpoints := make(map[uint16]*proxyudp.Endpoint)
+	for _, declaration := range request.Proxies {
+		if declaration.Type != protocol.ProxyTypeUDP ||
+			reusableUDPEndpoints[declaration.RemotePort] != nil {
+			continue
+		}
+		listenAddress := net.JoinHostPort(
+			manager.proxyBindIP,
+			strconv.Itoa(int(declaration.RemotePort)),
+		)
+		endpoint, err := proxyudp.Listen(
+			manager.context,
+			manager.logger,
+			listenAddress,
+			manager.sourceFilter,
+			manager.udpConfiguration.MaxDatagramSize,
+		)
+		if err != nil {
+			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorPortConflict,
+				declaration.Name,
+				"UDP remote port is unavailable",
+			)
+		}
+		newUDPEndpoints[declaration.RemotePort] = endpoint
+	}
 
 	nextProxies := make(map[string]*tcpProxyBinding, len(request.Proxies))
+	nextUDPProxies := make(map[string]*udpProxyBinding, len(request.Proxies))
 	nextHTTPProxies := make(map[string]*httpProxyBinding, len(request.Proxies))
 	results := make([]protocol.ProxyResult, 0, len(request.Proxies))
 	for _, declaration := range request.Proxies {
-		if declaration.Type == protocol.ProxyTypeHTTP {
+		if declaration.Type != protocol.ProxyTypeTCP {
 			continue
 		}
 		existing := existingProxies[declaration.Name]
@@ -351,6 +492,7 @@ func (manager *Registry) Sync(
 		bindingID, err := newBindingID()
 		if err != nil {
 			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
 			return rejectedSyncResult(
 				request.Revision,
 				protocol.ProxyErrorInvalidRequest,
@@ -376,6 +518,51 @@ func (manager *Registry) Sync(
 		})
 	}
 
+	for _, declaration := range request.Proxies {
+		if declaration.Type != protocol.ProxyTypeUDP {
+			continue
+		}
+		existing := existingUDPProxies[declaration.Name]
+		unchanged := existing != nil && existing.declaration == declaration &&
+			existing.sessionID == sessionID
+		if unchanged {
+			nextUDPProxies[declaration.Name] = existing
+			results = append(results, protocol.ProxyResult{
+				Name: declaration.Name,
+				Status: protocol.ProxyStatusUnchanged,
+				RemotePort: declaration.RemotePort,
+			})
+			continue
+		}
+		endpoint := reusableUDPEndpoints[declaration.RemotePort]
+		if endpoint == nil {
+			endpoint = newUDPEndpoints[declaration.RemotePort]
+		}
+		binding, err := manager.newUDPBinding(
+			clientID,
+			sessionID,
+			declaration,
+			endpoint,
+		)
+		if err != nil {
+			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
+			closeUDPBindings(nextUDPProxies, existingUDPProxies)
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorInvalidRequest,
+				declaration.Name,
+				"create UDP proxy binding",
+			)
+		}
+		nextUDPProxies[declaration.Name] = binding
+		results = append(results, protocol.ProxyResult{
+			Name: declaration.Name,
+			Status: protocol.ProxyStatusActive,
+			RemotePort: declaration.RemotePort,
+		})
+	}
+
 	manager.mutex.Lock()
 	for _, declaration := range request.Proxies {
 		if declaration.Type != protocol.ProxyTypeHTTP {
@@ -385,6 +572,8 @@ func (manager *Registry) Sync(
 		if owner != nil && existingHTTPProxies[owner.declaration.Name] != owner {
 			manager.mutex.Unlock()
 			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
+			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, declaration.Name, "HTTP domain is unavailable")
 		}
 	}
@@ -407,6 +596,8 @@ func (manager *Registry) Sync(
 		binding, err := manager.newHTTPBinding(clientID, sessionID, declaration)
 		if err != nil {
 			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
+			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
 			return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidRequest, declaration.Name, "create HTTP proxy binding")
 		}
@@ -426,6 +617,8 @@ func (manager *Registry) Sync(
 	if !exists || state.sessionID != sessionID {
 		manager.mutex.Unlock()
 		closeTCPEndpoints(newEndpoints)
+		closeUDPEndpoints(newUDPEndpoints)
+		closeUDPBindings(nextUDPProxies, existingUDPProxies)
 		closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
 		return rejectedSyncResult(
 			request.Revision,
@@ -441,6 +634,8 @@ func (manager *Registry) Sync(
 			existingProxies[manager.endpointBindings[port].declaration.Name] != manager.endpointBindings[port] {
 			manager.mutex.Unlock()
 			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
+			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
 				protocol.ProxyErrorPortConflict,
@@ -449,11 +644,31 @@ func (manager *Registry) Sync(
 			)
 		}
 	}
+	for port, endpoint := range reusableUDPEndpoints {
+		currentBinding := manager.udpEndpointBindings[port]
+		if manager.udpEndpoints[port] != endpoint ||
+			currentBinding == nil ||
+			currentBinding.clientID != clientID ||
+			existingUDPProxies[currentBinding.declaration.Name] != currentBinding {
+			manager.mutex.Unlock()
+			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
+			closeUDPBindings(nextUDPProxies, existingUDPProxies)
+			return rejectedSyncResult(
+				request.Revision,
+				protocol.ProxyErrorPortConflict,
+				declarationsByUDPPort[port].Name,
+				"UDP remote port ownership changed during registration",
+			)
+		}
+	}
 	for _, binding := range nextHTTPProxies {
 		owner := manager.httpDomains[binding.declaration.Domain]
 		if owner != nil && existingHTTPProxies[owner.declaration.Name] != owner {
 			manager.mutex.Unlock()
 			closeTCPEndpoints(newEndpoints)
+			closeUDPEndpoints(newUDPEndpoints)
+			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
 			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration")
 		}
@@ -463,6 +678,12 @@ func (manager *Registry) Sync(
 	for name, existing := range existingProxies {
 		if nextProxies[name] != existing {
 			removedProxyNames = append(removedProxyNames, name)
+		}
+	}
+	removedUDPBindings := make([]*udpProxyBinding, 0)
+	for name, existing := range existingUDPProxies {
+		if nextUDPProxies[name] != existing {
+			removedUDPBindings = append(removedUDPBindings, existing)
 		}
 	}
 	removedHTTPBindings := make([]*httpProxyBinding, 0)
@@ -496,7 +717,28 @@ func (manager *Registry) Sync(
 			removedEndpoints[existing.declaration.RemotePort] = endpoint
 		}
 	}
+	nextUDPEndpoints := make(map[uint16]*proxyudp.Endpoint, len(nextUDPProxies))
+	for _, binding := range nextUDPProxies {
+		binding.sessionID = sessionID
+		binding.endpoint.SetHandler(binding.runtime.HandleDatagram)
+		nextUDPEndpoints[binding.declaration.RemotePort] = binding.endpoint
+		manager.udpEndpoints[binding.declaration.RemotePort] = binding.endpoint
+		manager.udpEndpointBindings[binding.declaration.RemotePort] = binding
+	}
+	removedUDPEndpoints := make(map[uint16]*proxyudp.Endpoint)
+	for _, existing := range existingUDPProxies {
+		endpoint := existing.endpoint
+		remotePort := existing.declaration.RemotePort
+		if nextUDPEndpoints[remotePort] != endpoint {
+			if manager.udpEndpoints[remotePort] == endpoint {
+				delete(manager.udpEndpoints, remotePort)
+				delete(manager.udpEndpointBindings, remotePort)
+			}
+			removedUDPEndpoints[remotePort] = endpoint
+		}
+	}
 	state.tcpProxies = nextProxies
+	state.udpProxies = nextUDPProxies
 	state.httpProxies = nextHTTPProxies
 	for _, binding := range nextHTTPProxies {
 		manager.httpDomains[binding.declaration.Domain] = binding
@@ -510,11 +752,19 @@ func (manager *Registry) Sync(
 	for _, endpoint := range newEndpoints {
 		endpoint.Start()
 	}
+	for _, endpoint := range newUDPEndpoints {
+		endpoint.Start()
+	}
 	closeTCPEndpoints(removedEndpoints)
+	closeUDPEndpoints(removedUDPEndpoints)
 	for _, name := range removedProxyNames {
 		manager.linkBroker.CancelBinding(existingProxies[name].bindingID)
 	}
 	for _, binding := range removedHTTPBindings {
+		binding.close()
+	}
+	for _, binding := range removedUDPBindings {
+		manager.linkBroker.CancelBinding(binding.bindingID)
 		binding.close()
 	}
 	return result

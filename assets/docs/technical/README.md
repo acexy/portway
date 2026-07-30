@@ -7,7 +7,7 @@ the complete wire protocol or internal state machines.
 ## Architecture
 
 ```text
-Public TCP/HTTP traffic
+Public TCP/UDP/HTTP traffic
           |
           v
   +-----------------+        TCP or QUIC        +-----------------+
@@ -15,7 +15,7 @@ Public TCP/HTTP traffic
   | public server   |    control + data links   | private client  |
   +-----------------+                           +-----------------+
           |                                              |
-          | Host/port routing                            | local TCP/HTTP
+          | Host/port routing                            | local TCP/UDP/HTTP
           v                                              v
      public users                                  private services
 ```
@@ -27,7 +27,7 @@ Portway separates five responsibilities:
 - **Control plane** owns client identity, proxy registration, heartbeats,
   recovery, and data-link requests.
 - **Data plane** carries independent logical streams for proxied traffic.
-- **Proxy runtime** maps public TCP ports or HTTP domains to authenticated
+- **Proxy runtime** maps public TCP/UDP ports or HTTP domains to authenticated
   client registrations.
 - **Security controls** validate configuration, authenticate connections, and
   enforce source-address policy.
@@ -71,6 +71,21 @@ streamed through the authenticated client link.
 
 The local application receives an ordinary HTTP request. It does not implement
 Portway framing, authentication, or session behavior.
+
+## UDP proxy
+
+Public UDP datagrams are grouped by proxy binding and visitor address into
+bounded associations. Each association owns one authenticated data link and one
+connected local UDP socket, so responses return to the correct visitor.
+
+Datagram boundaries are preserved with bounded binary frames. TCP transport
+uses an independent RoleData connection per association, while QUIC transport
+uses an independent bidirectional stream. This confines stream head-of-line
+blocking to one visitor. Queue saturation drops the newest datagram, and a
+bounded write timeout closes only the congested association.
+
+Global, client, proxy, source-IP, pending, creation-rate, datagram-size, queue,
+and memory limits are validated against compiled hard boundaries.
 
 ## Transport choices
 

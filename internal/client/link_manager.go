@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
+	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -114,6 +116,10 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		manager.reportFailure(request.LinkID, protocol.LinkErrorExpired)
 		return
 	}
+	if request.ProxyType == protocol.ProxyTypeUDP {
+		manager.runUDP(ctx, logger, request, proxyConfiguration)
+		return
+	}
 
 	type dialResult struct {
 		dataConnection  transport.Stream
@@ -191,55 +197,165 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 	defer dataConnection.Close()
 	defer localConnection.Close()
 
-	if err := dataConnection.SetDeadline(time.Now().Add(dataBindTimeout)); err != nil {
-		manager.reportFailure(request.LinkID, protocol.LinkErrorTransportFailed)
-		return
-	}
-	if err := protocol.WriteControl(dataConnection, protocol.MessageBindLink, protocol.BindLink{
-		ClientID:  manager.configuration.ClientID,
-		SessionID: manager.sessionID,
-		LinkID:    request.LinkID,
-		ProxyType: request.ProxyType,
-		BindingID: request.BindingID,
-		Ticket:    request.Ticket,
-	}); err != nil {
-		manager.reportFailure(request.LinkID, protocol.LinkErrorTransportFailed)
-		return
-	}
-	envelope, err := protocol.ReadControl(dataConnection)
-	if err != nil {
-		manager.reportFailure(request.LinkID, protocol.LinkErrorTransportFailed)
-		return
-	}
-	if envelope.Type != protocol.MessageBindResult {
-		manager.reportFailure(request.LinkID, protocol.LinkErrorInvalidBinding)
-		return
-	}
-	var result protocol.BindResult
-	if err := protocol.DecodePayload(envelope, &result); err != nil ||
-		result.LinkID != request.LinkID {
-		manager.reportFailure(request.LinkID, protocol.LinkErrorInvalidBinding)
-		return
-	}
-	if result.Status != protocol.LinkStatusAccepted {
-		failureCode := protocol.LinkErrorInvalidBinding
-		if result.Error != nil {
-			failureCode = *result.Error
-		}
-		manager.reportFailure(request.LinkID, failureCode)
-		return
-	}
-	if err := dataConnection.SetDeadline(time.Time{}); err != nil {
-		manager.reportFailure(request.LinkID, protocol.LinkErrorTransportFailed)
+	if failure := manager.bindDataStream(dataConnection, request); failure != "" {
+		manager.reportFailure(request.LinkID, failure)
 		return
 	}
 
 	logger.Trace("proxy link streaming started")
-	err = proxytcp.Forward(ctx, dataConnection, localConnection)
+	err := proxytcp.Forward(ctx, dataConnection, localConnection)
 	if err != nil && ctx.Err() == nil {
 		logger.Error("proxy link streaming ended", err)
 	} else {
 		logger.Trace("proxy link streaming stopped")
+	}
+}
+
+func (manager *linkManager) bindDataStream(
+	dataConnection transport.Stream,
+	request protocol.OpenLink,
+) protocol.LinkErrorCode {
+	if err := dataConnection.SetDeadline(time.Now().Add(dataBindTimeout)); err != nil {
+		return protocol.LinkErrorTransportFailed
+	}
+	if err := protocol.WriteControl(dataConnection, protocol.MessageBindLink, protocol.BindLink{
+		ClientID: manager.configuration.ClientID,
+		SessionID: manager.sessionID,
+		LinkID: request.LinkID,
+		ProxyType: request.ProxyType,
+		BindingID: request.BindingID,
+		Ticket: request.Ticket,
+	}); err != nil {
+		return protocol.LinkErrorTransportFailed
+	}
+	envelope, err := protocol.ReadControl(dataConnection)
+	if err != nil {
+		return protocol.LinkErrorTransportFailed
+	}
+	if envelope.Type != protocol.MessageBindResult {
+		return protocol.LinkErrorInvalidBinding
+	}
+	var result protocol.BindResult
+	if err := protocol.DecodePayload(envelope, &result); err != nil ||
+		result.LinkID != request.LinkID {
+		return protocol.LinkErrorInvalidBinding
+	}
+	if result.Status != protocol.LinkStatusAccepted {
+		if result.Error != nil {
+			return *result.Error
+		}
+		return protocol.LinkErrorInvalidBinding
+	}
+	if err := dataConnection.SetDeadline(time.Time{}); err != nil {
+		return protocol.LinkErrorTransportFailed
+	}
+	return ""
+}
+
+func (manager *linkManager) runUDP(
+	ctx context.Context,
+	logger *logging.Logger,
+	request protocol.OpenLink,
+	proxyConfiguration config.ProxyConfig,
+) {
+	if request.MaxDatagramSize == 0 || request.MaxDatagramSize > 65507 ||
+		request.WriteTimeoutMS < 100 || request.WriteTimeoutMS > 30000 {
+		manager.reportFailure(request.LinkID, protocol.LinkErrorInvalidBinding)
+		return
+	}
+	address := net.JoinHostPort(
+		proxyConfiguration.LocalIP,
+		fmt.Sprintf("%d", proxyConfiguration.LocalPort),
+	)
+	type udpDialResult struct {
+		dataConnection transport.Stream
+		localConnection net.Conn
+		kind linkDialKind
+		err error
+	}
+	results := make(chan udpDialResult, 2)
+	dialContext, cancelDial := context.WithCancel(ctx)
+	defer cancelDial()
+	go func() {
+		connection, err := manager.transport.OpenDataStream(dialContext)
+		results <- udpDialResult{
+			dataConnection: connection,
+			kind: linkDialTransport,
+			err: err,
+		}
+	}()
+	go func() {
+		localContext, cancelLocal := context.WithTimeout(
+			dialContext,
+			localDialTimeout,
+		)
+		defer cancelLocal()
+		connection, err := (&net.Dialer{}).DialContext(
+			localContext,
+			"udp",
+			address,
+		)
+		results <- udpDialResult{
+			localConnection: connection,
+			kind: linkDialLocal,
+			err: err,
+		}
+	}()
+	var dataConnection transport.Stream
+	var localConnection net.Conn
+	var transportError error
+	var localError error
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			cancelDial()
+			if result.kind == linkDialTransport {
+				transportError = result.err
+			} else {
+				localError = result.err
+			}
+		}
+		if result.dataConnection != nil {
+			dataConnection = result.dataConnection
+		}
+		if result.localConnection != nil {
+			localConnection = result.localConnection
+		}
+	}
+	if transportError != nil || localError != nil ||
+		dataConnection == nil || localConnection == nil {
+		if dataConnection != nil {
+			dataConnection.Close()
+		}
+		if localConnection != nil {
+			localConnection.Close()
+		}
+		manager.reportFailure(
+			request.LinkID,
+			classifyLinkDialFailure(ctx, transportError, localError),
+		)
+		return
+	}
+	defer dataConnection.Close()
+	defer localConnection.Close()
+	if failure := manager.bindDataStream(dataConnection, request); failure != "" {
+		manager.reportFailure(request.LinkID, failure)
+		return
+	}
+	logger.Trace("UDP proxy association streaming started")
+	err := proxyudp.Forward(
+		ctx,
+		dataConnection,
+		localConnection,
+		int(request.MaxDatagramSize),
+		time.Duration(request.WriteTimeoutMS)*time.Millisecond,
+	)
+	if err != nil && ctx.Err() == nil &&
+		!errors.Is(err, net.ErrClosed) &&
+		!errors.Is(err, io.EOF) {
+		logger.Error("UDP proxy association streaming ended", err)
+	} else {
+		logger.Trace("UDP proxy association streaming stopped")
 	}
 }
 

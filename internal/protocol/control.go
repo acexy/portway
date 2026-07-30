@@ -41,7 +41,7 @@ const (
 	MessageSyncProxies MessageType = "sync_proxies"
 	// MessageSyncResult reports an atomic proxy declaration result.
 	MessageSyncResult MessageType = "sync_result"
-	// MessageOpenLink asks a client to establish one TCP data link.
+	// MessageOpenLink asks a client to establish one proxy data link.
 	MessageOpenLink MessageType = "open_link"
 	// MessageCancelLink cancels a pending data link.
 	MessageCancelLink MessageType = "cancel_link"

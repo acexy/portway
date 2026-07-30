@@ -5,7 +5,7 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  A lightweight, production-oriented reverse tunneling system for TCP and HTTP services.
+  A lightweight, production-oriented reverse tunneling system for TCP, UDP, and HTTP services.
 </p>
 
 Portway exposes services from private networks through a public server. It keeps
@@ -15,7 +15,7 @@ bounded resources, and secure defaults.
 
 ## Highlights
 
-- TCP and domain-based HTTP reverse proxying
+- TCP, UDP, and domain-based HTTP reverse proxying
 - Selectable TCP or QUIC client-server transport
 - Authenticated and encrypted client-server connections
 - Atomic proxy registration and bounded session recovery
@@ -97,6 +97,24 @@ proxies:
 The public `Host` is matched to an authenticated client registration. The local
 application receives a normal HTTP request and does not need to understand the
 Portway protocol.
+
+## UDP proxy
+
+Register a public UDP port and a local UDP service on the client:
+
+```yaml
+proxies:
+  - name: dns
+    type: udp
+    local_ip: 127.0.0.1
+    local_port: 53
+    remote_port: 5353
+```
+
+Portway preserves datagram boundaries and gives each public visitor association
+an isolated authenticated data link. UDP works with both TCP and QUIC as the
+selected client-server transport. Server-side association, queue, rate, memory,
+and idle limits have safe defaults and configurable hard boundaries.
 
 ## QUIC transport
 

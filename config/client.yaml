@@ -54,7 +54,7 @@ proxies:
   # lowercase letter or digit.
   - name: ssh
 
-    # * Required for every proxy. Allowed values: tcp, http.
+    # * Required for every proxy. Allowed values: tcp, udp, http.
     type: tcp
 
     # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
@@ -64,7 +64,7 @@ proxies:
     # * Required for every proxy. Local target port, range 1-65535.
     local_port: 22
 
-    # * Required when type=tcp. Public server port, range 1-65535.
+    # * Required when type=tcp or type=udp. Public server port, range 1-65535.
     # Not allowed when type=http.
     remote_port: 22022
 
@@ -78,3 +78,13 @@ proxies:
   #   local_ip: 127.0.0.1
   #   # * Required for every proxy. Range 1-65535.
   #   local_port: 8080
+
+  # UDP example:
+  # - name: dns
+  #   type: udp
+  #   # Optional. Defaults to 127.0.0.1.
+  #   local_ip: 127.0.0.1
+  #   # * Required for every proxy. Range 1-65535.
+  #   local_port: 53
+  #   # * Required when type=udp. Public UDP port, range 1-65535.
+  #   remote_port: 5353

@@ -97,6 +97,44 @@ http:
   # Hard maximum: 256.
   max_concurrent_http2_streams: 128
 
+# Optional. UDP association, queue, rate, and memory safety limits.
+# Defaults shown below apply even when no UDP proxy is registered.
+# Every effective value must remain within its compiled hard boundary.
+udp:
+  # Optional. Association inactivity period. Defaults to 60s.
+  # Valid range: 5s to 10m.
+  association_idle_timeout: 60s
+
+  # Optional. Maximum blocked Data Link frame write. Defaults to 3s.
+  # Valid range: 100ms to 30s. A timeout closes only that association.
+  link_write_timeout: 3s
+
+  # Optional. Maximum UDP payload. Hard maximum: 65507 bytes.
+  max_datagram_size: 65507
+
+  # Optional association capacity. Hard maxima: 4096, 512, 256, 1024.
+  max_associations: 4096
+  max_associations_per_client: 512
+  max_associations_per_proxy: 256
+  max_associations_per_source_ip: 64
+
+  # Optional pending association capacity. Hard maxima: 1024, 128, 64.
+  max_pending_associations: 1024
+  max_pending_associations_per_client: 128
+  max_pending_associations_per_proxy: 64
+
+  # Optional new-association rates per second. Hard maxima: 10000, 2000, 1000.
+  max_new_associations_per_second: 1000
+  max_new_associations_per_second_per_client: 200
+  max_new_associations_per_second_per_proxy: 100
+
+  # Optional bounded queue limits. Hard maxima: 256 datagrams, 4 MiB per
+  # association, and 512 MiB globally. Queue saturation drops the newest
+  # datagram and never blocks the public UDP socket read loop.
+  max_queued_datagrams_per_association: 32
+  max_queued_bytes_per_association: 262144
+  max_queued_bytes: 67108864
+
 # Optional. Server-wide source IP security controls.
 security:
   # Optional. IPv4/IPv6 deny-list file. Defaults to empty, which disables

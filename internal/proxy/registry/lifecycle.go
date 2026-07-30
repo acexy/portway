@@ -1,6 +1,7 @@
 package registry
 
 import proxytcp "github.com/acexy/portway/internal/proxy/tcp"
+import proxyudp "github.com/acexy/portway/internal/proxy/udp"
 
 // Activate makes a fully registered client available to public traffic.
 func (manager *Registry) Activate(clientID string, sessionID string) {
@@ -27,11 +28,18 @@ func (manager *Registry) Suspend(clientID string, sessionID string) {
 	for _, binding := range state.httpProxies {
 		httpBindings = append(httpBindings, binding)
 	}
+	udpBindings := make([]*udpProxyBinding, 0, len(state.udpProxies))
+	for _, binding := range state.udpProxies {
+		udpBindings = append(udpBindings, binding)
+	}
 	manager.mutex.Unlock()
 
 	manager.linkBroker.CancelSession(clientID, sessionID)
 	for _, binding := range httpBindings {
 		binding.runtime.CloseIdleConnections()
+	}
+	for _, binding := range udpBindings {
+		binding.close()
 	}
 }
 
@@ -56,6 +64,17 @@ func (manager *Registry) Remove(clientID string, sessionID string) {
 		}
 		endpoints[binding.declaration.RemotePort] = endpoint
 	}
+	udpEndpoints := make(map[uint16]*proxyudp.Endpoint, len(state.udpProxies))
+	udpBindings := make([]*udpProxyBinding, 0, len(state.udpProxies))
+	for _, binding := range state.udpProxies {
+		endpoint := binding.endpoint
+		if manager.udpEndpoints[binding.declaration.RemotePort] == endpoint {
+			delete(manager.udpEndpoints, binding.declaration.RemotePort)
+			delete(manager.udpEndpointBindings, binding.declaration.RemotePort)
+		}
+		udpEndpoints[binding.declaration.RemotePort] = endpoint
+		udpBindings = append(udpBindings, binding)
+	}
 	httpBindings := make([]*httpProxyBinding, 0, len(state.httpProxies))
 	for _, binding := range state.httpProxies {
 		if manager.httpDomains[binding.declaration.Domain] == binding {
@@ -66,8 +85,12 @@ func (manager *Registry) Remove(clientID string, sessionID string) {
 	manager.mutex.Unlock()
 
 	closeTCPEndpoints(endpoints)
+	closeUDPEndpoints(udpEndpoints)
 	manager.linkBroker.CancelSession(clientID, sessionID)
 	for _, binding := range httpBindings {
+		binding.close()
+	}
+	for _, binding := range udpBindings {
 		binding.close()
 	}
 }
@@ -80,9 +103,19 @@ func (manager *Registry) Close() {
 	manager.mutex.Lock()
 	manager.closed = true
 	endpoints := make(map[uint16]*proxytcp.Endpoint, len(manager.endpoints))
+	udpEndpoints := make(map[uint16]*proxyudp.Endpoint, len(manager.udpEndpoints))
+	udpBindings := make([]*udpProxyBinding, 0)
 	httpBindings := make([]*httpProxyBinding, 0, len(manager.httpDomains))
 	for port, endpoint := range manager.endpoints {
 		endpoints[port] = endpoint
+	}
+	for port, endpoint := range manager.udpEndpoints {
+		udpEndpoints[port] = endpoint
+	}
+	for _, state := range manager.clients {
+		for _, binding := range state.udpProxies {
+			udpBindings = append(udpBindings, binding)
+		}
 	}
 	for _, binding := range manager.httpDomains {
 		httpBindings = append(httpBindings, binding)
@@ -90,10 +123,16 @@ func (manager *Registry) Close() {
 	manager.clients = make(map[string]*clientState)
 	manager.endpoints = make(map[uint16]*proxytcp.Endpoint)
 	manager.endpointBindings = make(map[uint16]*tcpProxyBinding)
+	manager.udpEndpoints = make(map[uint16]*proxyudp.Endpoint)
+	manager.udpEndpointBindings = make(map[uint16]*udpProxyBinding)
 	manager.httpDomains = make(map[string]*httpProxyBinding)
 	manager.mutex.Unlock()
 
 	closeTCPEndpoints(endpoints)
+	closeUDPEndpoints(udpEndpoints)
+	for _, binding := range udpBindings {
+		binding.close()
+	}
 	for _, binding := range httpBindings {
 		binding.close()
 	}
