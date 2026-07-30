@@ -13,6 +13,8 @@ the control plane separate from tunneled traffic, supports TCP and QUIC as its
 underlying client-server transport, and is designed around explicit ownership,
 bounded resources, and secure defaults.
 
+[中文版](README_ZH.md)
+
 ## Highlights
 
 - TCP, UDP, and domain-based HTTP reverse proxying
