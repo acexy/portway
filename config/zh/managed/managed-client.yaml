@@ -1,0 +1,35 @@
+# Managed 服务端客户端记录完整示例，对应 ../../../config/managed/managed-client.yaml。
+# 文件名只是操作者标签，无需匹配 client_id。所有独立 ClientID 和 Token 必须唯一。
+
+client_id: managed-client
+# 至少 32 字节的唯一随机 Token，禁止提交生产 Token。
+token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+
+configuration:
+  # 必填。正整数；每次修改配置都必须递增，不能以相同 revision 修改内容。
+  revision: 1
+
+  # 可选，默认空。TCP/UDP/HTTP 合计硬上限 128。
+  # 所有 Managed 记录之间，同协议公网端口和 HTTP 域名必须全局唯一；
+  # 客户端离线时资源仍为该 ClientID 保留。
+  proxies:
+    - name: ssh
+      type: tcp
+      local_ip: 127.0.0.1
+      local_port: 22
+      remote_port: 22022
+
+    # UDP 示例。
+    - name: dns
+      type: udp
+      local_ip: 127.0.0.1
+      local_port: 53
+      remote_port: 5353
+
+    # HTTP 示例。
+    - name: web
+      type: http
+      local_ip: 127.0.0.1
+      local_port: 8080
+      # HTTP 必填：规范化小写 DNS 域名；TCP/UDP 禁止配置。
+      domain: app.example.com

@@ -234,7 +234,7 @@ ClientID 与记录完全匹配；身份校验完成后，服务端通过受保�
 - 继续使用操作系统防火墙、云安全组和上游访问控制。
 
 完整注释示例见
-[`config/server.yaml`](../../../config/server.yaml)、
-[`config/governed/governed-client.yaml`](../../../config/governed/governed-client.yaml)
+[`config/zh/server.yaml`](../../../config/zh/server.yaml)、
+[`config/zh/governed/governed-client.yaml`](../../../config/zh/governed/governed-client.yaml)
 和
-[`config/managed/managed-client.yaml`](../../../config/managed/managed-client.yaml)。
+[`config/zh/managed/managed-client.yaml`](../../../config/zh/managed/managed-client.yaml)。
