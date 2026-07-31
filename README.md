@@ -29,6 +29,10 @@ bounded resources, and secure defaults.
   - shared configuration for trusted fleets
   - policy-governed client configuration
   - fully server-managed configuration
+- **Fail-closed server configuration reload:**
+  - atomic validation and publication of complete configuration generations
+  - selective credential revocation and online Managed configuration rollout
+  - retention of the previous effective snapshot on validation failure
 
 ## Quick start
 
@@ -191,6 +195,7 @@ VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 
 - [Technical overview](assets/docs/technical/README.md)
 - [Authentication and configuration control](assets/docs/authentication/README.md)
+- [Server configuration reload](assets/docs/reload/README.md)
 - [Security](assets/docs/security/README.md)
 - [Future plans](assets/docs/future/README.md)
 - Fully annotated configuration examples:

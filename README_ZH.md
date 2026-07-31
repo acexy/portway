@@ -25,6 +25,10 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
   - 面向可信客户端群组的共享配置
   - 受策略约束的客户端配置
   - 完全由服务端管理的客户端配置
+- **故障关闭的服务端配置热加载：**
+  - 完整配置代际的原子校验与发布
+  - 选择性凭证吊销和 Managed 配置在线切换
+  - 校验失败时自动保留上一份有效快照
 
 ## 快速开始
 
@@ -180,6 +184,7 @@ VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 
 - [技术概览](assets/docs/technical/README_ZH.md)
 - [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
+- [服务端配置热加载](assets/docs/reload/README_ZH.md)
 - [安全性](assets/docs/security/README_ZH.md)
 - [未来计划](assets/docs/future/README_ZH.md)
 - 完整中文注释配置示例：
