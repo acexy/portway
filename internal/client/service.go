@@ -46,6 +46,10 @@ var errClientDeclaredProxiesRequired = errors.New(
 	"shared and governed clients require at least one local proxy",
 )
 
+var errReconnectPeriodExceeded = errors.New(
+	"control connection retry period exceeded 8 hours",
+)
+
 func (registrationError *proxyRegistrationError) Error() string {
 	return fmt.Sprintf(
 		"proxy registration rejected: proxy=%q code=%s message=%s",
@@ -106,10 +110,14 @@ func (s *Service) Run(ctx context.Context) error {
 	defer s.logger.Info("client stopped")
 
 	reconnectDelay := initialReconnectDelay
+	var reconnectStartedAt time.Time
 	sessionID := ""
 	var disconnectedAt time.Time
 
 	for {
+		if reconnectPeriodExceeded(reconnectStartedAt, time.Now()) {
+			return errReconnectPeriodExceeded
+		}
 		attemptLogger := s.logger
 		if sessionID != "" {
 			attemptLogger = attemptLogger.WithField("session_id", sessionID)
@@ -145,6 +153,9 @@ func (s *Service) Run(ctx context.Context) error {
 			sessionID = establishedSessionID
 			disconnectedAt = time.Now()
 			reconnectDelay = initialReconnectDelay
+			reconnectStartedAt = time.Now()
+		} else if reconnectStartedAt.IsZero() {
+			reconnectStartedAt = time.Now()
 		}
 
 		var sessionError *remoteSessionError
@@ -168,6 +179,14 @@ func (s *Service) Run(ctx context.Context) error {
 		attemptLogger.Error("control session ended", err)
 
 		actualReconnectDelay := reconnectDelayWithJitter(reconnectDelay)
+		actualReconnectDelay, available := boundedReconnectDelay(
+			reconnectStartedAt,
+			time.Now(),
+			actualReconnectDelay,
+		)
+		if !available {
+			return errReconnectPeriodExceeded
+		}
 		attemptLogger.TraceWithField(
 			"waiting before control connection retry",
 			"delay",
@@ -178,6 +197,22 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 		reconnectDelay = min(reconnectDelay*2, maximumReconnectDelay)
 	}
+}
+
+func reconnectPeriodExceeded(startedAt time.Time, now time.Time) bool {
+	return !startedAt.IsZero() && now.Sub(startedAt) >= maximumReconnectPeriod
+}
+
+func boundedReconnectDelay(
+	startedAt time.Time,
+	now time.Time,
+	delay time.Duration,
+) (time.Duration, bool) {
+	remaining := maximumReconnectPeriod - now.Sub(startedAt)
+	if remaining <= 0 {
+		return 0, false
+	}
+	return min(delay, remaining), true
 }
 
 func (s *Service) runControlSession(

@@ -36,6 +36,31 @@ func TestReconnectDelayWithJitterStaysWithinConfiguredRange(t *testing.T) {
 	}
 }
 
+func TestReconnectPeriodIsBoundedToEightHours(t *testing.T) {
+	startedAt := time.Unix(100, 0)
+	delay, available := boundedReconnectDelay(
+		startedAt,
+		startedAt.Add(maximumReconnectPeriod-5*time.Second),
+		maximumReconnectDelay,
+	)
+	if !available || delay != 5*time.Second {
+		t.Fatalf("bounded delay = %s, available=%t", delay, available)
+	}
+	if !reconnectPeriodExceeded(
+		startedAt,
+		startedAt.Add(maximumReconnectPeriod),
+	) {
+		t.Fatal("eight-hour reconnect period did not expire")
+	}
+	if _, available := boundedReconnectDelay(
+		startedAt,
+		startedAt.Add(maximumReconnectPeriod),
+		time.Second,
+	); available {
+		t.Fatal("delay remained available after reconnect period expired")
+	}
+}
+
 func TestClassifyControlProtocolError(t *testing.T) {
 	t.Parallel()
 
