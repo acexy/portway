@@ -1,9 +1,11 @@
 # Authentication and Configuration Control
 
 Portway can serve trusted personal devices, independently operated clients, and
-centrally managed nodes from the same server. Each client configures only a
-Token. The server uses that Token to select exactly one authentication record,
-authoritative identity, and configuration-control mode.
+centrally managed nodes from the same server. Shared clients configure a Token
+and may use an automatically generated ClientID. Governed and Managed clients
+configure both the ClientID and Token from their server-owned record. The Token
+selects exactly one authentication record and configuration-control mode; the
+ClientID must then match before Session registration.
 
 ## Choosing a mode
 
@@ -18,6 +20,11 @@ declare a mode. Within one server's effective authentication configuration, a
 Token must be unique across Shared, Governed, and Managed records, so it selects
 exactly one record. This constraint is not enforced across separate Portway
 server instances.
+
+After the server confirms the selected mode, the client validates its local
+proxy configuration again. Shared and Governed clients require at least one
+local proxy; Managed clients must not define local proxies. The server
+independently rejects an empty Shared or Governed proxy declaration.
 
 ## Shared Token
 
@@ -86,16 +93,20 @@ permissions:
       - "*.customer-a.example.com"
 
   limits:
-    max_proxies: 10
-    max_tcp_proxies: 5
-    max_http_proxies: 5
-    max_active_links: 50
+    max_proxies: 20
+    max_tcp_proxies: 10
+    max_udp_proxies: 5
+    max_http_proxies: 10
+    max_active_links: 100
 ```
 
-The file name must exactly match `<client_id>.yaml`. The client only configures
-the record Token and its desired proxies:
+The file name is an operator-facing label and does not need to match
+`client_id`. The client configures the matching ClientID, record Token, and its
+desired proxies:
 
 ```yaml
+client_id: customer-a
+
 authentication:
   token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
 
@@ -107,11 +118,13 @@ proxies:
     local_port: 8080
 ```
 
-After authentication, the server returns `customer-a` as the authoritative
-ClientID. A ClientID supplied locally cannot replace it. The server validates
+After Token proof, the server requires the declared ClientID to match the
+identity bound to that Token before registering a Session. Empty or mismatched
+identities are non-retryable authentication failures. The server then validates
 the complete proxy set against the configured type, TCP/UDP port, HTTP domain,
-proxy-count, and active-link limits. One denied declaration rejects the complete
-update; the server never silently publishes a partial set.
+proxy-count, and active-link limits. One denied declaration rejects the
+complete update and closes the rejected control session; the server never
+silently publishes a partial set.
 
 Every type listed in `proxy_types` must have a non-empty corresponding rule:
 TCP and UDP require at least one `remote_port_ranges` entry, and HTTP requires
@@ -119,11 +132,11 @@ at least one domain. Rules for a type not listed in `proxy_types` must be empty
 or omitted. Multiple ranges allow disjoint public port allocations without
 granting the unused ports between them.
 
-Every type listed in `proxy_types` must have a non-empty corresponding rule:
-TCP and UDP require at least one `remote_port_ranges` entry, and HTTP requires
-at least one domain. Rules for a type not listed in `proxy_types` must be empty
-or omitted. Multiple ranges allow disjoint public port allocations without
-granting the unused ports between them.
+Omitted Governed limit fields use production-safe defaults: 20 total proxies,
+10 TCP proxies, 5 UDP proxies, 10 HTTP proxies, and 100 pending or active
+links. Explicit values must be greater than zero. Proxy limits have a compiled
+hard maximum of 128 per client, and active links have a compiled hard maximum
+of 512 per client. A per-type proxy limit cannot exceed `max_proxies`.
 
 Governed mode controls public exposure. It does not currently restrict the
 client's private `local_ip` or `local_port`, because those fields are not sent in
@@ -157,9 +170,12 @@ configuration:
       remote_port: 22022
 ```
 
-The Managed client configures the Token but must not define local `proxies`:
+The Managed client configures the matching ClientID and Token but must not
+define local `proxies`:
 
 ```yaml
+client_id: internal-node
+
 authentication:
   token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
 ```
@@ -171,6 +187,18 @@ normal proxy-registration message to override the server configuration.
 
 Increment `configuration.revision` whenever the Managed proxy configuration
 changes. Reusing a revision with different content is rejected.
+
+The complete Managed proxy set may contain at most 128 TCP, UDP, and HTTP
+entries combined. An oversized set prevents server startup. During hot reload,
+it rejects the complete candidate, retains the previous snapshot, and logs the
+validation failure without exposing credentials.
+
+Across all Managed records, TCP remote ports, UDP remote ports, and HTTP domains
+must each be globally unique. TCP and UDP may use the same numeric port because
+they use different network protocols. Managed resources remain reserved for
+their configured ClientID while the client is offline, so Shared or Governed
+clients cannot claim them. A conflict prevents startup or rejects the complete
+hot-reload candidate before it is published.
 
 Managed mode enforces behavior in the Portway protocol and official client. It
 is not remote attestation and cannot make a client machine trustworthy if its
@@ -193,12 +221,12 @@ At startup and every configuration reload, Portway validates that:
 - every Token is unique across this server's Shared, Governed, and Managed
   records;
 - a ClientID does not appear in both Governed and Managed directories;
-- each file name matches its ClientID;
 - permissions, quotas, ports, domains, and Managed proxy sets are valid.
 
-The client never needs to know which modes the server enables. Its Token selects
-one record, and authentication returns the associated mode and authoritative
-ClientID over the protected channel.
+The client does not configure a mode. Its Token selects one record, while
+Governed and Managed authentication also requires the configured ClientID to
+match that record. After identity validation, the server returns the associated
+mode and confirmed ClientID over the protected channel.
 
 ## Reloading, revocation, and failure behavior
 

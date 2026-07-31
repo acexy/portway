@@ -1,7 +1,6 @@
 .idea
 .DS_Store
 /docs
-/client.yaml
-/server.yaml
 certs
 target
+/test

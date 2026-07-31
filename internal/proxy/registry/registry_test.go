@@ -5,11 +5,147 @@ import (
 	"net"
 	"testing"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
-	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/link"
+	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 )
+
+func TestManagedReservationRejectsSharedClientBinding(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	if err := manager.ConfigureManagedReservations(
+		map[string]config.ManagedClientConfig{
+			"managed-client": {
+				ClientID: "managed-client",
+				Configuration: config.ManagedConfiguration{
+					Proxies: []config.ProxyConfig{{
+						Name: "managed", Type: "tcp", RemotePort: port,
+					}},
+				},
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	manager.Attach("shared-client", "shared-session", nil)
+
+	result := manager.Sync(
+		"shared-client",
+		"shared-session",
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration("shared", port),
+			},
+		},
+	)
+	if result.Status != protocol.ProxySyncStatusRejected ||
+		result.Error == nil ||
+		result.Error.Code != protocol.ProxyErrorPortConflict {
+		t.Fatalf("managed reservation did not reject shared binding: %+v", result)
+	}
+}
+
+func TestProxySyncRejectsEmptyDeclaration(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestTCPProxyManager(t)
+	manager.Attach("client-one", "session-one", nil)
+	result := manager.Sync(
+		"client-one",
+		"session-one",
+		"request-one",
+		protocol.SyncProxies{Revision: 1},
+	)
+	if result.Status != protocol.ProxySyncStatusRejected ||
+		result.Error == nil ||
+		result.Error.Code != protocol.ProxyErrorInvalidProxy ||
+		result.Error.Retryable {
+		t.Fatalf("expected permanent empty proxy rejection, got %+v", result)
+	}
+}
+
+func TestManagedReservationAllowsOwningManagedClient(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	clients := map[string]config.ManagedClientConfig{
+		"managed-client": {
+			ClientID: "managed-client",
+			Configuration: config.ManagedConfiguration{
+				Proxies: []config.ProxyConfig{{
+					Name: "managed", Type: "tcp", RemotePort: port,
+				}},
+			},
+		},
+	}
+	if err := manager.ConfigureManagedReservations(clients); err != nil {
+		t.Fatal(err)
+	}
+	manager.AttachAuthenticated(
+		"managed-client",
+		"managed-session",
+		nil,
+		authentication.Context{
+			Mode:     authentication.ModeManaged,
+			ClientID: "managed-client",
+		},
+		0,
+	)
+
+	result := manager.Sync(
+		"managed-client",
+		"managed-session",
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration("managed", port),
+			},
+		},
+	)
+	if result.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("managed owner could not claim its reservation: %+v", result.Error)
+	}
+}
+
+func TestManagedReservationRejectsHotReloadOverActiveSharedBinding(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	manager.Attach("shared-client", "shared-session", nil)
+	result := manager.Sync(
+		"shared-client",
+		"shared-session",
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration("shared", port),
+			},
+		},
+	)
+	if result.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("shared binding setup failed: %+v", result.Error)
+	}
+
+	err := manager.ConfigureManagedReservations(
+		map[string]config.ManagedClientConfig{
+			"managed-client": {
+				ClientID: "managed-client",
+				Configuration: config.ManagedConfiguration{
+					Proxies: []config.ProxyConfig{{
+						Name: "managed", Type: "tcp", RemotePort: port,
+					}},
+				},
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("managed hot-reload reservation accepted an active shared binding")
+	}
+}
 
 func TestTCPProxySyncReusesEndpointWhenProxyIsRenamed(t *testing.T) {
 	t.Parallel()
@@ -168,6 +304,24 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 	}
 }
 
+func TestProxySyncReportsInactiveSessionAsRetryable(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestTCPProxyManager(t)
+	result := manager.Sync(
+		"missing-client",
+		"missing-session",
+		"request-one",
+		protocol.SyncProxies{Revision: 1},
+	)
+	if result.Status != protocol.ProxySyncStatusRejected ||
+		result.Error == nil ||
+		result.Error.Code != protocol.ProxyErrorSessionInactive ||
+		!result.Error.Retryable {
+		t.Fatalf("expected retryable inactive session rejection, got %+v", result)
+	}
+}
+
 func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 	t.Parallel()
 
@@ -279,8 +433,8 @@ func tcpProxyDeclaration(name string, port uint16) protocol.ProxyDeclaration {
 
 func udpProxyDeclaration(name string, port uint16) protocol.ProxyDeclaration {
 	return protocol.ProxyDeclaration{
-		Name: name,
-		Type: protocol.ProxyTypeUDP,
+		Name:       name,
+		Type:       protocol.ProxyTypeUDP,
 		RemotePort: port,
 	}
 }

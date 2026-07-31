@@ -35,7 +35,7 @@ const (
 	MessagePing MessageType = "ping"
 	// MessagePong acknowledges a ping.
 	MessagePong MessageType = "pong"
-	// MessageSessionError reports a recoverable session registration failure.
+	// MessageSessionError reports a session registration or recovery rejection.
 	MessageSessionError MessageType = "session_error"
 	// MessageCloseSession requests immediate removal of an established client session.
 	MessageCloseSession MessageType = "close_session"
@@ -71,12 +71,16 @@ type SessionErrorCode string
 const (
 	// SessionErrorClientIDAlreadyOnline indicates an active duplicate client ID.
 	SessionErrorClientIDAlreadyOnline SessionErrorCode = "client_id_already_online"
+	// SessionErrorClientIDRecoveryPending indicates that a suspended client ID is still reserved.
+	SessionErrorClientIDRecoveryPending SessionErrorCode = "client_id_recovery_pending"
 	// SessionErrorResumeSessionMismatch indicates an invalid recovery session ID.
 	SessionErrorResumeSessionMismatch SessionErrorCode = "resume_session_mismatch"
 	// SessionErrorSessionExpired indicates that recoverable state no longer exists.
 	SessionErrorSessionExpired SessionErrorCode = "session_expired"
 	// SessionErrorInvalidClientID indicates an invalid client identifier.
 	SessionErrorInvalidClientID SessionErrorCode = "invalid_client_id"
+	// SessionErrorAuthenticationFailed hides credential and identity failure details.
+	SessionErrorAuthenticationFailed SessionErrorCode = "authentication_failed"
 )
 
 // Envelope is the common control message container.

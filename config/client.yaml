@@ -10,9 +10,10 @@
 # Use trace for detailed protocol and lifecycle diagnostics, including heartbeats.
 log_level: info
 
-# Optional. Stable identifier for this client.
-# Leave empty to generate a random ID for the current process. Configure an
-# explicit value when identity must survive process restarts.
+# Required for Governed and Managed authentication; must exactly match the
+# ClientID bound to the Token in the server-owned client record.
+# Optional for Shared authentication. Leave empty in Shared mode to generate a
+# random ID for the current process, or configure an explicit stable value.
 # Length: 1-64 characters when configured.
 # Allowed characters: ASCII letters, digits, dots, underscores, and hyphens.
 client_id: ""

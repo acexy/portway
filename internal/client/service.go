@@ -35,7 +35,16 @@ type proxyRegistrationError struct {
 	code      protocol.ProxyErrorCode
 	proxyName string
 	message   string
+	retryable bool
 }
+
+var errManagedLocalProxies = errors.New(
+	"managed clients cannot configure local proxies",
+)
+
+var errClientDeclaredProxiesRequired = errors.New(
+	"shared and governed clients require at least one local proxy",
+)
 
 func (registrationError *proxyRegistrationError) Error() string {
 	return fmt.Sprintf(
@@ -128,7 +137,9 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 		var registrationError *proxyRegistrationError
 		if errors.As(err, &registrationError) {
-			return err
+			if !registrationError.retryable {
+				return err
+			}
 		}
 		if established {
 			sessionID = establishedSessionID
@@ -144,8 +155,10 @@ func (s *Service) Run(ctx context.Context) error {
 				disconnectedAt = time.Time{}
 				reconnectDelay = initialReconnectDelay
 				continue
+			case protocol.SessionErrorClientIDRecoveryPending:
 			case protocol.SessionErrorResumeSessionMismatch,
-				protocol.SessionErrorInvalidClientID:
+				protocol.SessionErrorInvalidClientID,
+				protocol.SessionErrorClientIDAlreadyOnline:
 				return err
 			}
 			if !sessionError.retryable {
@@ -267,6 +280,12 @@ func (s *Service) runControlSession(
 				transport.ErrProtocol,
 			)
 		}
+		if serverHello.ClientID != s.configuration.ClientID {
+			return "", false, fmt.Errorf(
+				"%w: server returned a client ID that does not match the configured identity",
+				transport.ErrProtocol,
+			)
+		}
 		s.setRuntimeClientID(serverHello.ClientID)
 	}
 	if serverHello.SessionID == "" {
@@ -287,14 +306,21 @@ func (s *Service) runControlSession(
 	}
 	switch serverHello.ManagementMode {
 	case "", "shared_token", "governed":
+		if err := validateLocalProxiesForManagementMode(
+			serverHello.ManagementMode,
+			len(s.configuration.Proxies),
+		); err != nil {
+			return "", false, err
+		}
 		if err := s.syncProxies(connection, writer); err != nil {
 			return "", false, err
 		}
 	case "managed":
-		if len(s.configuration.Proxies) != 0 {
-			return "", false, errors.New(
-				"managed clients cannot configure local proxies",
-			)
+		if err := validateLocalProxiesForManagementMode(
+			serverHello.ManagementMode,
+			len(s.configuration.Proxies),
+		); err != nil {
+			return "", false, err
 		}
 		if err := s.receiveManagedConfiguration(connection, writer); err != nil {
 			return "", false, err
@@ -311,7 +337,10 @@ func (s *Service) runControlSession(
 	}
 	stopHelloContextClose()
 
-	sessionLogger := s.logger.WithField("session_id", serverHello.SessionID)
+	sessionLogger := s.logger.WithFields(map[string]any{
+		"client_id":  serverHello.ClientID,
+		"session_id": serverHello.SessionID,
+	})
 	sessionLogger.TraceWithField("server hello received", "resumed", serverHello.Resumed)
 	sessionLogger.Info("control session established")
 	return serverHello.SessionID, true, s.runControlLoop(
@@ -323,6 +352,20 @@ func (s *Service) runControlSession(
 		transportSession,
 		serverHello.ManagementMode,
 	)
+}
+
+func validateLocalProxiesForManagementMode(mode string, proxyCount int) error {
+	switch mode {
+	case "", "shared_token", "governed":
+		if proxyCount == 0 {
+			return transport.Permanent(errClientDeclaredProxiesRequired)
+		}
+	case "managed":
+		if proxyCount != 0 {
+			return transport.Permanent(errManagedLocalProxies)
+		}
+	}
+	return nil
 }
 
 func (s *Service) receiveManagedConfiguration(
@@ -417,7 +460,8 @@ func validateManagedPreparation(
 	}
 	if err := config.ValidateManagedProxies(proxies); err != nil {
 		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(
-			"validate managed configuration: %w",
+			"%w: validate managed configuration: %v",
+			transport.ErrProtocol,
 			err,
 		)
 	}
@@ -778,6 +822,7 @@ func (s *Service) syncProxies(
 			code:      result.Error.Code,
 			proxyName: result.Error.ProxyName,
 			message:   result.Error.Message,
+			retryable: result.Error.Retryable,
 		}
 	}
 	s.logger.InfoWithField("proxy registration applied", "revision", result.Revision)
@@ -846,11 +891,41 @@ func decodeRemoteSessionError(envelope protocol.Envelope) error {
 	if err := protocol.DecodePayload(envelope, &response); err != nil {
 		return classifyControlProtocolError(err)
 	}
+	if err := validateSessionErrorRetryable(response); err != nil {
+		return err
+	}
+	if response.Code == protocol.SessionErrorAuthenticationFailed {
+		return transport.ErrAuthentication
+	}
 	return &remoteSessionError{
 		code:      response.Code,
 		message:   response.Message,
 		retryable: response.Retryable,
 	}
+}
+
+func validateSessionErrorRetryable(response protocol.SessionError) error {
+	var expected bool
+	switch response.Code {
+	case protocol.SessionErrorClientIDRecoveryPending,
+		protocol.SessionErrorSessionExpired:
+		expected = true
+	case protocol.SessionErrorAuthenticationFailed,
+		protocol.SessionErrorInvalidClientID,
+		protocol.SessionErrorClientIDAlreadyOnline,
+		protocol.SessionErrorResumeSessionMismatch:
+		expected = false
+	default:
+		return nil
+	}
+	if response.Retryable != expected {
+		return fmt.Errorf(
+			"%w: session error %q has invalid retryable value",
+			transport.ErrProtocol,
+			response.Code,
+		)
+	}
+	return nil
 }
 
 func classifyControlProtocolError(err error) error {

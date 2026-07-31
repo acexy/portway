@@ -1,3 +1,5 @@
 package registry
 
-const maxProxiesPerClient = 128
+import systemlimits "github.com/acexy/portway/internal/limits"
+
+const maxProxiesPerClient = systemlimits.HardMaxProxiesPerClient

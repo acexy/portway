@@ -37,6 +37,9 @@ type Registry struct {
 	endpointBindings    map[uint16]*tcpProxyBinding
 	udpEndpoints        map[uint16]*proxyudp.Endpoint
 	udpEndpointBindings map[uint16]*udpProxyBinding
+	managedTCPPorts     map[uint16]string
+	managedUDPPorts     map[uint16]string
+	managedHTTPDomains  map[string]string
 	udpConfiguration    config.UDPConfig
 	udpLimiter          *proxyudp.Limiter
 	httpEnabled         bool
@@ -165,6 +168,9 @@ func newRegistry(
 		endpointBindings:    make(map[uint16]*tcpProxyBinding),
 		udpEndpoints:        make(map[uint16]*proxyudp.Endpoint),
 		udpEndpointBindings: make(map[uint16]*udpProxyBinding),
+		managedTCPPorts:     make(map[uint16]string),
+		managedUDPPorts:     make(map[uint16]string),
+		managedHTTPDomains:  make(map[string]string),
 	}
 }
 
@@ -305,14 +311,33 @@ func (manager *Registry) Sync(
 	for name, binding := range state.httpProxies {
 		existingHTTPProxies[name] = binding
 	}
+	authenticationMode := state.authentication.Mode
 	manager.mutex.Unlock()
 
+	if authenticationMode != authentication.ModeManaged && len(request.Proxies) == 0 {
+		return rejectedSyncResult(
+			request.Revision,
+			protocol.ProxyErrorInvalidProxy,
+			"",
+			"at least one proxy declaration is required",
+		)
+	}
 	if rejection := validateProxyDeclarations(
 		request.Revision,
 		request.Proxies,
 		manager.httpEnabled,
 	); rejection != nil {
 		return *rejection
+	}
+	manager.mutex.Lock()
+	reservationRejection := manager.managedReservationRejectionLocked(
+		clientID,
+		authenticationMode,
+		request,
+	)
+	manager.mutex.Unlock()
+	if reservationRejection != nil {
+		return *reservationRejection
 	}
 	declarationsByPort := make(map[uint16]protocol.ProxyDeclaration)
 	declarationsByUDPPort := make(map[uint16]protocol.ProxyDeclaration)
@@ -765,7 +790,7 @@ func rejectedSyncResult(
 			Code:      code,
 			Message:   message,
 			ProxyName: proxyName,
-			Retryable: false,
+			Retryable: code == protocol.ProxyErrorSessionInactive,
 		},
 	}
 }

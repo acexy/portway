@@ -725,7 +725,11 @@ func loadGovernedClients(path string) (map[string]GovernedClientConfig, error) {
 		return nil, err
 	}
 	for _, file := range files {
-		var client GovernedClientConfig
+		client := GovernedClientConfig{
+			Permissions: GovernedPermissions{
+				Limits: DefaultPermissionLimits(),
+			},
+		}
 		if err := loadAuthenticationYAML(file, &client); err != nil {
 			return nil, err
 		}
@@ -773,6 +777,9 @@ func loadManagedClients(path string) (map[string]ManagedClientConfig, error) {
 			return nil, fmt.Errorf("client_id %q is duplicated", client.ClientID)
 		}
 		clients[client.ClientID] = client
+	}
+	if err := validateManagedClientConflicts(clients); err != nil {
+		return nil, err
 	}
 	return clients, nil
 }
@@ -902,14 +909,6 @@ func validateAuthenticationClientFile(path string, clientID string, token string
 	if err := ValidateClientID(clientID); err != nil {
 		return fmt.Errorf("validate authentication file %q: %w", path, err)
 	}
-	expectedName := clientID + ".yaml"
-	if filepath.Base(path) != expectedName {
-		return fmt.Errorf(
-			"authentication file %q must be named %q",
-			path,
-			expectedName,
-		)
-	}
 	if len(token) < generatedTokenBytes {
 		return fmt.Errorf(
 			"authentication file %q token must contain at least %d bytes",
@@ -918,6 +917,81 @@ func validateAuthenticationClientFile(path string, clientID string, token string
 		)
 	}
 	return nil
+}
+
+type managedBindingOwner struct {
+	clientID  string
+	proxyName string
+}
+
+func validateManagedClientConflicts(clients map[string]ManagedClientConfig) error {
+	clientIDs := make([]string, 0, len(clients))
+	for clientID := range clients {
+		clientIDs = append(clientIDs, clientID)
+	}
+	sort.Strings(clientIDs)
+
+	tcpPorts := make(map[uint16]managedBindingOwner)
+	udpPorts := make(map[uint16]managedBindingOwner)
+	httpDomains := make(map[string]managedBindingOwner)
+	for _, clientID := range clientIDs {
+		for _, proxy := range clients[clientID].Configuration.Proxies {
+			owner := managedBindingOwner{
+				clientID:  clientID,
+				proxyName: proxy.Name,
+			}
+			switch proxy.Type {
+			case "tcp":
+				if previous, exists := tcpPorts[proxy.RemotePort]; exists {
+					return managedBindingConflict(
+						"TCP remote port",
+						fmt.Sprint(proxy.RemotePort),
+						previous,
+						owner,
+					)
+				}
+				tcpPorts[proxy.RemotePort] = owner
+			case "udp":
+				if previous, exists := udpPorts[proxy.RemotePort]; exists {
+					return managedBindingConflict(
+						"UDP remote port",
+						fmt.Sprint(proxy.RemotePort),
+						previous,
+						owner,
+					)
+				}
+				udpPorts[proxy.RemotePort] = owner
+			case "http":
+				if previous, exists := httpDomains[proxy.Domain]; exists {
+					return managedBindingConflict(
+						"HTTP domain",
+						proxy.Domain,
+						previous,
+						owner,
+					)
+				}
+				httpDomains[proxy.Domain] = owner
+			}
+		}
+	}
+	return nil
+}
+
+func managedBindingConflict(
+	resource string,
+	value string,
+	first managedBindingOwner,
+	second managedBindingOwner,
+) error {
+	return fmt.Errorf(
+		"managed %s %q is configured by client %q proxy %q and client %q proxy %q",
+		resource,
+		value,
+		first.clientID,
+		first.proxyName,
+		second.clientID,
+		second.proxyName,
+	)
 }
 
 func validateGovernedPermissions(permissions GovernedPermissions) error {
@@ -951,10 +1025,31 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 		}
 	}
 	limits := permissions.Limits
-	if limits.MaxProxies < 0 || limits.MaxTCPProxies < 0 ||
-		limits.MaxUDPProxies < 0 || limits.MaxHTTPProxies < 0 ||
-		limits.MaxActiveLinks < 0 {
-		return errors.New("permissions limits must not be negative")
+	for _, limit := range []struct {
+		name  string
+		value int
+		max   int
+	}{
+		{"max_proxies", limits.MaxProxies, hardMaxProxiesPerClient},
+		{"max_tcp_proxies", limits.MaxTCPProxies, hardMaxProxiesPerClient},
+		{"max_udp_proxies", limits.MaxUDPProxies, hardMaxProxiesPerClient},
+		{"max_http_proxies", limits.MaxHTTPProxies, hardMaxProxiesPerClient},
+		{"max_active_links", limits.MaxActiveLinks, hardMaxActiveLinksPerClient},
+	} {
+		if limit.value <= 0 || limit.value > limit.max {
+			return fmt.Errorf(
+				"permissions.limits.%s must be greater than zero and at most %d",
+				limit.name,
+				limit.max,
+			)
+		}
+	}
+	if limits.MaxTCPProxies > limits.MaxProxies ||
+		limits.MaxUDPProxies > limits.MaxProxies ||
+		limits.MaxHTTPProxies > limits.MaxProxies {
+		return errors.New(
+			"permissions per-type proxy limits must not exceed max_proxies",
+		)
 	}
 	if err := validateGovernedRulePresence(
 		"tcp",
@@ -1018,6 +1113,12 @@ func validatePortRanges(field string, ranges []PortRange) error {
 }
 
 func validateManagedProxies(proxies []ProxyConfig) error {
+	if len(proxies) > hardMaxProxiesPerClient {
+		return fmt.Errorf(
+			"configuration.proxies must contain at most %d entries",
+			hardMaxProxiesPerClient,
+		)
+	}
 	names := make(map[string]struct{}, len(proxies))
 	tcpPorts := make(map[uint16]struct{})
 	udpPorts := make(map[uint16]struct{})

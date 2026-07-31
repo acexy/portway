@@ -13,7 +13,7 @@ import (
 
 var (
 	// ErrAuthentication indicates that the peer failed the configured Token proof.
-	ErrAuthentication = errors.New("transport authentication failed")
+	ErrAuthentication = errors.New("authentication failed")
 	// ErrProtocol indicates malformed or invalid transport negotiation data.
 	ErrProtocol = errors.New("invalid transport protocol")
 	// ErrPermanent indicates a transport failure that cannot succeed without

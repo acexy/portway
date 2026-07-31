@@ -37,6 +37,9 @@ func TestClientRegistryRejectsDuplicateActiveClient(t *testing.T) {
 	if sessionError == nil || sessionError.Code != protocol.SessionErrorClientIDAlreadyOnline {
 		t.Fatalf("expected duplicate client error, got %#v", sessionError)
 	}
+	if sessionError.Retryable {
+		t.Fatal("duplicate active client error must be permanent")
+	}
 }
 
 func TestClientRegistryRevokesOnlyMatchingAuthenticationGeneration(t *testing.T) {
@@ -112,6 +115,30 @@ func TestClientRegistryResumesSuspendedClient(t *testing.T) {
 	registry.Disconnect("client-one", "session-one", now.Add(3*time.Second))
 	if !registry.Heartbeat("client-one", "session-two", now.Add(4*time.Second)) {
 		t.Fatal("new session was changed by stale cleanup")
+	}
+}
+
+func TestClientRegistryReportsRecoveryPendingWithoutSessionID(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Now()
+	serverConnection, peerConnection := net.Pipe()
+	defer serverConnection.Close()
+	defer peerConnection.Close()
+
+	registry.Register("client-one", "", "session-one", serverConnection, now)
+	registry.Disconnect("client-one", "session-one", now.Add(time.Second))
+
+	_, _, _, sessionError := registry.Register(
+		"client-one",
+		"",
+		"session-two",
+		serverConnection,
+		now.Add(2*time.Second),
+	)
+	if sessionError == nil ||
+		sessionError.Code != protocol.SessionErrorClientIDRecoveryPending ||
+		!sessionError.Retryable {
+		t.Fatalf("expected retryable recovery pending error, got %#v", sessionError)
 	}
 }
 

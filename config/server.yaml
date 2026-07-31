@@ -162,11 +162,16 @@ authentication:
   shared_token: ""
 
   # Optional. Every *.yaml file defines one ClientID, unique Token, proxy type
-  # allowlist, public port/domain policy, and resource limits.
-  # See config/governed-client.yaml for a complete record example.
+  # allowlist, public port/domain policy, and resource limits. Omitted limit
+  # fields use production-safe defaults; explicit values must remain within
+  # their documented program hard limits. File names are operator-facing labels
+  # and do not need to match ClientID.
+  # See config/governed/governed-client.yaml for a complete record example.
   governed_clients_path: "./governed"
 
   # Optional. Every *.yaml file defines one ClientID, unique Token, revision,
-  # and complete server-owned proxy configuration.
-  # See config/managed-client.yaml for a complete record example.
+  # and complete server-owned proxy configuration. A client may have at most
+  # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
+  # TCP ports, UDP ports, and HTTP domains must each be globally unique.
+  # See config/managed/managed-client.yaml for a complete record example.
   managed_clients_path: "./managed"

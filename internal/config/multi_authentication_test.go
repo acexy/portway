@@ -224,6 +224,125 @@ func TestValidateManagedProxiesRejectsPublicBindingConflicts(t *testing.T) {
 	}
 }
 
+func TestLoadManagedClientAllowsFileNameIndependentOfClientID(t *testing.T) {
+	directory := t.TempDir()
+	writeTestConfiguration(t, filepath.Join(directory, "customer-node.yaml"), `
+client_id: managed-client
+token: managed-token-with-at-least-32-random-bytes
+configuration:
+  revision: 1
+  proxies: []
+`)
+
+	clients, err := loadManagedClients(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := clients["managed-client"]; !exists {
+		t.Fatal("managed client was not indexed by its configured client ID")
+	}
+}
+
+func TestValidateManagedClientConflictsRejectsGlobalBindings(t *testing.T) {
+	tests := []struct {
+		name        string
+		firstProxy  ProxyConfig
+		secondProxy ProxyConfig
+		errorText   string
+	}{
+		{
+			name: "TCP port",
+			firstProxy: ProxyConfig{
+				Name: "first", Type: "tcp", RemotePort: 20000,
+			},
+			secondProxy: ProxyConfig{
+				Name: "second", Type: "tcp", RemotePort: 20000,
+			},
+			errorText: "managed TCP remote port",
+		},
+		{
+			name: "UDP port",
+			firstProxy: ProxyConfig{
+				Name: "first", Type: "udp", RemotePort: 20000,
+			},
+			secondProxy: ProxyConfig{
+				Name: "second", Type: "udp", RemotePort: 20000,
+			},
+			errorText: "managed UDP remote port",
+		},
+		{
+			name: "HTTP domain",
+			firstProxy: ProxyConfig{
+				Name: "first", Type: "http", Domain: "app.example.com",
+			},
+			secondProxy: ProxyConfig{
+				Name: "second", Type: "http", Domain: "app.example.com",
+			},
+			errorText: "managed HTTP domain",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clients := map[string]ManagedClientConfig{
+				"client-a": {
+					ClientID: "client-a",
+					Configuration: ManagedConfiguration{
+						Revision: 1,
+						Proxies:  []ProxyConfig{test.firstProxy},
+					},
+				},
+				"client-b": {
+					ClientID: "client-b",
+					Configuration: ManagedConfiguration{
+						Revision: 1,
+						Proxies:  []ProxyConfig{test.secondProxy},
+					},
+				},
+			}
+			if err := validateManagedClientConflicts(clients); err == nil ||
+				!strings.Contains(err.Error(), test.errorText) {
+				t.Fatalf("expected global managed conflict rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadServerRejectsManagedGlobalBindingConflict(t *testing.T) {
+	configurationDirectory := t.TempDir()
+	managedDirectory := filepath.Join(configurationDirectory, "managed")
+	if err := os.Mkdir(managedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for index, clientID := range []string{"client-a", "client-b"} {
+		writeTestConfiguration(
+			t,
+			filepath.Join(managedDirectory, fmt.Sprintf("record-%d.yaml", index)),
+			fmt.Sprintf(`
+client_id: %s
+token: managed-token-%d-with-at-least-32-random-bytes
+configuration:
+  revision: 1
+  proxies:
+    - name: ssh
+      type: tcp
+      local_ip: 127.0.0.1
+      local_port: 22
+      remote_port: 22022
+`, clientID, index),
+		)
+	}
+	serverPath := filepath.Join(configurationDirectory, "server.yaml")
+	writeTestConfiguration(t, serverPath, `
+authentication:
+  managed_clients_path: managed
+`)
+
+	if _, err := LoadServer(serverPath, false); err == nil ||
+		!strings.Contains(err.Error(), "managed TCP remote port") {
+		t.Fatalf("expected startup managed binding conflict rejection, got %v", err)
+	}
+}
+
 func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -233,23 +352,27 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 			name: "TCP without ranges",
 			permissions: GovernedPermissions{
 				ProxyTypes: []string{"tcp"},
+				Limits:     DefaultPermissionLimits(),
 			},
 		},
 		{
 			name: "UDP without ranges",
 			permissions: GovernedPermissions{
 				ProxyTypes: []string{"udp"},
+				Limits:     DefaultPermissionLimits(),
 			},
 		},
 		{
 			name: "HTTP without domains",
 			permissions: GovernedPermissions{
 				ProxyTypes: []string{"http"},
+				Limits:     DefaultPermissionLimits(),
 			},
 		},
 		{
 			name: "rules for disabled type",
 			permissions: GovernedPermissions{
+				Limits: DefaultPermissionLimits(),
 				TCP: ProxyPermission{
 					RemotePortRanges: []PortRange{{Start: 20000, End: 20999}},
 				},
@@ -266,6 +389,7 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 
 	valid := GovernedPermissions{
 		ProxyTypes: []string{"tcp", "udp", "http"},
+		Limits:     DefaultPermissionLimits(),
 		TCP: ProxyPermission{
 			RemotePortRanges: []PortRange{{Start: 20000, End: 20999}},
 		},
@@ -278,6 +402,119 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 	}
 	if err := validateGovernedPermissions(valid); err != nil {
 		t.Fatalf("valid governed permissions were rejected: %v", err)
+	}
+}
+
+func TestLoadGovernedClientAppliesDefaultPermissionLimits(t *testing.T) {
+	directory := t.TempDir()
+	writeTestConfiguration(t, filepath.Join(directory, "customer-a.yaml"), `
+client_id: customer-a
+token: governed-token-with-at-least-32-random-bytes
+permissions:
+  proxy_types: []
+`)
+
+	clients, err := loadGovernedClients(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual := clients["customer-a"].Permissions.Limits; actual != DefaultPermissionLimits() {
+		t.Fatalf("unexpected governed permission defaults: %+v", actual)
+	}
+}
+
+func TestLoadGovernedClientRejectsPermissionLimitOutsideHardBoundary(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		value int
+	}{
+		{name: "zero", field: "max_proxies", value: 0},
+		{
+			name:  "proxy overflow",
+			field: "max_proxies",
+			value: hardMaxProxiesPerClient + 1,
+		},
+		{
+			name:  "active link overflow",
+			field: "max_active_links",
+			value: hardMaxActiveLinksPerClient + 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			writeTestConfiguration(t, filepath.Join(directory, "customer-a.yaml"), fmt.Sprintf(`
+client_id: customer-a
+token: governed-token-with-at-least-32-random-bytes
+permissions:
+  proxy_types: []
+  limits:
+    %s: %d
+`, test.field, test.value))
+
+			if _, err := loadGovernedClients(directory); err == nil ||
+				!strings.Contains(err.Error(), test.field) {
+				t.Fatalf("expected %s rejection, got %v", test.field, err)
+			}
+		})
+	}
+}
+
+func TestValidateManagedProxiesRejectsHardLimitOverflow(t *testing.T) {
+	proxies := make([]ProxyConfig, hardMaxProxiesPerClient+1)
+	for index := range proxies {
+		proxies[index] = ProxyConfig{
+			Name:       fmt.Sprintf("tcp-%d", index),
+			Type:       "tcp",
+			LocalIP:    "127.0.0.1",
+			LocalPort:  1,
+			RemotePort: uint16(20000 + index),
+		}
+	}
+	if err := ValidateManagedProxies(proxies); err == nil ||
+		!strings.Contains(err.Error(), "at most 128") {
+		t.Fatalf("expected managed proxy hard limit rejection, got %v", err)
+	}
+}
+
+func TestLoadServerRejectsManagedProxyHardLimitOverflow(t *testing.T) {
+	configurationDirectory := t.TempDir()
+	managedDirectory := filepath.Join(configurationDirectory, "managed")
+	if err := os.Mkdir(managedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var managed strings.Builder
+	managed.WriteString(`
+client_id: managed-client
+token: managed-token-with-at-least-32-random-bytes
+configuration:
+  revision: 1
+  proxies:
+`)
+	for index := 0; index <= hardMaxProxiesPerClient; index++ {
+		fmt.Fprintf(&managed, `
+    - name: tcp-%d
+      type: tcp
+      local_ip: 127.0.0.1
+      local_port: 1
+      remote_port: %d
+`, index, 20000+index)
+	}
+	writeTestConfiguration(
+		t,
+		filepath.Join(managedDirectory, "managed-client.yaml"),
+		managed.String(),
+	)
+	serverPath := filepath.Join(configurationDirectory, "server.yaml")
+	writeTestConfiguration(t, serverPath, `
+authentication:
+  managed_clients_path: managed
+`)
+
+	if _, err := LoadServer(serverPath, false); err == nil ||
+		!strings.Contains(err.Error(), "at most 128") {
+		t.Fatalf("expected managed startup hard limit rejection, got %v", err)
 	}
 }
 

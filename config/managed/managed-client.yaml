@@ -3,8 +3,8 @@
 # Place this file in the directory configured by
 # authentication.managed_clients_path in server.yaml.
 #
-# The file name must be exactly <client_id>.yaml. This example therefore uses
-# client_id: managed-client and must be installed as managed-client.yaml.
+# The file name is an operator-facing label and does not need to match
+# client_id. ClientIDs must still be unique across all authentication records.
 # All ClientIDs and Tokens must be globally unique across Shared, Governed, and
 # Managed authentication records.
 
@@ -26,8 +26,14 @@ configuration:
   # Allowed values: positive integers greater than zero.
   revision: 1
 
-  # Optional. Complete desired proxy set. Empty means that this client exposes
-  # no proxies. Names must be unique within this record.
+  # Optional. Complete desired proxy set. Defaults to empty, which means that
+  # this client exposes no proxies. Hard maximum: 128 entries across TCP, UDP,
+  # and HTTP. Names must be unique within this record. Exceeding the hard
+  # maximum prevents server startup or rejects the hot-reload candidate.
+  # Across all Managed records, TCP remote ports, UDP remote ports, and HTTP
+  # domains must each be globally unique. TCP and UDP may use the same numeric
+  # port because they are different network protocols. These resources remain
+  # reserved for this Managed ClientID even while the client is offline.
   proxies:
     # TCP example.
     - name: ssh

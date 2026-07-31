@@ -32,7 +32,7 @@ const (
 	ProxyStatusUnchanged ProxyStatus = "unchanged"
 )
 
-// ProxyErrorCode identifies a permanent proxy registration failure.
+// ProxyErrorCode identifies a stable proxy synchronization failure.
 type ProxyErrorCode string
 
 const (

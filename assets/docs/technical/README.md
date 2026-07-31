@@ -39,16 +39,22 @@ QUIC without changing the public protocol or the private service.
 ## Registration and identity
 
 The server may accept Shared, Governed, and Managed authentication records at
-the same time. A client supplies only its Token; the selected server record
-determines its mode and authoritative identity. Shared clients use a runtime
-ClientID for resource ownership, while Governed and Managed clients receive a
-server-owned ClientID bound to their independent Token.
+the same time. A Token selects the server record and mode. Shared clients use a
+runtime ClientID for resource ownership, while Governed and Managed clients
+must also declare the ClientID bound to their independent Token before Session
+registration.
 
 Shared and Governed clients send their complete desired proxy set as one
 registration operation. Governed declarations are additionally constrained by
 server-owned proxy-type, port, domain, and quota rules. Managed clients receive
 their complete proxy configuration from the server and cannot register a
 replacement set.
+
+A new Session becomes recoverable only after its mode-specific initial
+configuration succeeds: Shared and Governed require a non-empty proxy
+registration, while Managed requires the initial prepare/activate exchange.
+Initialization failure removes the new Session instead of reserving a recovery
+window.
 
 The server validates a complete set before publishing it. If any proxy conflicts
 with an existing port, domain, or rule, the complete operation fails and no

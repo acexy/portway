@@ -101,12 +101,12 @@ func (registry *Registry) RegisterAuthenticated(
 		return false, false, nil, &protocol.SessionError{
 			Code:      protocol.SessionErrorClientIDAlreadyOnline,
 			Message:   "client ID is already online",
-			Retryable: true,
+			Retryable: false,
 		}
 	}
 	if resumeSessionID == "" {
 		return false, false, nil, &protocol.SessionError{
-			Code:      protocol.SessionErrorClientIDAlreadyOnline,
+			Code:      protocol.SessionErrorClientIDRecoveryPending,
 			Message:   "client ID is waiting for its recovery window to expire",
 			Retryable: true,
 		}

@@ -25,8 +25,10 @@ bounded resources, and secure defaults.
 - Dynamically reloaded IPv4/IPv6 deny lists
 - Strict YAML configuration and fail-closed validation
 - Small client and server binaries with a consistent command-line interface
-- **Flexible client governance:** shared configuration for trusted fleets,
-  policy-governed client configuration, or fully server-managed configuration
+- **Flexible client governance:**
+  - shared configuration for trusted fleets
+  - policy-governed client configuration
+  - fully server-managed configuration
 
 ## Quick start
 

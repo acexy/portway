@@ -3,8 +3,8 @@
 # Place this file in the directory configured by
 # authentication.governed_clients_path in server.yaml.
 #
-# The file name must be exactly <client_id>.yaml. This example therefore uses
-# client_id: governed-client and must be installed as governed-client.yaml.
+# The file name is an operator-facing label and does not need to match
+# client_id. ClientIDs must still be unique across all authentication records.
 # All ClientIDs and Tokens must be globally unique across Shared, Governed, and
 # Managed authentication records.
 
@@ -60,12 +60,23 @@ permissions:
       - app.example.com
       - "*.customer.example.com"
 
-  # Optional. Per-client ceilings applied in addition to server-wide limits.
-  # Every value must be zero or greater. Zero means that this per-client
-  # ceiling is disabled; server-wide and program hard limits still apply.
+  # Optional. Per-client ceilings applied before the program hard limits.
+  # Omitted fields use the defaults shown below. Every configured value must be
+  # greater than zero and no greater than its documented hard maximum.
+  # Per-type proxy limits must not exceed max_proxies.
   limits:
+    # Default: 20. Hard maximum: 128.
     max_proxies: 20
+
+    # Default: 10. Hard maximum: 128.
     max_tcp_proxies: 10
+
+    # Default: 5. Hard maximum: 128.
     max_udp_proxies: 5
+
+    # Default: 10. Hard maximum: 128.
     max_http_proxies: 10
+
+    # Counts pending and active links for this client.
+    # Default: 100. Hard maximum: 512.
     max_active_links: 100

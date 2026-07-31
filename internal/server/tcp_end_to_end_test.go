@@ -210,7 +210,7 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 			}},
 		)),
 		startClient(clientConfiguration(
-			"untrusted-governed-client-id",
+			"governed-authority",
 			governedToken,
 			[]config.ProxyConfig{{
 				Name:       "governed-echo",
@@ -221,7 +221,7 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 			}},
 		)),
 		startClient(clientConfiguration(
-			"untrusted-managed-client-id",
+			"managed-authority",
 			managedToken,
 			nil,
 		)),

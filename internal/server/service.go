@@ -124,6 +124,11 @@ func (s *Service) Run(ctx context.Context) error {
 		configuration.UDP,
 		sourceFilter,
 	)
+	if err := s.proxyRegistry.ConfigureManagedReservations(
+		configuration.ManagedClients,
+	); err != nil {
+		return fmt.Errorf("configure managed reservations: %w", err)
+	}
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
 	httpErrors := make(chan error, 1)
@@ -280,11 +285,15 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 	if !coll.SliceContains(clientHello.Capabilities, "json-control") {
 		return errors.New("client does not support json-control capability")
 	}
-	if inbound.Authentication.Mode != authentication.ModeShared {
-		// Independent Tokens resolve the canonical ClientID before Session
-		// registration. A client-provided post-authentication value has no
-		// authority to replace the authenticated identity.
-		clientHello.ClientID = inbound.Authentication.ClientID
+	if inbound.Authentication.Mode != authentication.ModeShared &&
+		(config.ValidateClientID(clientHello.ClientID) != nil ||
+			clientHello.ClientID != inbound.Authentication.ClientID) {
+		_ = writeSessionError(connection, protocol.SessionError{
+			Code:      protocol.SessionErrorAuthenticationFailed,
+			Message:   transport.ErrAuthentication.Error(),
+			Retryable: false,
+		})
+		return transport.ErrAuthentication
 	}
 	if err := config.ValidateClientID(clientHello.ClientID); err != nil {
 		_ = writeSessionError(connection, protocol.SessionError{
@@ -368,9 +377,15 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		inbound.Authentication,
 		maxActiveLinks,
 	)
+	recoverableSession := resumed
 	defer func() {
-		s.clientRegistry.Disconnect(clientHello.ClientID, sessionID, time.Now())
-		s.proxyRegistry.Suspend(clientHello.ClientID, sessionID)
+		if recoverableSession {
+			s.clientRegistry.Disconnect(clientHello.ClientID, sessionID, time.Now())
+			s.proxyRegistry.Suspend(clientHello.ClientID, sessionID)
+			return
+		}
+		s.clientRegistry.Remove(clientHello.ClientID, sessionID)
+		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)
 	}()
 
 	if err := connection.SetDeadline(time.Time{}); err != nil {
@@ -409,10 +424,20 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		if managedError != nil {
 			return managedError
 		}
+		recoverableSession = true
 		defer s.unregisterManagedSession(clientHello.ClientID, sessionID)
 	}
 
-	sessionLogger.InfoWithField("control session established", "resumed", resumed)
+	initialProxySynchronizationRequired :=
+		inbound.Authentication.Mode != authentication.ModeManaged
+	if initialProxySynchronizationRequired {
+		if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
+			return fmt.Errorf("set initial proxy synchronization deadline: %w", err)
+		}
+	}
+	if !initialProxySynchronizationRequired {
+		sessionLogger.InfoWithField("control session established", "resumed", resumed)
+	}
 	gracefullyClosed, err := s.serveControlMessages(
 		connection,
 		clientHello.ClientID,
@@ -421,6 +446,11 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		writer,
 		negotiatedCapabilities,
 		inbound.Authentication.Mode,
+		initialProxySynchronizationRequired,
+		func() {
+			recoverableSession = true
+			sessionLogger.InfoWithField("control session established", "resumed", resumed)
+		},
 	)
 	if gracefullyClosed {
 		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)
@@ -622,11 +652,21 @@ func (s *Service) serveControlMessages(
 	writer *control.Writer,
 	negotiatedCapabilities []string,
 	authenticationMode authentication.Mode,
+	initialProxySynchronizationRequired bool,
+	onProxySynchronizationApplied func(),
 ) (gracefullyClosed bool, err error) {
 	for {
 		envelope, err := protocol.ReadControl(connection)
 		if err != nil {
 			return false, err
+		}
+		if initialProxySynchronizationRequired &&
+			envelope.Type != protocol.MessageSyncProxies {
+			return false, fmt.Errorf(
+				"expected initial %s, got %s",
+				protocol.MessageSyncProxies,
+				envelope.Type,
+			)
 		}
 		switch envelope.Type {
 		case protocol.MessagePing:
@@ -720,6 +760,18 @@ func (s *Service) serveControlMessages(
 				return false, errProxyRegistrationRejected
 			}
 			s.proxyRegistry.Activate(clientID, sessionID)
+			if initialProxySynchronizationRequired {
+				if err := connection.SetDeadline(time.Time{}); err != nil {
+					return false, fmt.Errorf(
+						"clear initial proxy synchronization deadline: %w",
+						err,
+					)
+				}
+				initialProxySynchronizationRequired = false
+			}
+			if onProxySynchronizationApplied != nil {
+				onProxySynchronizationApplied()
+			}
 			sessionLogger.InfoWithField(
 				"proxy registration applied",
 				"revision",
@@ -1055,6 +1107,16 @@ func (s *Service) applyConfigurationCandidateContext(
 		candidate,
 	)
 	managedChanges := changedManagedClients(current, candidate)
+	if s.proxyRegistry != nil {
+		if err := s.proxyRegistry.ConfigureManagedReservations(
+			candidate.ManagedClients,
+		); err != nil {
+			if candidate.LogLevel != current.LogLevel {
+				_ = logging.EnableConsole(current.LogLevel)
+			}
+			return fmt.Errorf("validate managed reservations: %w", err)
+		}
+	}
 	candidate.Generation = current.Generation + 1
 
 	s.configuration.publish(candidate)

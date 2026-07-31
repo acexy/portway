@@ -32,14 +32,17 @@ TCP 或 QUIC 传递到客户端，而无需更改公共协议或私有服务。
 
 ## 注册与身份
 
-服务端可以同时接受 Shared、Governed 和 Managed 认证记录。客户端只提交
-Token；服务端选中的记录决定模式和权威身份。Shared 客户端使用运行时 ClientID
-标识资源归属，Governed 和 Managed 客户端则获得与独立 Token 绑定的服务端
-权威 ClientID。
+服务端可以同时接受 Shared、Governed 和 Managed 认证记录。Token 选择服务端
+记录和模式。Shared 客户端使用运行时 ClientID 标识资源归属，Governed 和
+Managed 客户端还必须在注册 Session 前声明与独立 Token 绑定的 ClientID。
 
 Shared 和 Governed 客户端将完整期望代理集合作为一次注册操作发送。Governed
 声明还受到服务端代理类型、端口、域名和配额规则约束。Managed 客户端从服务端
 接收完整代理配置，不能注册替代集合。
+
+新 Session 只有完成对应模式的初始配置后才具备恢复资格：Shared 和 Governed
+必须完成非空代理注册，Managed 必须完成首次 Prepare/Activate。初始化失败时
+服务端直接删除新 Session，不为其保留恢复窗口。
 
 服务端在对外发布前校验完整集合。如果任一代理与现有端口、域名或规则冲突，
 整个操作失败，不会暴露部分状态。模式选择和配置示例见
