@@ -1,0 +1,47 @@
+# Governed 服务端客户端记录完整示例，对应 ../../../config/governed/governed-client.yaml。
+# 文件名只是操作者标签，无需匹配 client_id。所有独立 ClientID 和 Token 必须唯一。
+
+client_id: governed-client
+# 至少 32 字节的唯一随机 Token，禁止提交生产 Token。
+token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+
+permissions:
+  # 必填，至少一项。可选值：tcp、udp、http；每种类型必须配置对应非空规则。
+  proxy_types:
+    - tcp
+    - udp
+    - http
+
+  tcp:
+    # 公网 TCP 端口授权闭区间；范围 1-65535，区间不得重叠。
+    remote_port_ranges:
+      - start: 20000
+        end: 20999
+      - start: 22000
+        end: 22099
+
+  udp:
+    # 公网 UDP 端口授权闭区间；范围 1-65535，区间不得重叠。
+    remote_port_ranges:
+      - start: 30000
+        end: 30999
+
+  http:
+    # 精确域名或仅匹配一级子域名的 *.example.com；客户端仍注册具体域名。
+    domains:
+      - app.example.com
+      - "*.customer.example.com"
+
+  # 可选配额。缺省使用下列默认值；显式值必须大于 0 且不超过硬上限。
+  # 各类型代理上限不得超过 max_proxies。
+  limits:
+    # 默认 20，硬上限 128。
+    max_proxies: 20
+    # 默认 10，硬上限 128。
+    max_tcp_proxies: 10
+    # 默认 5，硬上限 128。
+    max_udp_proxies: 5
+    # 默认 10，硬上限 128。
+    max_http_proxies: 10
+    # Pending 与 Active Link 合计；默认 100，硬上限 512。
+    max_active_links: 100

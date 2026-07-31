@@ -182,8 +182,8 @@ VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
 - [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
 - [安全性](assets/docs/security/README_ZH.md)
 - [未来计划](assets/docs/future/README_ZH.md)
-- 完整注释的配置示例：
-  [client](config/client.yaml) 和 [server](config/server.yaml)
+- 完整中文注释配置示例：
+  [客户端](config/zh/client.yaml) 和 [服务端](config/zh/server.yaml)
 
 公开文档有意描述稳定的行为和安全性属性，而非作为完整的线协议规范。
 

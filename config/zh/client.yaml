@@ -1,0 +1,54 @@
+# Portway 客户端完整配置示例。字段和值与 ../client.yaml 保持一致。
+# “必填”表示必须显式配置；“条件必填”只在对应条件成立时要求配置。
+
+# 可选。最低日志级别，默认 info。可选值：trace、debug、info、warn、error。
+log_level: info
+
+# Governed/Managed 必填，必须匹配服务端 Token 记录绑定的 ClientID。
+# Shared 可选；留空时为当前进程生成随机 ID。长度 1-64，可使用 ASCII
+# 字母、数字、点、下划线和连字符。
+client_id: ""
+
+transport:
+  # 可选。TCP 与 QUIC 共用的服务端地址，默认 127.0.0.1:7000。
+  server_address: gateway.example.com:7000
+  # 可选，默认 tcp。可选值：tcp、quic。
+  type: tcp
+  quic:
+    # transport.type=quic 时必填，必须匹配服务端证书中的 DNS 名称。
+    server_name: gateway.example.com
+    # 可选。留空使用操作系统信任库；内部 CA 可填写 ./certs/root-ca.crt。
+    ca_file: ""
+
+authentication:
+  # 必填。服务端根据全局唯一 Token 自动选择 Shared、Governed 或 Managed。
+  # 使用至少 32 字节的加密随机值，禁止提交真实 Token。
+  token: CHANGE_ME_TO_A_RANDOM_TOKEN_AT_LEAST_32_BYTES
+
+# Shared/Governed 必须至少配置一项；Managed 必须留空，由服务端下发并锁定。
+# 同一 ClientID 下所有代理名称必须唯一。
+proxies:
+  - name: ssh
+    # 必填。可选值：tcp、udp、http。
+    type: tcp
+    # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
+    local_ip: 127.0.0.1
+    # 必填，本地目标端口，范围 1-65535。
+    local_port: 22
+    # TCP/UDP 必填，HTTP 禁止配置；范围 1-65535。
+    remote_port: 22022
+
+  # HTTP 示例：
+  # - name: web
+  #   type: http
+  #   # 必填：规范化小写 DNS 域名，不含协议、端口、路径、通配符或尾点。
+  #   domain: app.example.com
+  #   local_ip: 127.0.0.1
+  #   local_port: 8080
+
+  # UDP 示例：
+  # - name: dns
+  #   type: udp
+  #   local_ip: 127.0.0.1
+  #   local_port: 53
+  #   remote_port: 5353
