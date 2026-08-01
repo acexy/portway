@@ -76,7 +76,7 @@ func TestApplicationColorCanBeForced(t *testing.T) {
 	}
 }
 
-func TestApplicationVersionIncludesBuildMetadata(t *testing.T) {
+func TestApplicationVersionPrintsOnlyVersion(t *testing.T) {
 	application := testApplication()
 	application.Version = buildinfo.Info{
 		Version:   "v1.2.3",
@@ -89,15 +89,9 @@ func TestApplicationVersionIncludesBuildMetadata(t *testing.T) {
 
 	application.WriteVersion(&stdout)
 
-	for _, expected := range []string{
-		"portway v1.2.3",
-		"Commit: 1234567890ab (modified)",
-		"Built:  2026-07-29T12:00:00Z",
-		"Go:     go1.25.8",
-	} {
-		if !strings.Contains(stdout.String(), expected) {
-			t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
-		}
+	expected := "version: v1.2.3\ncore-protocol: 1\n"
+	if stdout.String() != expected {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
 	}
 }
 

@@ -167,7 +167,7 @@ func WriteControlWithRequestID(
 
 	header := make([]byte, controlHeaderSize)
 	copy(header, Magic)
-	header[4] = MajorVersion
+	header[4] = CoreVersion
 	header[5] = controlEncodingJSON
 	binary.BigEndian.PutUint32(header[8:], uint32(len(envelopeBytes)))
 	if err := writeAll(writer, header); err != nil {
@@ -188,7 +188,7 @@ func ReadControl(reader io.Reader) (Envelope, error) {
 	if string(header[:4]) != Magic {
 		return Envelope{}, fmt.Errorf("%w: invalid control frame magic", ErrInvalidControlMessage)
 	}
-	if header[4] != MajorVersion {
+	if header[4] != CoreVersion {
 		return Envelope{}, fmt.Errorf(
 			"%w: unsupported control protocol version %d",
 			ErrInvalidControlMessage,

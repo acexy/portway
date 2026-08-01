@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/acexy/portway/internal/buildinfo"
+	"github.com/acexy/portway/internal/protocol"
 )
 
 // ColorMode controls ANSI styling.
@@ -147,7 +148,7 @@ func (application Application) WriteHelp(writer io.Writer) {
 		renderer.theme.Command,
 		"version",
 		renderer.theme.Reset,
-		"Show version and build information",
+		"Show version",
 	)
 	_, _ = fmt.Fprintf(
 		writer,
@@ -191,27 +192,10 @@ func (application Application) WriteCommandHelp(writer io.Writer, command Comman
 	}
 }
 
-// WriteVersion renders operator-friendly build metadata.
+// WriteVersion renders the application and core protocol versions.
 func (application Application) WriteVersion(writer io.Writer) {
-	renderer := application.renderer(writer)
-	_, _ = fmt.Fprintf(
-		writer,
-		"%s%s%s %s\n",
-		renderer.theme.Accent,
-		application.Name,
-		renderer.theme.Reset,
-		application.Version.Version,
-	)
-	if commit := application.Version.ShortCommit(); commit != "" {
-		if application.Version.Modified {
-			commit += " (modified)"
-		}
-		_, _ = fmt.Fprintf(writer, "Commit: %s\n", commit)
-	}
-	if application.Version.BuildTime != "" {
-		_, _ = fmt.Fprintf(writer, "Built:  %s\n", application.Version.BuildTime)
-	}
-	_, _ = fmt.Fprintf(writer, "Go:     %s\n", application.Version.GoVersion)
+	_, _ = fmt.Fprintf(writer, "version: %s\n", application.Version.Version)
+	_, _ = fmt.Fprintf(writer, "core-protocol: %d\n", protocol.CoreVersion)
 }
 
 func (application Application) command(name string) (Command, bool) {

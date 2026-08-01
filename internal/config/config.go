@@ -458,50 +458,7 @@ func validateClient(configuration ClientConfig) error {
 	if err := validateClientAuthentication(configuration.Authentication); err != nil {
 		return err
 	}
-	proxyNames := make(map[string]struct{}, len(configuration.Proxies))
-	for index, proxy := range configuration.Proxies {
-		if proxy.Name == "" {
-			return fmt.Errorf("proxies[%d].name is required", index)
-		}
-		if !proxyNamePattern.MatchString(proxy.Name) {
-			return fmt.Errorf("proxies[%d].name has an invalid format", index)
-		}
-		if _, duplicate := proxyNames[proxy.Name]; duplicate {
-			return fmt.Errorf("proxies[%d].name is duplicated", index)
-		}
-		proxyNames[proxy.Name] = struct{}{}
-		switch proxy.Type {
-		case "tcp", "udp":
-			if proxy.Domain != "" {
-				return fmt.Errorf(
-					"proxies[%d].domain is not allowed for %s",
-					index,
-					proxy.Type,
-				)
-			}
-			if proxy.RemotePort == 0 {
-				return fmt.Errorf("proxies[%d].remote_port must be between 1 and 65535", index)
-			}
-		case "http":
-			if proxy.RemotePort != 0 {
-				return fmt.Errorf("proxies[%d].remote_port is not allowed for http", index)
-			}
-			if err := ValidateHTTPDomain(proxy.Domain); err != nil {
-				return fmt.Errorf("proxies[%d].domain: %w", index, err)
-			}
-		default:
-			return fmt.Errorf("proxies[%d].type must be tcp, udp, or http", index)
-		}
-		if proxy.LocalIP == "" {
-			configuration.Proxies[index].LocalIP = "127.0.0.1"
-		} else if net.ParseIP(proxy.LocalIP) == nil {
-			return fmt.Errorf("proxies[%d].local_ip must be an IP address", index)
-		}
-		if proxy.LocalPort == 0 {
-			return fmt.Errorf("proxies[%d].local_port must be between 1 and 65535", index)
-		}
-	}
-	return nil
+	return validateProxies(configuration.Proxies, "proxies")
 }
 
 // ValidateClientID validates a configured or protocol-provided client ID.
@@ -1113,9 +1070,14 @@ func validatePortRanges(field string, ranges []PortRange) error {
 }
 
 func validateManagedProxies(proxies []ProxyConfig) error {
+	return validateProxies(proxies, "configuration.proxies")
+}
+
+func validateProxies(proxies []ProxyConfig, field string) error {
 	if len(proxies) > hardMaxProxiesPerClient {
 		return fmt.Errorf(
-			"configuration.proxies must contain at most %d entries",
+			"%s must contain at most %d entries",
+			field,
 			hardMaxProxiesPerClient,
 		)
 	}
@@ -1125,54 +1087,62 @@ func validateManagedProxies(proxies []ProxyConfig) error {
 	httpDomains := make(map[string]struct{})
 	for index, proxy := range proxies {
 		if proxy.Name == "" || !proxyNamePattern.MatchString(proxy.Name) {
-			return fmt.Errorf("configuration.proxies[%d].name has an invalid format", index)
+			return fmt.Errorf("%s[%d].name has an invalid format", field, index)
 		}
 		if _, duplicate := names[proxy.Name]; duplicate {
-			return fmt.Errorf("configuration.proxies[%d].name is duplicated", index)
+			return fmt.Errorf("%s[%d].name is duplicated", field, index)
 		}
 		names[proxy.Name] = struct{}{}
 		switch proxy.Type {
 		case "tcp":
 			if proxy.RemotePort == 0 || proxy.Domain != "" {
-				return fmt.Errorf("configuration.proxies[%d] has invalid %s fields", index, proxy.Type)
+				return fmt.Errorf("%s[%d] has invalid %s fields", field, index, proxy.Type)
 			}
 			if _, duplicate := tcpPorts[proxy.RemotePort]; duplicate {
 				return fmt.Errorf(
-					"configuration.proxies[%d].remote_port is duplicated for tcp",
+					"%s[%d].remote_port is duplicated for tcp",
+					field,
 					index,
 				)
 			}
 			tcpPorts[proxy.RemotePort] = struct{}{}
 		case "udp":
 			if proxy.RemotePort == 0 || proxy.Domain != "" {
-				return fmt.Errorf("configuration.proxies[%d] has invalid %s fields", index, proxy.Type)
+				return fmt.Errorf("%s[%d] has invalid %s fields", field, index, proxy.Type)
 			}
 			if _, duplicate := udpPorts[proxy.RemotePort]; duplicate {
 				return fmt.Errorf(
-					"configuration.proxies[%d].remote_port is duplicated for udp",
+					"%s[%d].remote_port is duplicated for udp",
+					field,
 					index,
 				)
 			}
 			udpPorts[proxy.RemotePort] = struct{}{}
 		case "http":
 			if proxy.RemotePort != 0 {
-				return fmt.Errorf("configuration.proxies[%d].remote_port is not allowed for http", index)
+				return fmt.Errorf("%s[%d].remote_port is not allowed for http", field, index)
 			}
 			if err := ValidateHTTPDomain(proxy.Domain); err != nil {
-				return fmt.Errorf("configuration.proxies[%d].domain: %w", index, err)
+				return fmt.Errorf("%s[%d].domain: %w", field, index, err)
 			}
 			if _, duplicate := httpDomains[proxy.Domain]; duplicate {
 				return fmt.Errorf(
-					"configuration.proxies[%d].domain is duplicated",
+					"%s[%d].domain is duplicated",
+					field,
 					index,
 				)
 			}
 			httpDomains[proxy.Domain] = struct{}{}
 		default:
-			return fmt.Errorf("configuration.proxies[%d].type is invalid", index)
+			return fmt.Errorf("%s[%d].type must be tcp, udp, or http", field, index)
 		}
-		if net.ParseIP(proxy.LocalIP) == nil || proxy.LocalPort == 0 {
-			return fmt.Errorf("configuration.proxies[%d] has invalid local target", index)
+		if proxy.LocalIP == "" {
+			proxies[index].LocalIP = "127.0.0.1"
+		} else if net.ParseIP(proxy.LocalIP) == nil {
+			return fmt.Errorf("%s[%d].local_ip must be an IP address", field, index)
+		}
+		if proxy.LocalPort == 0 {
+			return fmt.Errorf("%s[%d].local_port must be between 1 and 65535", field, index)
 		}
 	}
 	return nil

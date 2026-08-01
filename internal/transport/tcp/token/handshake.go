@@ -25,7 +25,6 @@ const (
 	handshakeNonceSize    = 32
 	handshakeProofSize    = sha256.Size
 	handshakeSelectorSize = sha256.Size
-	handshakeVersion      = 1
 	handshakeHeaderSize   = len(protocol.Magic) + 2 + handshakeSelectorSize + handshakeNonceSize
 	handshakeTimeout      = 5 * time.Second
 )
@@ -183,7 +182,7 @@ func serverTokenHandshakeContext(
 func makeHandshakeHeader(role protocol.Role) []byte {
 	header := make([]byte, handshakeHeaderSize)
 	copy(header, protocol.Magic)
-	header[4] = handshakeVersion
+	header[4] = protocol.CoreVersion
 	header[5] = byte(role)
 	return header
 }
@@ -195,7 +194,7 @@ func validateHandshakeHeader(header []byte, expectedRole protocol.Role) error {
 	if string(header[:4]) != protocol.Magic {
 		return fmt.Errorf("%w: invalid handshake magic", ErrProtocol)
 	}
-	if header[4] != handshakeVersion {
+	if header[4] != protocol.CoreVersion {
 		return fmt.Errorf("%w: unsupported protocol version %d", ErrProtocol, header[4])
 	}
 	role := protocol.Role(header[5])

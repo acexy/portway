@@ -39,7 +39,8 @@ configuration:
     - name: ssh
       # * Required. Allowed values: tcp, udp, http.
       type: tcp
-      # * Required. Local target must be an IP address reachable by the client.
+      # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
+      # by the client.
       local_ip: 127.0.0.1
       # * Required. Local target port, range 1-65535.
       local_port: 22
@@ -50,6 +51,7 @@ configuration:
     # UDP example.
     - name: dns
       type: udp
+      # Optional. Defaults to 127.0.0.1.
       local_ip: 127.0.0.1
       local_port: 53
       remote_port: 5353
@@ -57,6 +59,7 @@ configuration:
     # HTTP example.
     - name: web
       type: http
+      # Optional. Defaults to 127.0.0.1.
       local_ip: 127.0.0.1
       local_port: 8080
       # * Required for http. Canonical lowercase DNS name without a scheme,
