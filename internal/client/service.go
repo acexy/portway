@@ -38,6 +38,13 @@ type proxyRegistrationError struct {
 	retryable bool
 }
 
+type reconnectPhase string
+
+const (
+	reconnectPhaseRegistration reconnectPhase = "registration"
+	reconnectPhaseRecovery     reconnectPhase = "session_recovery"
+)
+
 var errManagedLocalProxies = errors.New(
 	"managed clients cannot configure local proxies",
 )
@@ -108,7 +115,8 @@ func (s *Service) Run(ctx context.Context) error {
 	})
 	defer s.logger.Info("client stopped")
 
-	reconnectDelay := initialReconnectDelay
+	reconnectDelay := initialRegistrationReconnectDelay
+	var reconnectAttempt uint64
 	var reconnectStartedAt time.Time
 	sessionID := ""
 	var disconnectedAt time.Time
@@ -116,6 +124,15 @@ func (s *Service) Run(ctx context.Context) error {
 	for {
 		if reconnectPeriodExceeded(reconnectStartedAt, time.Now()) {
 			return errReconnectPeriodExceeded
+		}
+		if sessionID != "" &&
+			!disconnectedAt.IsZero() &&
+			time.Since(disconnectedAt) >= sessionRecoveryWindow {
+			s.logger.InfoWithField("client session recovery window expired", "session_id", sessionID)
+			sessionID = ""
+			disconnectedAt = time.Time{}
+			reconnectDelay = initialRegistrationReconnectDelay
+			reconnectAttempt = 0
 		}
 		attemptLogger := s.logger
 		if sessionID != "" {
@@ -126,14 +143,6 @@ func (s *Service) Run(ctx context.Context) error {
 			"resume",
 			sessionID != "",
 		)
-
-		if sessionID != "" &&
-			!disconnectedAt.IsZero() &&
-			time.Since(disconnectedAt) >= sessionRecoveryWindow {
-			s.logger.InfoWithField("client session recovery window expired", "session_id", sessionID)
-			sessionID = ""
-			disconnectedAt = time.Time{}
-		}
 
 		establishedSessionID, established, err := s.runControlSession(ctx, sessionID)
 		if ctx.Err() != nil {
@@ -151,7 +160,8 @@ func (s *Service) Run(ctx context.Context) error {
 		if established {
 			sessionID = establishedSessionID
 			disconnectedAt = time.Now()
-			reconnectDelay = initialReconnectDelay
+			reconnectDelay = initialRecoveryReconnectDelay
+			reconnectAttempt = 0
 			reconnectStartedAt = time.Now()
 		} else if reconnectStartedAt.IsZero() {
 			reconnectStartedAt = time.Now()
@@ -163,7 +173,8 @@ func (s *Service) Run(ctx context.Context) error {
 			case protocol.SessionErrorSessionExpired:
 				sessionID = ""
 				disconnectedAt = time.Time{}
-				reconnectDelay = initialReconnectDelay
+				reconnectDelay = initialRegistrationReconnectDelay
+				reconnectAttempt = 0
 				continue
 			case protocol.SessionErrorClientIDRecoveryPending:
 			case protocol.SessionErrorResumeSessionMismatch,
@@ -184,6 +195,8 @@ func (s *Service) Run(ctx context.Context) error {
 			},
 		)
 
+		phase := reconnectPhaseForSession(sessionID)
+		reconnectAttempt++
 		actualReconnectDelay := reconnectDelayWithJitter(reconnectDelay)
 		actualReconnectDelay, available := boundedReconnectDelay(
 			reconnectStartedAt,
@@ -201,13 +214,32 @@ func (s *Service) Run(ctx context.Context) error {
 		attemptLogger.InfoWithFields("session reconnect scheduled", map[string]any{
 			"event":          "session_reconnect_scheduled",
 			"retry_delay_ms": actualReconnectDelay.Milliseconds(),
+			"retry_attempt":  reconnectAttempt,
+			"retry_phase":    phase,
 			"resume":         sessionID != "",
 		})
 		if !waitForRetry(ctx, actualReconnectDelay) {
 			return nil
 		}
-		reconnectDelay = min(reconnectDelay*2, maximumReconnectDelay)
+		reconnectDelay = nextReconnectDelay(reconnectDelay, phase)
 	}
+}
+
+func reconnectPhaseForSession(sessionID string) reconnectPhase {
+	if sessionID != "" {
+		return reconnectPhaseRecovery
+	}
+	return reconnectPhaseRegistration
+}
+
+func nextReconnectDelay(current time.Duration, phase reconnectPhase) time.Duration {
+	if phase == reconnectPhaseRecovery {
+		return min(current*2, maximumRecoveryReconnectDelay)
+	}
+	if current >= 8*time.Second && current < 15*time.Second {
+		return 15 * time.Second
+	}
+	return min(current*2, maximumRegistrationReconnectDelay)
 }
 
 func reconnectPeriodExceeded(startedAt time.Time, now time.Time) bool {

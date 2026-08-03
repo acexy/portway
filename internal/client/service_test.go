@@ -36,12 +36,66 @@ func TestReconnectDelayWithJitterStaysWithinConfiguredRange(t *testing.T) {
 	}
 }
 
+func TestReconnectPoliciesSeparateRecoveryFromRegistration(t *testing.T) {
+	testCases := []struct {
+		name     string
+		phase    reconnectPhase
+		initial  time.Duration
+		expected []time.Duration
+	}{
+		{
+			name:     "session recovery",
+			phase:    reconnectPhaseRecovery,
+			initial:  initialRecoveryReconnectDelay,
+			expected: []time.Duration{time.Second, 2 * time.Second, 3 * time.Second, 3 * time.Second},
+		},
+		{
+			name:     "registration",
+			phase:    reconnectPhaseRegistration,
+			initial:  initialRegistrationReconnectDelay,
+			expected: []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 30 * time.Second},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			delay := testCase.initial
+			for index, expected := range testCase.expected {
+				delay = nextReconnectDelay(delay, testCase.phase)
+				if delay != expected {
+					t.Fatalf("delay %d = %s, want %s", index+1, delay, expected)
+				}
+			}
+		})
+	}
+	if reconnectPhaseForSession("session-one") != reconnectPhaseRecovery {
+		t.Fatal("session ID did not select recovery retry policy")
+	}
+	if reconnectPhaseForSession("") != reconnectPhaseRegistration {
+		t.Fatal("empty session ID did not select registration retry policy")
+	}
+}
+
+func TestRecoveryPendingRemainsRetryableWhileOnlineConflictRemainsPermanent(t *testing.T) {
+	if err := validateSessionErrorRetryable(protocol.SessionError{
+		Code:      protocol.SessionErrorClientIDRecoveryPending,
+		Retryable: true,
+	}); err != nil {
+		t.Fatalf("recovery-pending response was rejected: %v", err)
+	}
+	if err := validateSessionErrorRetryable(protocol.SessionError{
+		Code:      protocol.SessionErrorClientIDAlreadyOnline,
+		Retryable: false,
+	}); err != nil {
+		t.Fatalf("online-conflict response was rejected: %v", err)
+	}
+}
+
 func TestReconnectPeriodIsBoundedToEightHours(t *testing.T) {
 	startedAt := time.Unix(100, 0)
 	delay, available := boundedReconnectDelay(
 		startedAt,
 		startedAt.Add(maximumReconnectPeriod-5*time.Second),
-		maximumReconnectDelay,
+		maximumRegistrationReconnectDelay,
 	)
 	if !available || delay != 5*time.Second {
 		t.Fatalf("bounded delay = %s, available=%t", delay, available)

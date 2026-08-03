@@ -3,9 +3,11 @@ package client
 import "time"
 
 const (
-	initialReconnectDelay  = time.Second
-	maximumReconnectDelay  = 30 * time.Second
-	maximumReconnectPeriod = 8 * time.Hour
+	initialRegistrationReconnectDelay = time.Second
+	maximumRegistrationReconnectDelay = 30 * time.Second
+	initialRecoveryReconnectDelay     = 500 * time.Millisecond
+	maximumRecoveryReconnectDelay     = 3 * time.Second
+	maximumReconnectPeriod            = 8 * time.Hour
 	heartbeatInterval      = 5 * time.Second
 	heartbeatTimeout       = 10 * time.Second
 	sessionRecoveryWindow  = 90 * time.Second
