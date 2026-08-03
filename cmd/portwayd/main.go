@@ -11,6 +11,7 @@ import (
 	"github.com/acexy/portway/internal/certificate"
 	"github.com/acexy/portway/internal/cli"
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/configgenerator"
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/server"
@@ -40,49 +41,74 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 				Execute: runServerCommand,
 			},
 			{
-				Name:    "cert",
-				Usage:   "cert generate [options]",
-				Summary: "Generate an internal CA and server certificate",
-				Options: []cli.Option{
+				Name:    "gen",
+				Summary: "Generate server resources",
+				Subcommands: []cli.Command{
 					{
-						Usage:       "generate",
-						Description: "Create a root CA and QUIC server certificate",
+						Name:    "config",
+						Usage:   "config [full]",
+						Summary: "Generate server.yaml in the current directory",
+						Options: []cli.Option{{
+							Usage:       "full",
+							Description: "Generate the complete annotated configuration",
+						}},
+						Execute: runGenerateServerConfiguration,
 					},
 					{
-						Usage:       "--output-dir DIR",
-						Description: "Certificate output directory (default: certs)",
-					},
-					{
-						Usage:       "--server-name NAME",
-						Description: "Server DNS SAN; may be repeated",
-					},
-					{
-						Usage:       "--ip ADDRESS",
-						Description: "Server IP SAN; may be repeated",
+						Name:    "cert",
+						Usage:   "cert [options]",
+						Summary: "Generate an internal CA and server certificate",
+						Options: []cli.Option{
+							{
+								Usage:       "--output-dir DIR",
+								Description: "Certificate output directory (default: certs)",
+							},
+							{
+								Usage:       "--server-name NAME",
+								Description: "Server DNS SAN; may be repeated",
+							},
+							{
+								Usage:       "--ip ADDRESS",
+								Description: "Server IP SAN; may be repeated",
+							},
+						},
+						Execute: runGenerateCertificate,
 					},
 				},
-				Execute: runCertificate,
 			},
 		},
 	}
 	return application.Run(arguments, stdout, stderr)
 }
 
-func runCertificate(
+func runGenerateCertificate(
 	arguments []string,
 	stdout io.Writer,
 	stderr io.Writer,
 ) int {
-	if len(arguments) == 2 &&
-		arguments[0] == "generate" &&
-		(arguments[1] == "-h" || arguments[1] == "--help") {
-		writeCertificateGenerateHelp(stdout)
-		return 0
-	}
 	if err := runCertificateCommand(arguments, stdout, stderr); err != nil {
-		_, _ = fmt.Fprintf(stderr, "portwayd cert: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "portwayd gen cert: %v\n", err)
 		return 1
 	}
+	return 0
+}
+
+func runGenerateServerConfiguration(
+	arguments []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	full, err := configgenerator.ParseMode(arguments)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd gen config: %v\n", err)
+		return 2
+	}
+	path, err := configgenerator.Generate(configgenerator.TargetServer, full)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd gen config: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "Created server configuration: %s\n", path)
 	return 0
 }
 
@@ -156,11 +182,7 @@ func runCertificateCommand(
 	stdout io.Writer,
 	stderr io.Writer,
 ) error {
-	if len(arguments) == 0 || arguments[0] != "generate" {
-		return errorsNewCertificateUsage()
-	}
-
-	flags := flag.NewFlagSet("portwayd cert generate", flag.ContinueOnError)
+	flags := flag.NewFlagSet("portwayd gen cert", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	outputDirectory := flags.String(
 		"output-dir",
@@ -179,7 +201,7 @@ func runCertificateCommand(
 		"ip",
 		"IP address in the server certificate SAN; may be repeated",
 	)
-	if err := flags.Parse(arguments[1:]); err != nil {
+	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -208,26 +230,6 @@ func runCertificateCommand(
 	_, _ = fmt.Fprintf(stdout, "Created server certificate: %s\n", files.ServerCertificate)
 	_, _ = fmt.Fprintf(stdout, "Created server private key: %s\n", files.ServerKey)
 	return nil
-}
-
-func writeCertificateGenerateHelp(writer io.Writer) {
-	_, _ = io.WriteString(
-		writer,
-		"Generate an internal CA and QUIC server certificate\n\n"+
-			"Usage:\n"+
-			"  portwayd cert generate [options]\n\n"+
-			"Options:\n"+
-			"  --output-dir DIR         Certificate output directory (default: certs)\n"+
-			"  --server-name NAME       Server DNS SAN; may be repeated\n"+
-			"  --ip ADDRESS             Server IP SAN; may be repeated\n",
-	)
-}
-
-func errorsNewCertificateUsage() error {
-	return fmt.Errorf(
-		"usage: portwayd cert generate [--output-dir DIR] " +
-			"[--server-name NAME]... [--ip ADDRESS]...",
-	)
 }
 
 type stringValues []string

@@ -1,4 +1,5 @@
 # Portway client configuration.
+# Latest templates: https://github.com/acexy/portway/tree/main/config
 #
 # Field markers:
 #   * Required: the field must be configured explicitly.
@@ -37,7 +38,7 @@ transport:
     # Optional when transport.type=quic.
     # CA bundle used to verify the server certificate.
     # Leave empty to use the operating system trust store.
-    # For "portwayd cert generate", configure ./certs/root-ca.crt here.
+    # For "portwayd gen cert", configure ./certs/root-ca.crt here.
     ca_file: ""
 
 # * Required. Portway application identity settings.

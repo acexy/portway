@@ -146,26 +146,31 @@ authentication.
 For private deployments, generate an internal CA and server certificate:
 
 ```bash
-portwayd cert generate \
+portwayd gen cert \
   --server-name gateway.example.com \
   --ip 10.0.0.10
 ```
 
-Run `portwayd help cert` for all certificate options. Keep the generated root CA
+Run `portwayd help gen cert` for all certificate options. Keep the generated root CA
 private key offline and distribute only the root CA certificate to clients.
 
 ## Commands
 
 ```text
 portway run [--config FILE]
+portway gen config [full]
 portway version
 
 portwayd run [--config FILE]
-portwayd cert generate [options]
+portwayd gen config [full]
+portwayd gen cert [options]
 portwayd version
 ```
 
-Run either binary without arguments to display its command overview.
+`gen config` creates a minimal `client.yaml` or `server.yaml` in the current
+directory. Add `full` to use the complete annotated template. Existing files
+are never overwritten. Run either binary without arguments to display every
+available command, including nested generation commands.
 
 ## Install with Homebrew
 

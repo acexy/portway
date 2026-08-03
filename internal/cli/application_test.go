@@ -74,6 +74,50 @@ func TestApplicationColorCanBeForced(t *testing.T) {
 	if !strings.Contains(stdout.String(), "\x1b[") {
 		t.Fatalf("stdout = %q, want ANSI style", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "gen config [full]") {
+		t.Fatalf("stdout = %q, want nested configuration command", stdout.String())
+	}
+}
+
+func TestApplicationDispatchesNestedCommand(t *testing.T) {
+	application := testApplication()
+	called := false
+	application.Commands[1].Subcommands[0].Execute = func(
+		arguments []string,
+		_ io.Writer,
+		_ io.Writer,
+	) int {
+		called = len(arguments) == 1 && arguments[0] == "full"
+		return 9
+	}
+
+	exitCode := application.Run(
+		[]string{"gen", "config", "full"},
+		io.Discard,
+		io.Discard,
+	)
+
+	if exitCode != 9 || !called {
+		t.Fatalf("Run() exit code = %d, called = %t", exitCode, called)
+	}
+}
+
+func TestApplicationPrintsNestedCommandHelp(t *testing.T) {
+	application := testApplication()
+	var stdout bytes.Buffer
+
+	exitCode := application.Run(
+		[]string{"help", "gen", "config"},
+		&stdout,
+		io.Discard,
+	)
+
+	if exitCode != 0 {
+		t.Fatalf("Run() exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "Usage:\n  portway gen config [full]") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
 }
 
 func TestApplicationVersionPrintsOnlyVersion(t *testing.T) {
@@ -107,6 +151,16 @@ func testApplication() Application {
 				Name:    "run",
 				Summary: "Start the client",
 				Execute: func([]string, io.Writer, io.Writer) int { return 0 },
+			},
+			{
+				Name:    "gen",
+				Summary: "Generate resources",
+				Subcommands: []Command{{
+					Name:    "config",
+					Usage:   "config [full]",
+					Summary: "Generate configuration",
+					Execute: func([]string, io.Writer, io.Writer) int { return 0 },
+				}},
 			},
 		},
 	}

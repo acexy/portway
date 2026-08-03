@@ -136,26 +136,30 @@ QUIC 除了需要 Portway Token 认证外，还需要服务端证书和 TLS 验�
 对于私有部署，生成内部 CA 和服务端证书：
 
 ```bash
-portwayd cert generate \
+portwayd gen cert \
   --server-name gateway.example.com \
   --ip 10.0.0.10
 ```
 
-运行 `portwayd help cert` 查看所有证书选项。请将生成的根 CA 私钥离线保管，
+运行 `portwayd help gen cert` 查看所有证书选项。请将生成的根 CA 私钥离线保管，
 仅向客户端分发根 CA 证书。
 
 ## 命令
 
 ```text
 portway run [--config FILE]
+portway gen config [full]
 portway version
 
 portwayd run [--config FILE]
-portwayd cert generate [options]
+portwayd gen config [full]
+portwayd gen cert [options]
 portwayd version
 ```
 
-直接运行任一二进制文件（不带参数）即可显示命令概览。
+`gen config` 会在当前目录创建最小可运行的 `client.yaml` 或 `server.yaml`；
+追加 `full` 可生成带完整注释的全量模板。命令不会覆盖已有文件。直接运行任一
+二进制文件（不带参数）会列出包括嵌套生成命令在内的全部可用命令。
 
 ## 使用 Homebrew 安装
 

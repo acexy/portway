@@ -1,4 +1,5 @@
 # Portway server configuration.
+# Latest templates: https://github.com/acexy/portway/tree/main/config
 #
 # Field markers:
 #   * Required: the field must be configured explicitly.
@@ -25,7 +26,7 @@ transport:
   quic:
     # * Required when transport.type=quic.
     # Server certificate chain presented to QUIC clients.
-    # Run "portwayd cert generate" to create an internal CA and a server
+    # Run "portwayd gen cert" to create an internal CA and a server
     # certificate under ./certs for local or private deployments.
     cert_file: /path/to/server.crt
 
@@ -168,7 +169,7 @@ security:
   # source IP filtering. Relative paths are resolved from the working
   # directory. The configured file must exist and be valid at startup.
   # Each non-comment line may contain one IP address or CIDR prefix.
-  ip_deny_file: ""
+  # ip_deny_file: "./ip_block.txt"
 
   # Optional. Trusted HTTP-layer source IP header for both HTTP and HTTPS.
   # Defaults to empty, which filters the TCP socket peer address; HTTPS socket
@@ -197,11 +198,11 @@ authentication:
   # their documented program hard limits. File names are operator-facing labels
   # and do not need to match ClientID.
   # See config/governed/governed-client.yaml for a complete record example.
-  governed_clients_path: "./governed"
+  # governed_clients_path: "./governed"
 
   # Optional. Every *.yaml file defines one ClientID, unique Token, revision,
   # and complete server-owned proxy configuration. A client may have at most
   # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
   # TCP ports, UDP ports, and HTTP domains must each be globally unique.
   # See config/managed/managed-client.yaml for a complete record example.
-  managed_clients_path: "./managed"
+  # managed_clients_path: "./managed"

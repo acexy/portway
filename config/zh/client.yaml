@@ -1,4 +1,5 @@
 # Portway 客户端完整配置示例。字段和值与 ../client.yaml 保持一致。
+# 最新模板：https://github.com/acexy/portway/tree/main/config
 # “必填”表示必须显式配置；“条件必填”只在对应条件成立时要求配置。
 
 # 可选。最低日志级别，默认 info。可选值：trace、debug、info、warn、error。

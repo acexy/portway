@@ -41,7 +41,7 @@ Clients verify the server certificate against either the operating-system trust
 store or a configured CA bundle. The configured server name must match a
 certificate SAN.
 
-`portwayd cert generate` is intended for private deployments that need a small
+`portwayd gen cert` is intended for private deployments that need a small
 internal CA. Generated material must still be protected, backed up, rotated, and
 distributed using normal production credential controls.
 
