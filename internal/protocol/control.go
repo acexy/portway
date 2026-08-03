@@ -71,7 +71,7 @@ type SessionErrorCode string
 const (
 	// SessionErrorClientIDAlreadyOnline indicates an active duplicate client ID.
 	SessionErrorClientIDAlreadyOnline SessionErrorCode = "client_id_already_online"
-	// SessionErrorClientIDRecoveryPending indicates that a suspended client ID is still reserved.
+	// SessionErrorClientIDRecoveryPending indicates that registration or recovery is waiting for the current Session lifecycle transition.
 	SessionErrorClientIDRecoveryPending SessionErrorCode = "client_id_recovery_pending"
 	// SessionErrorResumeSessionMismatch indicates an invalid recovery session ID.
 	SessionErrorResumeSessionMismatch SessionErrorCode = "resume_session_mismatch"

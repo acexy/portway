@@ -544,7 +544,9 @@ func (s *Service) runControlLoop(
 	// after the process context is canceled so it can deliver close_ack.
 	readerContext, cancelReader := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelReader()
-	messages := make(chan protocol.Envelope)
+	// Keep one decoded control message ready so a Pong that has already arrived
+	// is not hidden behind reader scheduling when the watchdog checks liveness.
+	messages := make(chan protocol.Envelope, 1)
 	readErrors := make(chan error, 1)
 	go readControlMessages(readerContext, connection, messages, readErrors)
 	linkManager := newLinkManager(
@@ -739,6 +741,9 @@ func (s *Service) runControlLoop(
 			}
 			sessionLogger.TraceWithField("heartbeat ping sent", "sequence", sentSequence)
 		case <-watchdogTicker.C:
+			if len(messages) != 0 {
+				continue
+			}
 			if time.Since(lastPongAt) >= heartbeatTimeout {
 				return fmt.Errorf(
 					"server heartbeat timed out after %s",

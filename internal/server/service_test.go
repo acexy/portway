@@ -276,6 +276,13 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 		if registrationError != nil {
 			t.Fatalf("register %s: %v", sessions[index].clientID, registrationError)
 		}
+		if !registry.Activate(
+			sessions[index].clientID,
+			fmt.Sprintf("session-%d", index),
+			time.Now(),
+		) {
+			t.Fatalf("activate %s", sessions[index].clientID)
+		}
 		service.proxyRegistry.AttachAuthenticated(
 			sessions[index].clientID,
 			fmt.Sprintf("session-%d", index),
@@ -306,13 +313,13 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 	if err := service.applyConfigurationCandidate(candidate); err != nil {
 		t.Fatal(err)
 	}
-	if registry.Heartbeat("governed-client", "session-1", time.Now()) {
+	if serverTestHeartbeatAccepted(registry, "governed-client", "session-1", 1, time.Now()) {
 		t.Fatal("changed governed session remained registered")
 	}
-	if !registry.Heartbeat("shared-instance", "session-0", time.Now()) {
+	if !serverTestHeartbeatAccepted(registry, "shared-instance", "session-0", 1, time.Now()) {
 		t.Fatal("unrelated shared session was revoked")
 	}
-	if !registry.Heartbeat("managed-client", "session-2", time.Now()) {
+	if !serverTestHeartbeatAccepted(registry, "managed-client", "session-2", 1, time.Now()) {
 		t.Fatal("unrelated managed session was revoked")
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
@@ -347,6 +354,67 @@ func TestApplyConfigurationCandidateUpdatesSourceDigestWithoutGeneration(t *test
 	if updated.SourceDigest != "new" || updated.Generation != 7 {
 		t.Fatalf("unexpected metadata-only update: %+v", updated)
 	}
+}
+
+func TestSuspendClientPreservesProxyActivationAfterHeartbeatRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverConnection, clientConnection := net.Pipe()
+	defer serverConnection.Close()
+	defer clientConnection.Close()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	clientRegistry := session.NewRegistry()
+	service := &Service{clientRegistry: clientRegistry}
+	service.proxyRegistry = proxyregistry.New(
+		ctx,
+		logging.New("test"),
+		"127.0.0.1",
+		broker,
+		false,
+		config.DefaultServer().HTTP,
+	)
+	defer service.proxyRegistry.Close()
+
+	now := time.Now()
+	clientRegistry.Register("client-one", "", "session-one", serverConnection, now)
+	clientRegistry.Activate("client-one", "session-one", now)
+	service.proxyRegistry.Attach("client-one", "session-one", control.NewWriter(serverConnection))
+	service.proxyRegistry.Activate("client-one", "session-one")
+	suspended, _ := clientRegistry.Sweep(
+		now.Add(controlHeartbeatTimeout),
+		controlHeartbeatTimeout,
+		clientRecoveryWindow,
+	)
+	if len(suspended) != 1 {
+		t.Fatalf("expected one suspended session, got %v", suspended)
+	}
+	heartbeatAccepted, reactivated := clientRegistry.Heartbeat(
+		"client-one",
+		"session-one",
+		1,
+		now.Add(controlHeartbeatTimeout+time.Millisecond),
+	)
+	if !heartbeatAccepted || !reactivated {
+		t.Fatal("heartbeat did not reactivate the suspended session")
+	}
+	if service.suspendClient(suspended[0]) {
+		t.Fatal("stale suspension was reported as applied")
+	}
+	if !service.proxyRegistry.Active("client-one", "session-one") {
+		t.Fatal("stale suspension left the recovered proxy inactive")
+	}
+}
+
+func serverTestHeartbeatAccepted(
+	registry *session.Registry,
+	clientID string,
+	sessionID string,
+	sequence uint64,
+	now time.Time,
+) bool {
+	accepted, _ := registry.Heartbeat(clientID, sessionID, sequence, now)
+	return accepted
 }
 
 func TestApplyConfigurationCandidateReportsRestartField(t *testing.T) {

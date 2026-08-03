@@ -410,6 +410,9 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 			); err != nil {
 				return err
 			}
+			if !s.clientRegistry.Activate(clientHello.ClientID, sessionID, time.Now()) {
+				return errors.New("managed client session is no longer current")
+			}
 			if err := connection.SetDeadline(time.Time{}); err != nil {
 				return fmt.Errorf("clear managed configuration deadline: %w", err)
 			}
@@ -674,8 +677,17 @@ func (s *Service) serveControlMessages(
 			if err := protocol.DecodePayload(envelope, &heartbeat); err != nil {
 				return false, err
 			}
-			if !s.clientRegistry.Heartbeat(clientID, sessionID, time.Now()) {
+			heartbeatAccepted, reactivated := s.clientRegistry.Heartbeat(
+				clientID,
+				sessionID,
+				heartbeat.Sequence,
+				time.Now(),
+			)
+			if !heartbeatAccepted {
 				return false, errors.New("control session is no longer current")
+			}
+			if reactivated {
+				s.proxyRegistry.Activate(clientID, sessionID)
 			}
 			sessionLogger.TraceWithField(
 				"heartbeat ping received",
@@ -761,6 +773,9 @@ func (s *Service) serveControlMessages(
 			}
 			s.proxyRegistry.Activate(clientID, sessionID)
 			if initialProxySynchronizationRequired {
+				if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
+					return false, errors.New("initialized client session is no longer current")
+				}
 				if err := connection.SetDeadline(time.Time{}); err != nil {
 					return false, fmt.Errorf(
 						"clear initial proxy synchronization deadline: %w",
@@ -826,7 +841,9 @@ func (s *Service) monitorClients(ctx context.Context) {
 				clientRecoveryWindow,
 			)
 			for _, suspended := range suspendedClients {
-				s.proxyRegistry.Suspend(suspended.ClientID, suspended.SessionID)
+				if !s.suspendClient(suspended) {
+					continue
+				}
 				s.logger.WithFields(map[string]any{
 					"client_id":  suspended.ClientID,
 					"session_id": suspended.SessionID,
@@ -844,6 +861,15 @@ func (s *Service) monitorClients(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *Service) suspendClient(client session.Client) bool {
+	s.proxyRegistry.Suspend(client.ClientID, client.SessionID)
+	if s.clientRegistry.Active(client.ClientID, client.SessionID) {
+		s.proxyRegistry.Activate(client.ClientID, client.SessionID)
+		return false
+	}
+	return true
 }
 
 func (s *Service) handleDataConnection(ctx context.Context, inbound transport.Inbound) error {
