@@ -5,7 +5,7 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  A lightweight, production-oriented reverse tunneling system for TCP, UDP, and HTTP services.
+  A lightweight, production-oriented reverse tunneling system for TCP, UDP, HTTP, and HTTPS services.
 </p>
 
 Portway exposes services from private networks through a public server. It keeps
@@ -17,11 +17,12 @@ bounded resources, and secure defaults.
 
 ## Highlights
 
-- TCP, UDP, and domain-based HTTP reverse proxying
+- TCP, UDP, and domain-based HTTP/HTTPS reverse proxying
 - Selectable TCP or QUIC client-server transport
 - Authenticated and encrypted client-server connections
 - Atomic proxy registration and bounded session recovery
-- HTTP streaming and Upgrade support with connection reuse
+- HTTP/HTTPS streaming and Upgrade support with connection reuse
+- Server-side HTTPS TLS termination with atomic certificate reload
 - Dynamically reloaded IPv4/IPv6 deny lists
 - Strict YAML configuration and fail-closed validation
 - Small client and server binaries with a consistent command-line interface
@@ -84,13 +85,19 @@ The local SSH service is now available at:
 
 Do not commit real Tokens, private keys, or production certificates.
 
-## HTTP proxy
+## HTTP and HTTPS proxy
 
-Enable one public HTTP listener on the server:
+Enable either or both public HTTP and HTTPS listeners on the server. HTTPS is
+disabled when `https_listen_address` is empty:
 
 ```yaml
 tunnel:
   http_listen_address: 127.0.0.1:8080
+  https_listen_address: 127.0.0.1:8443
+
+https:
+  cert_file: /path/to/https-server.crt
+  key_file: /path/to/https-server.key
 ```
 
 Register a domain on the client:
@@ -104,9 +111,13 @@ proxies:
     local_port: 8080
 ```
 
-The public `Host` is matched to an authenticated client registration. The local
-application receives a normal HTTP request and does not need to understand the
-Portway protocol.
+The public `Host` is matched to an authenticated client registration. Portwayd
+terminates public HTTPS and forwards HTTP through the authenticated tunnel, so
+the local application receives a normal HTTP request. HTTP and HTTPS share the
+same proxy limits. The HTTPS certificate pair supports atomic content and path
+reloads; invalid updates leave the previous certificate active. HTTPS supports
+HTTP/1.1 and HTTP/2 with a minimum TLS version of 1.2. HTTPS backend forwarding,
+SNI passthrough, ACME, and HTTP/3 are not currently supported.
 
 ## UDP proxy
 

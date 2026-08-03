@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -56,6 +57,7 @@ type Service struct {
 	authenticationStore   *authentication.Store
 	authenticationBarrier sync.RWMutex
 	managed               *managedCoordinator
+	httpsCertificates     *httpsCertificateManager
 }
 
 // NewService creates a server service.
@@ -75,8 +77,10 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 func (s *Service) Run(ctx context.Context) error {
 	configuration := s.configuration.snapshot()
 	s.logger.InfoWithFields("server started", map[string]any{
-		"event":          "server_started",
-		"listen_address": configuration.Transport.ListenAddress,
+		"event":                "server_started",
+		"listen_address":       configuration.Transport.ListenAddress,
+		"http_listen_address":  configuration.Tunnel.HTTPListenAddress,
+		"https_listen_address": configuration.Tunnel.HTTPSListenAddress,
 	})
 	defer s.logger.Info("server stopped")
 
@@ -119,7 +123,8 @@ func (s *Service) Run(ctx context.Context) error {
 		s.logger.WithComponent("proxy_registry"),
 		configuration.Tunnel.BindIP,
 		s.linkBroker,
-		configuration.Tunnel.HTTPListenAddress != "",
+		configuration.Tunnel.HTTPListenAddress != "" ||
+			configuration.Tunnel.HTTPSListenAddress != "",
 		configuration.HTTP,
 		configuration.UDP,
 		sourceFilter,
@@ -131,7 +136,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
-	httpErrors := make(chan error, 1)
+	httpErrors := make(chan error, 2)
 	if configuration.Tunnel.HTTPListenAddress != "" {
 		httpListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
@@ -148,6 +153,13 @@ func (s *Service) Run(ctx context.Context) error {
 		if configuration.Security.HTTPClientIPHeader == "" {
 			httpListener = ipfilter.WrapListenerFor(httpListener, sourceFilter, "http_socket")
 		}
+		s.logger.WithComponent("proxy_http").InfoWithFields(
+			"public HTTP listener started",
+			map[string]any{
+				"event":          "http_listener_started",
+				"listen_address": configuration.Tunnel.HTTPListenAddress,
+			},
+		)
 		httpProtocols := new(http.Protocols)
 		httpProtocols.SetHTTP1(true)
 		httpProtocols.SetUnencryptedHTTP2(true)
@@ -156,6 +168,7 @@ func (s *Service) Run(ctx context.Context) error {
 				sourceFilter,
 				configuration.Security.HTTPClientIPHeader,
 				s.proxyRegistry,
+				"http_header",
 			),
 			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
 			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
@@ -178,6 +191,84 @@ func (s *Service) Run(ctx context.Context) error {
 			)
 			defer cancel()
 			_ = httpServer.Shutdown(shutdownContext)
+		}()
+	}
+	if configuration.Tunnel.HTTPSListenAddress != "" {
+		s.httpsCertificates, err = newHTTPSCertificateManager(
+			s.logger.WithComponent("https_certificate"),
+			configuration.HTTPS,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize HTTPS certificate: %w", err)
+		}
+		httpsListener, listenError := (&net.ListenConfig{}).Listen(
+			ctx,
+			"tcp",
+			configuration.Tunnel.HTTPSListenAddress,
+		)
+		if listenError != nil {
+			return fmt.Errorf(
+				"listen for HTTPS proxy requests on %q: %w",
+				configuration.Tunnel.HTTPSListenAddress,
+				listenError,
+			)
+		}
+		if configuration.Security.HTTPClientIPHeader == "" {
+			httpsListener = ipfilter.WrapListenerFor(
+				httpsListener,
+				sourceFilter,
+				"https_socket",
+			)
+		}
+		s.logger.WithComponent("proxy_http").InfoWithFields(
+			"public HTTPS listener started",
+			map[string]any{
+				"event":          "https_listener_started",
+				"listen_address": configuration.Tunnel.HTTPSListenAddress,
+			},
+		)
+		tlsConfiguration := &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: s.httpsCertificates.getCertificate,
+			NextProtos:     []string{"h2", "http/1.1"},
+		}
+		httpsProtocols := new(http.Protocols)
+		httpsProtocols.SetHTTP1(true)
+		httpsProtocols.SetHTTP2(true)
+		httpsServer := &http.Server{
+			Handler: ipfilter.HTTPHandler(
+				sourceFilter,
+				configuration.Security.HTTPClientIPHeader,
+				s.proxyRegistry,
+				"https_header",
+			),
+			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
+			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
+			Protocols:         httpsProtocols,
+			ConnContext:       ipfilter.HTTPConnectionContext,
+			TLSConfig:         tlsConfiguration,
+		}
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			serveError := httpsServer.Serve(tls.NewListener(httpsListener, tlsConfiguration))
+			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
+				httpErrors <- serveError
+				transportServer.Close()
+			}
+		}()
+		defer func() {
+			shutdownContext, cancel := context.WithTimeout(
+				context.Background(),
+				configuration.HTTP.GracefulShutdownTimeout,
+			)
+			defer cancel()
+			_ = httpsServer.Shutdown(shutdownContext)
+		}()
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			s.watchHTTPSCertificate(sessionContext)
 		}()
 	}
 	sessions.Add(1)
@@ -1083,6 +1174,19 @@ func (s *Service) watchConfiguration(ctx context.Context) {
 	}
 }
 
+func (s *Service) watchHTTPSCertificate(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.httpsCertificates.reloadCurrent()
+		}
+	}
+}
+
 func (s *Service) applyConfigurationCandidate(candidate config.ServerConfig) error {
 	return s.applyConfigurationCandidateContext(context.Background(), candidate)
 }
@@ -1129,6 +1233,21 @@ func (s *Service) applyConfigurationCandidateContext(
 			field: changedYAMLField("http", current.HTTP, candidate.HTTP),
 		}
 	}
+	httpsChanged := !reflect.DeepEqual(candidate.HTTPS, current.HTTPS)
+	var candidateHTTPSCertificate *tls.Certificate
+	var candidateHTTPSDigest string
+	if httpsChanged {
+		if s.httpsCertificates == nil {
+			return restartRequiredError{
+				field: changedYAMLField("https", current.HTTPS, candidate.HTTPS),
+			}
+		}
+		var err error
+		candidateHTTPSCertificate, candidateHTTPSDigest, err = loadHTTPSCertificate(candidate.HTTPS)
+		if err != nil {
+			return fmt.Errorf("reload HTTPS certificate: %w", err)
+		}
+	}
 	if !reflect.DeepEqual(candidate.UDP, current.UDP) {
 		return restartRequiredError{
 			field: changedYAMLField("udp", current.UDP, candidate.UDP),
@@ -1145,6 +1264,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	if reflect.DeepEqual(candidate.Authentication, current.Authentication) &&
 		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
 		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
+		!httpsChanged &&
 		candidate.LogLevel == current.LogLevel {
 		s.configuration.updateSourceDigest(candidate.SourceDigest)
 		return nil
@@ -1190,6 +1310,13 @@ func (s *Service) applyConfigurationCandidateContext(
 	}
 	candidate.Generation = current.Generation + 1
 
+	if httpsChanged {
+		s.httpsCertificates.publish(
+			candidate.HTTPS,
+			candidateHTTPSCertificate,
+			candidateHTTPSDigest,
+		)
+	}
 	s.configuration.publish(candidate)
 	s.authenticationStore.ReplaceRevoking(snapshot, revokedContexts)
 
@@ -1224,13 +1351,14 @@ func (s *Service) applyConfigurationCandidateContext(
 	s.logger.WithComponent("config_reload").InfoWithFields(
 		"configuration reload applied",
 		map[string]any{
-			"event":                 "config_reload_applied",
-			"config_file":           candidate.SourcePath,
-			"governed_clients_path": candidate.Authentication.GovernedClientsPath,
-			"managed_clients_path":  candidate.Authentication.ManagedClientsPath,
-			"old_generation":        current.Generation,
-			"new_generation":        candidate.Generation,
-			"log_level_changed":     candidate.LogLevel != current.LogLevel,
+			"event":                     "config_reload_applied",
+			"config_file":               candidate.SourcePath,
+			"governed_clients_path":     candidate.Authentication.GovernedClientsPath,
+			"managed_clients_path":      candidate.Authentication.ManagedClientsPath,
+			"old_generation":            current.Generation,
+			"new_generation":            candidate.Generation,
+			"log_level_changed":         candidate.LogLevel != current.LogLevel,
+			"https_certificate_changed": httpsChanged,
 			"shared_authentication_changed": !reflect.DeepEqual(
 				candidate.Authentication.SharedToken,
 				current.Authentication.SharedToken,
@@ -1324,6 +1452,12 @@ func reloadErrorCode(err error) string {
 		return "configuration_limit_exceeded"
 	case strings.Contains(message, "authentication directory"):
 		return "authentication_directory_invalid"
+	case strings.Contains(message, "HTTPS certificate") ||
+		strings.Contains(message, "HTTPS private key"):
+		return "https_certificate_invalid"
+	case strings.Contains(message, "HTTPS certificate") ||
+		strings.Contains(message, "HTTPS private key"):
+		return "https_certificate_invalid"
 	default:
 		return "invalid_configuration"
 	}

@@ -169,8 +169,15 @@ type ClientConfig struct {
 
 // TunnelConfig configures public proxy listeners owned by the server.
 type TunnelConfig struct {
-	BindIP            string `yaml:"bind_ip"`
-	HTTPListenAddress string `yaml:"http_listen_address"`
+	BindIP             string `yaml:"bind_ip"`
+	HTTPListenAddress  string `yaml:"http_listen_address"`
+	HTTPSListenAddress string `yaml:"https_listen_address"`
+}
+
+// HTTPSConfig configures the public HTTPS certificate pair.
+type HTTPSConfig struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
 }
 
 // SecurityConfig configures server-side source filtering.
@@ -200,6 +207,7 @@ type ServerConfig struct {
 	Transport      ServerTransportConfig      `yaml:"transport"`
 	Tunnel         TunnelConfig               `yaml:"tunnel"`
 	HTTP           HTTPConfig                 `yaml:"http"`
+	HTTPS          HTTPSConfig                `yaml:"https"`
 	UDP            UDPConfig                  `yaml:"udp"`
 	Security       SecurityConfig             `yaml:"security"`
 	LogLevel       LogLevel                   `yaml:"log_level"`
@@ -476,9 +484,31 @@ func validateServer(configuration ServerConfig) error {
 	if err := validateServerTransport(configuration.Transport); err != nil {
 		return err
 	}
-	if configuration.Tunnel.HTTPListenAddress != "" &&
-		configuration.Tunnel.HTTPListenAddress == configuration.Transport.ListenAddress {
-		return errors.New("tunnel.http_listen_address must differ from transport.listen_address")
+	listenerAddresses := []struct {
+		field   string
+		address string
+	}{
+		{"transport.listen_address", configuration.Transport.ListenAddress},
+		{"tunnel.http_listen_address", configuration.Tunnel.HTTPListenAddress},
+		{"tunnel.https_listen_address", configuration.Tunnel.HTTPSListenAddress},
+	}
+	for index, listener := range listenerAddresses {
+		if listener.address == "" {
+			continue
+		}
+		for _, previous := range listenerAddresses[:index] {
+			if previous.address != "" && listener.address == previous.address {
+				return fmt.Errorf("%s must differ from %s", listener.field, previous.field)
+			}
+		}
+	}
+	if configuration.Tunnel.HTTPSListenAddress != "" {
+		if configuration.HTTPS.CertFile == "" {
+			return errors.New("https.cert_file is required when tunnel.https_listen_address is configured")
+		}
+		if configuration.HTTPS.KeyFile == "" {
+			return errors.New("https.key_file is required when tunnel.https_listen_address is configured")
+		}
 	}
 	if err := validateHTTPConfig(configuration.HTTP); err != nil {
 		return err
@@ -505,9 +535,10 @@ func validateServer(configuration ServerConfig) error {
 				"security.http_client_ip_header must be a valid HTTP header name",
 			)
 		}
-		if configuration.Tunnel.HTTPListenAddress == "" {
+		if configuration.Tunnel.HTTPListenAddress == "" &&
+			configuration.Tunnel.HTTPSListenAddress == "" {
 			return errors.New(
-				"security.http_client_ip_header requires tunnel.http_listen_address",
+				"security.http_client_ip_header requires an HTTP or HTTPS listener",
 			)
 		}
 	}

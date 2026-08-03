@@ -19,8 +19,21 @@ tunnel:
   bind_ip: 0.0.0.0
   # 可选，默认空并禁用 HTTP；不能与 transport.listen_address 相同。
   http_listen_address: ""
+  # 可选，默认空并禁用 HTTPS。portwayd 终止 TLS 后固定回源本地 HTTP 服务；
+  # 该地址不能与其他 TCP Listener 冲突。
+  https_listen_address: ""
 
-# HTTP 安全、容量和业务超时；即使未启用 HTTP Listener 也会校验。
+# 公网 HTTPS TLS 配置。首个实现由所有 HTTPS 域名共用一个证书对。证书文件
+# 内容以及以下两个路径作为完整证书对原子热更新；无效更新保留旧证书。QUIC
+# Transport 证书与此配置相互独立。
+https:
+  # tunnel.https_listen_address 非空时必填。
+  cert_file: /path/to/https-server.crt
+  # tunnel.https_listen_address 非空时必填；私钥应仅允许 Portway 读取。
+  key_file: /path/to/https-server.key
+
+# HTTP 安全、容量和业务超时，由公网 HTTP 与 TLS 终止后的 HTTPS 请求共享；
+# 即使两个 Listener 均未启用也会校验。当前修改这些字段需要重启 portwayd。
 http:
   # 慢请求头保护：默认 10s，范围 (0s, 60s]。
   read_header_timeout: 10s
@@ -77,8 +90,11 @@ udp:
 security:
   # IPv4/IPv6 拒绝列表文件，默认空并禁用。每个非注释行是 IP 或 CIDR。
   ip_deny_file: ""
-  # 可选的 HTTP 可信来源 IP Header。启用时必须同时配置拒绝列表和 HTTP
-  # Listener，且上游代理必须覆盖该 Header；客户端可绕过上游时禁止启用。
+  # HTTP/HTTPS 共用的可信 HTTP 层来源 IP Header。默认空，此时根据 TCP socket
+  # peer IP 过滤，HTTPS 在 TLS 握手前完成过滤。配置后，两种入口都改用该 Header
+  # 而不再使用 socket peer IP；HTTPS 在 TLS 解密后检查。启用时必须配置拒绝
+  # 列表及至少一个 HTTP/HTTPS Listener，可信上游必须删除客户端原值并写入已
+  # 验证的来源链；客户端可以绕过可信上游时禁止启用。
   http_client_ip_header: ""
 
 # TCP 与 QUIC 共用同一认证快照。所有 Token 以及 Governed/Managed ClientID

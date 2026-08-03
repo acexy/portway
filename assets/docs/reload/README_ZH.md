@@ -59,11 +59,15 @@ Binding 和代理行为均保持不变。
 
 - `transport.type`、`transport.listen_address`；
 - QUIC 证书和私钥；
-- `tunnel.bind_ip`、`tunnel.http_listen_address`；
+- `tunnel.bind_ip`、`tunnel.http_listen_address`、
+  `tunnel.https_listen_address`；
 - HTTP、UDP、安全限制及其他运行时组件参数。
 
 其中任意字段发生变化时，整个候选以 `restart_required` 拒绝。同一候选里的
 其他可热加载字段也不会被部分应用。
+
+公网 HTTPS 证书内容以及 `https.cert_file`/`https.key_file` 路径属于例外：完整
+有效的证书对会原子发布而不替换 HTTPS Listener；无效候选继续使用旧证书。
 
 ## Managed 在线切换
 

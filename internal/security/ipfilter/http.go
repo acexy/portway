@@ -16,11 +16,21 @@ func HTTPConnectionContext(ctx context.Context, connection net.Conn) context.Con
 	return context.WithValue(ctx, httpConnectionContextKey{}, connection)
 }
 
-// HTTPHandler enforces an explicitly trusted client IP chain header. An empty
-// header name leaves socket-level listener filtering as the authority.
-func HTTPHandler(filter *Filter, headerName string, next http.Handler) http.Handler {
+// HTTPHandler enforces an explicitly trusted client IP chain header for HTTP
+// or TLS-terminated HTTPS. An empty header name leaves socket filtering as the
+// authority. The optional ingress labels deny events by public listener.
+func HTTPHandler(
+	filter *Filter,
+	headerName string,
+	next http.Handler,
+	ingresses ...string,
+) http.Handler {
 	if !filter.Enabled() || headerName == "" {
 		return next
+	}
+	ingress := "http_header"
+	if len(ingresses) > 0 && ingresses[0] != "" {
+		ingress = ingresses[0]
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		connection, ok := request.Context().Value(httpConnectionContextKey{}).(net.Conn)
@@ -36,7 +46,7 @@ func HTTPHandler(filter *Filter, headerName string, next http.Handler) http.Hand
 
 		releases := make([]func(), 0, len(addresses))
 		for _, address := range addresses {
-			release, allowed := filter.RegisterFor(address, "http_header", func() {
+			release, allowed := filter.RegisterFor(address, ingress, func() {
 				connection.Close()
 			})
 			if !allowed {

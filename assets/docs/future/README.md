@@ -18,7 +18,7 @@ not represent release-date commitments.
 
 ## Performance
 
-- Establish repeatable TCP, HTTP, UDP, and transport benchmarks.
+- Establish repeatable TCP, HTTP, HTTPS, UDP, and transport benchmarks.
 - Profile CPU, memory allocations, goroutines, and file descriptors under
   sustained load.
 - Reduce avoidable allocations and copies in verified hot paths.

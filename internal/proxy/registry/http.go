@@ -137,6 +137,7 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		"HTTP request completed",
 		map[string]any{
 			"event":          "http_request_completed",
+			"scheme":         requestScheme(request),
 			"method":         request.Method,
 			"host":           domain,
 			"protocol":       request.Proto,
@@ -155,6 +156,7 @@ func (manager *Registry) logHTTPRequest(
 ) {
 	fields := map[string]any{
 		"event":          "http_request_routed",
+		"scheme":         requestScheme(request),
 		"method":         request.Method,
 		"host":           domain,
 		"protocol":       request.Proto,
@@ -168,4 +170,11 @@ func (manager *Registry) logHTTPRequest(
 		"HTTP request routed",
 		fields,
 	)
+}
+
+func requestScheme(request *http.Request) string {
+	if request.TLS != nil {
+		return "https"
+	}
+	return "http"
 }

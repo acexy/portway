@@ -5,7 +5,7 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  一款轻量级、面向生产的反向隧道系统，支持 TCP、UDP 和 HTTP 服务。
+  一款轻量级、面向生产的反向隧道系统，支持 TCP、UDP、HTTP 和 HTTPS 服务。
 </p>
 
 Portway 通过公共服务端将私有网络中的服务暴露到公网。它将控制平面与隧道流量分离，
@@ -13,11 +13,12 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
 
 ## 亮点
 
-- TCP、UDP 和基于域名的 HTTP 反向代理
+- TCP、UDP 和基于域名的 HTTP/HTTPS 反向代理
 - 可选 TCP 或 QUIC 作为客户端-服务端传输协议
 - 认证加密的客户端-服务端连接
 - 原子化代理注册与有界会话恢复
-- HTTP 流式传输和 Upgrade 支持，具备连接复用能力
+- HTTP/HTTPS 流式传输和 Upgrade 支持，具备连接复用能力
+- 服务端 HTTPS TLS 终止与证书原子热更新
 - 动态热加载 IPv4/IPv6 拒绝列表
 - 严格的 YAML 配置和故障关闭（fail-closed）校验
 - 小巧的客户端和服务端二进制文件，命令行接口风格一致
@@ -78,13 +79,19 @@ portway run --config client.yaml
 
 请勿将真实的 Token、私钥或生产环境证书提交到版本控制中。
 
-## HTTP 代理
+## HTTP 与 HTTPS 代理
 
-在服务端启用一个公共 HTTP 监听器：
+在服务端按需启用 HTTP、HTTPS 或两个公网 Listener；
+`https_listen_address` 为空时禁用 HTTPS：
 
 ```yaml
 tunnel:
   http_listen_address: 127.0.0.1:8080
+  https_listen_address: 127.0.0.1:8443
+
+https:
+  cert_file: /path/to/https-server.crt
+  key_file: /path/to/https-server.key
 ```
 
 在客户端注册一个域名：
@@ -98,8 +105,11 @@ proxies:
     local_port: 8080
 ```
 
-公共的 `Host` 头会被匹配到已认证的客户端注册信息。本地应用程序接收的是普通的 HTTP 请求，
-无需理解 Portway 协议。
+公共 `Host` 会被匹配到已认证的客户端注册信息。`portwayd` 终止公网 HTTPS，
+随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。HTTP 与
+HTTPS 共用代理限制。HTTPS 证书对支持内容覆盖和路径原子热更新；无效更新会
+继续使用上一份有效证书。HTTPS 支持 HTTP/1.1、HTTP/2，最低使用 TLS 1.2。
+当前不支持 HTTPS 回源、SNI 透传、ACME 和 HTTP/3。
 
 ## UDP 代理
 

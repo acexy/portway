@@ -44,8 +44,27 @@ tunnel:
   # When configured, it must differ from transport.listen_address.
   http_listen_address: ""
 
+  # Optional. Public HTTPS proxy listener. Portway terminates TLS and forwards
+  # requests to the client-side local service over HTTP. Defaults to empty,
+  # which disables HTTPS. It must differ from all other TCP listeners.
+  https_listen_address: ""
+
+# Optional. Public HTTPS TLS settings. The first implementation uses one
+# certificate pair for every HTTPS domain. Certificate file contents and these
+# two paths are hot-reloadable as one atomic pair; invalid updates keep the
+# previous certificate active. QUIC transport certificates are independent.
+https:
+  # * Required when tunnel.https_listen_address is configured.
+  cert_file: /path/to/https-server.crt
+
+  # * Required when tunnel.https_listen_address is configured.
+  # Keep this file readable only by Portway.
+  key_file: /path/to/https-server.key
+
 # Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
-# Defaults shown below apply even when tunnel.http_listen_address is empty.
+# These values are shared by public HTTP and TLS-terminated HTTPS requests.
+# Defaults apply even when both public listeners are empty. Changing an
+# effective value currently requires restarting portwayd.
 http:
   # Optional. Slow-header protection. Defaults to 10s.
   # Valid range: greater than 0s and at most 60s.
@@ -143,12 +162,15 @@ security:
   # Each non-comment line may contain one IP address or CIDR prefix.
   ip_deny_file: ""
 
-  # Optional. HTTP-only trusted source IP header. Defaults to empty, which
-  # uses the HTTP socket peer address. When configured, ip_deny_file and
-  # tunnel.http_listen_address are required. The upstream proxy must overwrite
-  # this header. Multiple header lines and comma-separated IPv4/IPv6 addresses
-  # are supported. If any address is denied, the connection is closed. Missing,
-  # empty, or partially invalid values are logged and close the connection.
+  # Optional. Trusted HTTP-layer source IP header for both HTTP and HTTPS.
+  # Defaults to empty, which filters the TCP socket peer address; HTTPS socket
+  # filtering occurs before the TLS handshake. When configured, both HTTP and
+  # TLS-terminated HTTPS use this header instead of the socket peer address;
+  # HTTPS header filtering occurs after TLS decryption. This mode requires
+  # ip_deny_file and at least one HTTP or HTTPS listener. The trusted upstream
+  # must remove client-supplied values and write the verified source IP chain.
+  # Multiple lines and comma-separated IPv4/IPv6 addresses are supported. A
+  # denied, missing, empty, or partially invalid chain closes the connection.
   # Never enable this when clients can bypass the trusted upstream proxy.
   http_client_ip_header: ""
 

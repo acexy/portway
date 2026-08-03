@@ -17,6 +17,10 @@ transport:
 tunnel:
   bind_ip: 127.0.0.1
   http_listen_address: 127.0.0.1:8080
+  https_listen_address: 127.0.0.1:8443
+https:
+  cert_file: server.crt
+  key_file: server.key
 http:
   read_header_timeout: 12s
   graceful_shutdown_timeout: 40s
@@ -46,8 +50,43 @@ authentication:
 		configuration.HTTP.ResponseHeaderTimeout != 45*time.Second ||
 		configuration.HTTP.MaxConcurrentHTTP2Streams != 64 ||
 		configuration.Tunnel.BindIP != "127.0.0.1" ||
-		configuration.Tunnel.HTTPListenAddress != "127.0.0.1:8080" {
+		configuration.Tunnel.HTTPListenAddress != "127.0.0.1:8080" ||
+		configuration.Tunnel.HTTPSListenAddress != "127.0.0.1:8443" ||
+		configuration.HTTPS.CertFile != "server.crt" ||
+		configuration.HTTPS.KeyFile != "server.key" {
 		t.Fatalf("unexpected HTTP settings: %+v", configuration.HTTP)
+	}
+}
+
+func TestValidateServerRequiresHTTPSCertificatePair(t *testing.T) {
+	configuration := DefaultServer()
+	configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTPS listener without certificate pair was accepted")
+	}
+	configuration.HTTPS.CertFile = "server.crt"
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTPS listener without private key was accepted")
+	}
+	configuration.HTTPS.KeyFile = "server.key"
+	if err := validateServer(configuration); err != nil {
+		t.Fatalf("valid HTTPS configuration was rejected: %v", err)
+	}
+}
+
+func TestValidateServerRejectsPublicTCPListenerConflicts(t *testing.T) {
+	configuration := DefaultServer()
+	configuration.Tunnel.HTTPSListenAddress = configuration.Transport.ListenAddress
+	configuration.HTTPS.CertFile = "server.crt"
+	configuration.HTTPS.KeyFile = "server.key"
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTPS and transport listener conflict was accepted")
+	}
+
+	configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8080"
+	configuration.Tunnel.HTTPListenAddress = "127.0.0.1:8080"
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTP and HTTPS listener conflict was accepted")
 	}
 }
 

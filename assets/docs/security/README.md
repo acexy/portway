@@ -10,6 +10,8 @@ credential handling, and the applications exposed through a tunnel.
 - TCP transport establishes an authenticated encrypted application channel.
 - QUIC transport requires TLS 1.3 certificate verification and still performs
   Portway Token authentication.
+- Public HTTPS terminates at portwayd with TLS 1.2 or later and uses an
+  independently configured certificate pair.
 - Portway does not support plaintext transport or automatic fallback to a less
   secure mode.
 - Invalid authentication, malformed configuration, and invalid trusted-source
@@ -43,6 +45,14 @@ certificate SAN.
 internal CA. Generated material must still be protected, backed up, rotated, and
 distributed using normal production credential controls.
 
+## Public HTTPS certificates
+
+Public HTTPS uses one certificate pair for all configured domains. Certificate
+content and configured certificate paths reload atomically. A missing, expired,
+invalid, or mismatched candidate leaves the previous certificate active. Public
+HTTPS certificates and QUIC transport certificates have independent TLS and
+lifecycle semantics even when they reference the same files.
+
 ## Source IP filtering
 
 The server can load an IPv4/IPv6 deny list containing individual addresses and
@@ -53,10 +63,12 @@ The policy covers client-server transport connections and public proxy
 listeners. Newly denied active sources are closed where the runtime owns a
 corresponding connection.
 
-HTTP can optionally obtain source addresses from one configured trusted header.
-Enable this only when a trusted upstream proxy overwrites that header and
-clients cannot bypass the proxy. Missing, empty, or partially invalid address
-chains are rejected.
+HTTP and HTTPS can optionally obtain source addresses from one configured
+trusted header. When the setting is empty, HTTPS socket filtering occurs before
+the TLS handshake. When configured, both listeners use the trusted header
+instead of the socket peer, and HTTPS checks it after TLS decryption. Enable
+this only when a trusted upstream removes client values, writes the verified
+chain, and clients cannot bypass it. Invalid chains are rejected.
 
 Application-layer source filtering is not a DDoS control and does not replace a
 firewall, cloud security group, load-balancer ACL, or kernel packet filter.

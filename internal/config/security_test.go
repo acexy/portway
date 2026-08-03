@@ -7,11 +7,12 @@ import (
 
 func TestServerSecurityHTTPClientIPHeaderValidation(t *testing.T) {
 	testCases := []struct {
-		name        string
-		header      string
-		httpAddress string
-		denyFile    string
-		wantError   string
+		name         string
+		header       string
+		httpAddress  string
+		httpsAddress string
+		denyFile     string
+		wantError    string
 	}{
 		{
 			name:        "disabled",
@@ -24,16 +25,22 @@ func TestServerSecurityHTTPClientIPHeaderValidation(t *testing.T) {
 			denyFile:    "deny.txt",
 		},
 		{
+			name:         "valid HTTPS only",
+			header:       "X-Real-IP",
+			httpsAddress: "127.0.0.1:8443",
+			denyFile:     "deny.txt",
+		},
+		{
 			name:        "requires deny file",
 			header:      "X-Real-IP",
 			httpAddress: "127.0.0.1:8080",
 			wantError:   "requires security.ip_deny_file",
 		},
 		{
-			name:        "requires HTTP listener",
-			header:      "X-Real-IP",
-			denyFile:    "deny.txt",
-			wantError:   "requires tunnel.http_listen_address",
+			name:      "requires HTTP listener",
+			header:    "X-Real-IP",
+			denyFile:  "deny.txt",
+			wantError: "requires an HTTP or HTTPS listener",
 		},
 		{
 			name:        "rejects whitespace",
@@ -57,6 +64,11 @@ func TestServerSecurityHTTPClientIPHeaderValidation(t *testing.T) {
 			configuration.Security.HTTPClientIPHeader = testCase.header
 			configuration.Security.IPDenyFile = testCase.denyFile
 			configuration.Tunnel.HTTPListenAddress = testCase.httpAddress
+			configuration.Tunnel.HTTPSListenAddress = testCase.httpsAddress
+			if testCase.httpsAddress != "" {
+				configuration.HTTPS.CertFile = "server.crt"
+				configuration.HTTPS.KeyFile = "server.key"
+			}
 			err := validateServer(configuration)
 			if testCase.wantError == "" {
 				if err != nil {

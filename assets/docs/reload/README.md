@@ -64,12 +64,17 @@ The following are validated but not applied online:
 
 - `transport.type` and `transport.listen_address`;
 - QUIC certificate and private-key settings;
-- `tunnel.bind_ip` and `tunnel.http_listen_address`;
+- `tunnel.bind_ip`, `tunnel.http_listen_address`, and
+  `tunnel.https_listen_address`;
 - HTTP, UDP, security, and other runtime-component limits.
 
 If any of these fields changes, Portway rejects the complete candidate with
 `restart_required`. Reloadable fields included in the same candidate are not
 partially applied.
+
+Public HTTPS certificate contents and `https.cert_file`/`https.key_file` paths
+are exceptions: a complete valid pair is published atomically without replacing
+the HTTPS listener. Invalid candidates keep the previous certificate active.
 
 ## Managed online rollout
 

@@ -455,6 +455,63 @@ func TestApplyConfigurationCandidateReportsRestartField(t *testing.T) {
 	}
 }
 
+func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	certificateFile, keyFile := writeQUICServerCertificate(t)
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	current.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
+	current.HTTPS = config.HTTPSConfig{CertFile: certificateFile, KeyFile: keyFile}
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateManager, err := newHTTPSCertificateManager(
+		logging.New("test"),
+		current.HTTPS,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialCertificate := certificateManager.certificate.Load()
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+		httpsCertificates:   certificateManager,
+		managed:             newManagedCoordinator(),
+	}
+
+	replacementCertificateFile, replacementKeyFile := writeQUICServerCertificate(t)
+	candidate := current
+	candidate.HTTPS = config.HTTPSConfig{
+		CertFile: replacementCertificateFile,
+		KeyFile:  replacementKeyFile,
+	}
+	if err := service.applyConfigurationCandidate(candidate); err != nil {
+		t.Fatalf("apply HTTPS certificate path update: %v", err)
+	}
+	if service.configuration.snapshot().HTTPS != candidate.HTTPS {
+		t.Fatal("HTTPS certificate paths were not published")
+	}
+	if certificateManager.certificate.Load() == initialCertificate {
+		t.Fatal("HTTPS certificate path update did not replace the certificate")
+	}
+	activeCertificate := certificateManager.certificate.Load()
+	invalidCandidate := candidate
+	invalidCandidate.HTTPS.KeyFile = replacementCertificateFile
+	if err := service.applyConfigurationCandidate(invalidCandidate); err == nil {
+		t.Fatal("invalid HTTPS certificate path update was accepted")
+	}
+	if service.configuration.snapshot().HTTPS != candidate.HTTPS {
+		t.Fatal("invalid HTTPS certificate update changed the configuration")
+	}
+	if certificateManager.certificate.Load() != activeCertificate {
+		t.Fatal("invalid HTTPS certificate update replaced the active certificate")
+	}
+}
+
 func TestApplyConfigurationCandidateRejectsExplicitSharedTokenRemoval(t *testing.T) {
 	token := "shared-token-with-at-least-32-random-bytes"
 	current := config.DefaultServer()
