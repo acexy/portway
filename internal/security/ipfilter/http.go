@@ -36,7 +36,7 @@ func HTTPHandler(filter *Filter, headerName string, next http.Handler) http.Hand
 
 		releases := make([]func(), 0, len(addresses))
 		for _, address := range addresses {
-			release, allowed := filter.Register(address, func() {
+			release, allowed := filter.RegisterFor(address, "http_header", func() {
 				connection.Close()
 			})
 			if !allowed {

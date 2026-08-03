@@ -102,11 +102,10 @@ func (s *Service) Run(ctx context.Context) error {
 		return err
 	}
 	s.transport = transportClient
-	s.logger.InfoWithField(
-		"client started",
-		"server_address",
-		s.configuration.Transport.ServerAddress,
-	)
+	s.logger.InfoWithFields("client started", map[string]any{
+		"event":          "client_started",
+		"server_address": s.configuration.Transport.ServerAddress,
+	})
 	defer s.logger.Info("client stopped")
 
 	reconnectDelay := initialReconnectDelay
@@ -176,7 +175,14 @@ func (s *Service) Run(ctx context.Context) error {
 				return err
 			}
 		}
-		attemptLogger.Error("control session ended", err)
+		attemptLogger.WarnWithFields(
+			"control session disconnected; recovery scheduled",
+			err,
+			map[string]any{
+				"event":  "control_session_disconnected",
+				"reason": "recoverable_error",
+			},
+		)
 
 		actualReconnectDelay := reconnectDelayWithJitter(reconnectDelay)
 		actualReconnectDelay, available := boundedReconnectDelay(
@@ -192,6 +198,11 @@ func (s *Service) Run(ctx context.Context) error {
 			"delay",
 			actualReconnectDelay,
 		)
+		attemptLogger.InfoWithFields("session reconnect scheduled", map[string]any{
+			"event":          "session_reconnect_scheduled",
+			"retry_delay_ms": actualReconnectDelay.Milliseconds(),
+			"resume":         sessionID != "",
+		})
 		if !waitForRetry(ctx, actualReconnectDelay) {
 			return nil
 		}
@@ -377,7 +388,10 @@ func (s *Service) runControlSession(
 		"session_id": serverHello.SessionID,
 	})
 	sessionLogger.TraceWithField("server hello received", "resumed", serverHello.Resumed)
-	sessionLogger.Info("control session established")
+	sessionLogger.InfoWithFields("control session established", map[string]any{
+		"event":   "control_session_established",
+		"resumed": serverHello.Resumed,
+	})
 	return serverHello.SessionID, true, s.runControlLoop(
 		ctx,
 		connection,
@@ -865,7 +879,14 @@ func (s *Service) syncProxies(
 			retryable: result.Error.Retryable,
 		}
 	}
-	s.logger.InfoWithField("proxy registration applied", "revision", result.Revision)
+	s.logger.WithComponent("proxy_registry").InfoWithFields(
+		"proxy registration applied",
+		map[string]any{
+			"event":       "proxy_registration_applied",
+			"revision":    result.Revision,
+			"proxy_count": len(s.configuration.Proxies),
+		},
+	)
 	return nil
 }
 

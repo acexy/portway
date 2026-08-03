@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaissmai/bart"
+
 	"github.com/acexy/portway/internal/logging"
 )
 
@@ -57,6 +59,23 @@ func TestNewLoadsIPAndCIDRRules(t *testing.T) {
 	}
 	if actual := filter.snapshot.Load().count; actual != 3 {
 		t.Fatalf("rule count = %d, want 3", actual)
+	}
+}
+
+func TestDeniedWarningsAreGloballyBounded(t *testing.T) {
+	filter := &Filter{logger: logging.New("ip_filter")}
+	filter.snapshot.Store(&ruleSnapshot{prefixes: &bart.Lite{}})
+	prefix := netip.MustParsePrefix("192.0.2.0/24")
+	filter.snapshot.Load().prefixes.Insert(prefix)
+
+	if !filter.DeniedFor(netip.MustParseAddr("192.0.2.1"), "tcp_proxy") {
+		t.Fatal("first source was not denied")
+	}
+	if !filter.DeniedFor(netip.MustParseAddr("192.0.2.2"), "udp_proxy") {
+		t.Fatal("second source was not denied")
+	}
+	if pending := filter.deniedSinceLog.Load(); pending != 1 {
+		t.Fatalf("suppressed deny count = %d, want 1", pending)
 	}
 }
 

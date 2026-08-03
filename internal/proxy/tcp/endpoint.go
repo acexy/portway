@@ -33,7 +33,7 @@ func Listen(
 	if err != nil {
 		return nil, err
 	}
-	listener = ipfilter.WrapListener(listener, sourceFilter)
+	listener = ipfilter.WrapListenerFor(listener, sourceFilter, "tcp_proxy")
 	return &Endpoint{context: ctx, logger: logger, listener: listener}, nil
 }
 

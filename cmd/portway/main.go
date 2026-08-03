@@ -61,7 +61,7 @@ func runClientCommand(
 		return 2
 	}
 
-	log := logging.New("portway")
+	log := logging.New("client")
 
 	configuration, err := config.LoadClient(*configPath, !configFlagWasSet(flags))
 	if err != nil {
@@ -72,6 +72,13 @@ func runClientCommand(
 		log.Error("failed to configure logging", err)
 		return 1
 	}
+	log.InfoWithFields("client configuration loaded", map[string]any{
+		"event":       "configuration_loaded",
+		"config_file": *configPath,
+		"log_level":   configuration.LogLevel,
+		"transport":   configuration.Transport.Type,
+		"proxy_count": len(configuration.Proxies),
+	})
 	clientID, generated, err := config.EnsureClientID(&configuration)
 	if err != nil {
 		log.Error("failed to generate client ID", err)

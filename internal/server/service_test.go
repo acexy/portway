@@ -356,6 +356,20 @@ func TestApplyConfigurationCandidateUpdatesSourceDigestWithoutGeneration(t *test
 	}
 }
 
+func TestMapChangeCounts(t *testing.T) {
+	current := map[string]int{"removed": 1, "changed": 1, "same": 1}
+	candidate := map[string]int{"added": 1, "changed": 2, "same": 1}
+	added, changed, removed := mapChangeCounts(current, candidate)
+	if added != 1 || changed != 1 || removed != 1 {
+		t.Fatalf(
+			"change counts = added:%d changed:%d removed:%d",
+			added,
+			changed,
+			removed,
+		)
+	}
+}
+
 func TestSuspendClientPreservesProxyActivationAfterHeartbeatRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

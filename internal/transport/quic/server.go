@@ -127,8 +127,9 @@ func (server *Server) acceptConnections() {
 				continue
 			}
 			var allowed bool
-			releaseSource, allowed = server.sourceFilter.Register(
+			releaseSource, allowed = server.sourceFilter.RegisterFor(
 				address,
+				"transport_quic",
 				func() {
 					connection.CloseWithError(
 						applicationErrorShutdown,

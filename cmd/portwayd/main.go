@@ -112,7 +112,7 @@ func runServerCommand(
 		}
 	})
 
-	log := logging.New("portwayd")
+	log := logging.New("server")
 
 	configuration, err := config.LoadServer(*configPath, !configured)
 	if err != nil {
@@ -123,6 +123,16 @@ func runServerCommand(
 		log.Error("failed to configure logging", err)
 		return 1
 	}
+	log.InfoWithFields("server configuration loaded", map[string]any{
+		"event":                 "configuration_loaded",
+		"config_file":           *configPath,
+		"log_level":             configuration.LogLevel,
+		"transport":             configuration.Transport.Type,
+		"governed_clients_path": configuration.Authentication.GovernedClientsPath,
+		"managed_clients_path":  configuration.Authentication.ManagedClientsPath,
+		"governed_client_count": len(configuration.GovernedClients),
+		"managed_client_count":  len(configuration.ManagedClients),
+	})
 
 	token, generated, err := config.EnsureServerToken(&configuration)
 	if err != nil {

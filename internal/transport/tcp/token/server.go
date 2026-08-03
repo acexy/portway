@@ -51,7 +51,7 @@ func NewServer(
 		return nil, fmt.Errorf("listen on %q: %w", address, err)
 	}
 	if len(sourceFilters) > 0 {
-		listener = ipfilter.WrapListener(listener, sourceFilters[0])
+		listener = ipfilter.WrapListenerFor(listener, sourceFilters[0], "transport_tcp")
 	}
 	if credentials == nil {
 		listener.Close()

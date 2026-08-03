@@ -74,15 +74,15 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 // Run runs the server until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
 	configuration := s.configuration.snapshot()
-	s.logger.InfoWithField(
-		"server started",
-		"listen_address", configuration.Transport.ListenAddress,
-	)
+	s.logger.InfoWithFields("server started", map[string]any{
+		"event":          "server_started",
+		"listen_address": configuration.Transport.ListenAddress,
+	})
 	defer s.logger.Info("server stopped")
 
 	sourceFilter, err := ipfilter.New(
 		ctx,
-		s.logger,
+		s.logger.WithComponent("ip_filter"),
 		configuration.Security.IPDenyFile,
 	)
 	if err != nil {
@@ -116,7 +116,7 @@ func (s *Service) Run(ctx context.Context) error {
 	defer s.linkBroker.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,
-		s.logger,
+		s.logger.WithComponent("proxy_registry"),
 		configuration.Tunnel.BindIP,
 		s.linkBroker,
 		configuration.Tunnel.HTTPListenAddress != "",
@@ -146,7 +146,7 @@ func (s *Service) Run(ctx context.Context) error {
 			)
 		}
 		if configuration.Security.HTTPClientIPHeader == "" {
-			httpListener = ipfilter.WrapListener(httpListener, sourceFilter)
+			httpListener = ipfilter.WrapListenerFor(httpListener, sourceFilter, "http_socket")
 		}
 		httpProtocols := new(http.Protocols)
 		httpProtocols.SetHTTP1(true)
@@ -217,7 +217,7 @@ func (s *Service) Run(ctx context.Context) error {
 				!errors.Is(err, io.EOF) &&
 				!errors.Is(err, net.ErrClosed) &&
 				sessionContext.Err() == nil {
-				s.logger.Error("client connection ended", err)
+				s.logger.Warn("client connection ended", err)
 			}
 		}(inbound)
 	}
@@ -338,10 +338,13 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 			sessionLogger.Error("failed to send client registration rejection", err)
 			return nil
 		}
-		sessionLogger.InfoWithField(
+		sessionLogger.WithComponent("session").WarnWithFields(
 			"client registration rejected",
-			"error_code",
-			sessionError.Code,
+			nil,
+			map[string]any{
+				"event":      "client_registration_rejected",
+				"error_code": sessionError.Code,
+			},
 		)
 		return nil
 	}
@@ -439,7 +442,13 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		}
 	}
 	if !initialProxySynchronizationRequired {
-		sessionLogger.InfoWithField("control session established", "resumed", resumed)
+		sessionLogger.WithComponent("session").InfoWithFields(
+			"control session established",
+			map[string]any{
+				"event":   "control_session_established",
+				"resumed": resumed,
+			},
+		)
 	}
 	gracefullyClosed, err := s.serveControlMessages(
 		connection,
@@ -452,7 +461,13 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		initialProxySynchronizationRequired,
 		func() {
 			recoverableSession = true
-			sessionLogger.InfoWithField("control session established", "resumed", resumed)
+			sessionLogger.WithComponent("session").InfoWithFields(
+				"control session established",
+				map[string]any{
+					"event":   "control_session_established",
+					"resumed": resumed,
+				},
+			)
 		},
 	)
 	if gracefullyClosed {
@@ -468,7 +483,14 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		!errors.Is(err, io.EOF) &&
 		!errors.Is(err, net.ErrClosed) &&
 		ctx.Err() == nil {
-		sessionLogger.Error("control session ended", err)
+		sessionLogger.WarnWithFields(
+			"control session disconnected",
+			err,
+			map[string]any{
+				"event":  "control_session_disconnected",
+				"reason": "recoverable_error",
+			},
+		)
 	}
 	return nil
 }
@@ -764,10 +786,13 @@ func (s *Service) serveControlMessages(
 				return false, err
 			}
 			if result.Status == protocol.ProxySyncStatusRejected {
-				sessionLogger.InfoWithField(
+				sessionLogger.WithComponent("proxy_registry").WarnWithFields(
 					"proxy registration rejected",
-					"error_code",
-					result.Error.Code,
+					nil,
+					map[string]any{
+						"event":      "proxy_registration_rejected",
+						"error_code": result.Error.Code,
+					},
 				)
 				return false, errProxyRegistrationRejected
 			}
@@ -787,10 +812,13 @@ func (s *Service) serveControlMessages(
 			if onProxySynchronizationApplied != nil {
 				onProxySynchronizationApplied()
 			}
-			sessionLogger.InfoWithField(
+			sessionLogger.WithComponent("proxy_registry").InfoWithFields(
 				"proxy registration applied",
-				"revision",
-				result.Revision,
+				map[string]any{
+					"event":       "proxy_registration_applied",
+					"revision":    result.Revision,
+					"proxy_count": len(request.Proxies),
+				},
 			)
 		case protocol.MessageLinkFailed:
 			var failure protocol.LinkFailed
@@ -844,7 +872,8 @@ func (s *Service) monitorClients(ctx context.Context) {
 				if !s.suspendClient(suspended) {
 					continue
 				}
-				s.logger.WithFields(map[string]any{
+				s.logger.WithComponent("session").WithFields(map[string]any{
+					"event":      "client_suspended",
 					"client_id":  suspended.ClientID,
 					"session_id": suspended.SessionID,
 				}).Info("client suspended")
@@ -854,7 +883,8 @@ func (s *Service) monitorClients(ctx context.Context) {
 				if expired.Connection != nil {
 					expired.Connection.Close()
 				}
-				s.logger.WithFields(map[string]any{
+				s.logger.WithComponent("session").WithFields(map[string]any{
+					"event":      "client_expired",
 					"client_id":  expired.ClientID,
 					"session_id": expired.SessionID,
 				}).Info("client expired")
@@ -1023,15 +1053,16 @@ func (s *Service) watchConfiguration(ctx context.Context) {
 		if err != nil {
 			if err.Error() != lastError {
 				fields := map[string]any{
-					"event":      "config_reload_failed",
-					"error_code": reloadErrorCode(err),
-					"generation": s.currentConfigurationGeneration(),
+					"event":       "config_reload_failed",
+					"error_code":  reloadErrorCode(err),
+					"generation":  s.currentConfigurationGeneration(),
+					"config_file": sourcePath,
 				}
 				var restartError restartRequiredError
 				if errors.As(err, &restartError) {
 					fields["field"] = restartError.field
 				}
-				s.logger.WithFields(fields).Error(
+				s.logger.WithComponent("config_reload").WithFields(fields).Warn(
 					"configuration reload failed; previous snapshot remains active",
 					err,
 				)
@@ -1040,7 +1071,13 @@ func (s *Service) watchConfiguration(ctx context.Context) {
 			continue
 		}
 		if lastError != "" {
-			s.logger.Info("configuration reload recovered")
+			s.logger.WithComponent("config_reload").InfoWithFields(
+				"configuration reload recovered",
+				map[string]any{
+					"event":       "config_reload_recovered",
+					"config_file": sourcePath,
+				},
+			)
 			lastError = ""
 		}
 	}
@@ -1133,6 +1170,14 @@ func (s *Service) applyConfigurationCandidateContext(
 		candidate,
 	)
 	managedChanges := changedManagedClients(current, candidate)
+	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
+		current.GovernedClients,
+		candidate.GovernedClients,
+	)
+	managedAdded, managedChanged, managedRemoved := mapChangeCounts(
+		current.ManagedClients,
+		candidate.ManagedClients,
+	)
 	if s.proxyRegistry != nil {
 		if err := s.proxyRegistry.ConfigureManagedReservations(
 			candidate.ManagedClients,
@@ -1176,13 +1221,31 @@ func (s *Service) applyConfigurationCandidateContext(
 		}
 	}
 	s.rolloutManagedConfigurations(ctx, managedChanges, candidate)
-	s.logger.WithFields(map[string]any{
-		"event":                   "config_reload_applied",
-		"old_generation":          current.Generation,
-		"new_generation":          candidate.Generation,
-		"revoked_authentications": len(revokedContexts),
-		"revoked_sessions":        len(revokedSessions),
-	}).Info("configuration reload applied")
+	s.logger.WithComponent("config_reload").InfoWithFields(
+		"configuration reload applied",
+		map[string]any{
+			"event":                 "config_reload_applied",
+			"config_file":           candidate.SourcePath,
+			"governed_clients_path": candidate.Authentication.GovernedClientsPath,
+			"managed_clients_path":  candidate.Authentication.ManagedClientsPath,
+			"old_generation":        current.Generation,
+			"new_generation":        candidate.Generation,
+			"log_level_changed":     candidate.LogLevel != current.LogLevel,
+			"shared_authentication_changed": !reflect.DeepEqual(
+				candidate.Authentication.SharedToken,
+				current.Authentication.SharedToken,
+			),
+			"governed_added":          governedAdded,
+			"governed_changed":        governedChanged,
+			"governed_removed":        governedRemoved,
+			"managed_added":           managedAdded,
+			"managed_changed":         managedChanged,
+			"managed_removed":         managedRemoved,
+			"managed_rollouts":        len(managedChanges),
+			"revoked_authentications": len(revokedContexts),
+			"revoked_sessions":        len(revokedSessions),
+		},
+	)
 	return nil
 }
 
@@ -1208,7 +1271,7 @@ func (s *Service) rolloutManagedConfigurations(
 				candidate.ManagedClients[clientID],
 			); err != nil {
 				_ = managed.connection.Close()
-				s.logger.WithFields(map[string]any{
+				s.logger.WithComponent("config_reload").WithFields(map[string]any{
 					"event":      "managed_config_rollout_failed",
 					"client_id":  clientID,
 					"generation": candidate.Generation,
@@ -1341,6 +1404,29 @@ func changedManagedClients(
 	}
 	sort.Strings(changed)
 	return changed
+}
+
+func mapChangeCounts[T any](current map[string]T, candidate map[string]T) (
+	added int,
+	changed int,
+	removed int,
+) {
+	for key, next := range candidate {
+		previous, exists := current[key]
+		if !exists {
+			added++
+			continue
+		}
+		if !reflect.DeepEqual(previous, next) {
+			changed++
+		}
+	}
+	for key := range current {
+		if _, exists := candidate[key]; !exists {
+			removed++
+		}
+	}
+	return added, changed, removed
 }
 
 func portAllowed(port uint16, ranges []config.PortRange) bool {
