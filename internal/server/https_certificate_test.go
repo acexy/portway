@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"os"
 	"testing"
 
@@ -8,18 +9,85 @@ import (
 	"github.com/acexy/portway/internal/logging"
 )
 
-func TestHTTPSCertificateManagerReloadsContentAtomically(t *testing.T) {
-	certificateFile, keyFile := writeQUICServerCertificate(t)
+func TestHTTPSCertificateManagerSelectsExactAndWildcardSNI(t *testing.T) {
+	exactCertificateFile, exactKeyFile := writeServerCertificateForDNSNames(
+		t,
+		"app.example.com",
+	)
+	wildcardCertificateFile, wildcardKeyFile := writeServerCertificateForDNSNames(
+		t,
+		"*.apps.example.com",
+	)
 	manager, err := newHTTPSCertificateManager(
 		logging.New("https-certificate-test"),
-		config.HTTPSConfig{CertFile: certificateFile, KeyFile: keyFile},
+		config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{
+			{
+				Domains:  []string{"app.example.com"},
+				CertFile: exactCertificateFile,
+				KeyFile:  exactKeyFile,
+			},
+			{
+				Domains:  []string{"*.apps.example.com"},
+				CertFile: wildcardCertificateFile,
+				KeyFile:  wildcardKeyFile,
+			},
+		}},
 	)
 	if err != nil {
 		t.Fatalf("create HTTPS certificate manager: %v", err)
 	}
-	initialCertificate := manager.certificate.Load()
+	exact, err := manager.getCertificate(&tls.ClientHelloInfo{ServerName: "app.example.com"})
+	if err != nil || exact.Leaf.DNSNames[0] != "app.example.com" {
+		t.Fatalf("select exact certificate: certificate=%v error=%v", exact, err)
+	}
+	wildcard, err := manager.getCertificate(
+		&tls.ClientHelloInfo{ServerName: "one.apps.example.com"},
+	)
+	if err != nil || wildcard.Leaf.DNSNames[0] != "*.apps.example.com" {
+		t.Fatalf("select wildcard certificate: certificate=%v error=%v", wildcard, err)
+	}
+	for _, serverName := range []string{"", "unknown.example.com", "deep.one.apps.example.com"} {
+		if _, err := manager.getCertificate(&tls.ClientHelloInfo{ServerName: serverName}); err == nil {
+			t.Fatalf("SNI %q unexpectedly selected a certificate", serverName)
+		}
+	}
+}
 
-	replacementCertificateFile, replacementKeyFile := writeQUICServerCertificate(t)
+func TestHTTPSCertificateManagerRejectsDomainNotCoveredByCertificate(t *testing.T) {
+	certificateFile, keyFile := writeServerCertificateForDNSNames(t, "app.example.com")
+	_, err := newHTTPSCertificateManager(
+		logging.New("https-certificate-test"),
+		config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+			Domains:  []string{"other.example.com"},
+			CertFile: certificateFile,
+			KeyFile:  keyFile,
+		}}},
+	)
+	if err == nil {
+		t.Fatal("certificate that does not cover its configured domain was accepted")
+	}
+}
+
+func TestHTTPSCertificateManagerReloadsContentAtomically(t *testing.T) {
+	certificateFile, keyFile := writeServerCertificateForDNSNames(t, "app.example.com")
+	configuration := config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+		Domains:  []string{"app.example.com"},
+		CertFile: certificateFile,
+		KeyFile:  keyFile,
+	}}}
+	manager, err := newHTTPSCertificateManager(
+		logging.New("https-certificate-test"),
+		configuration,
+	)
+	if err != nil {
+		t.Fatalf("create HTTPS certificate manager: %v", err)
+	}
+	initialSnapshot := manager.snapshot.Load()
+
+	replacementCertificateFile, replacementKeyFile := writeServerCertificateForDNSNames(
+		t,
+		"app.example.com",
+	)
 	replacementCertificate, err := os.ReadFile(replacementCertificateFile)
 	if err != nil {
 		t.Fatal(err)
@@ -35,40 +103,55 @@ func TestHTTPSCertificateManagerReloadsContentAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.reloadCurrent()
-	if manager.certificate.Load() == initialCertificate {
+	if manager.snapshot.Load() == initialSnapshot {
 		t.Fatal("certificate content update was not published")
 	}
 
-	activeCertificate := manager.certificate.Load()
+	activeSnapshot := manager.snapshot.Load()
 	if err := os.WriteFile(keyFile, []byte("invalid private key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manager.reloadCurrent()
-	if manager.certificate.Load() != activeCertificate {
-		t.Fatal("invalid certificate update replaced the active certificate")
+	if manager.snapshot.Load() != activeSnapshot {
+		t.Fatal("invalid certificate update replaced the active snapshot")
 	}
 }
 
-func TestHTTPSCertificateManagerReloadsPathPair(t *testing.T) {
-	certificateFile, keyFile := writeQUICServerCertificate(t)
+func TestHTTPSCertificateManagerReloadsCompleteSet(t *testing.T) {
+	certificateFile, keyFile := writeServerCertificateForDNSNames(t, "app.example.com")
 	manager, err := newHTTPSCertificateManager(
 		logging.New("https-certificate-test"),
-		config.HTTPSConfig{CertFile: certificateFile, KeyFile: keyFile},
+		config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+			Domains:  []string{"app.example.com"},
+			CertFile: certificateFile,
+			KeyFile:  keyFile,
+		}}},
 	)
 	if err != nil {
 		t.Fatalf("create HTTPS certificate manager: %v", err)
 	}
-	initialCertificate := manager.certificate.Load()
+	initialSnapshot := manager.snapshot.Load()
 
-	replacementCertificateFile, replacementKeyFile := writeQUICServerCertificate(t)
+	replacementCertificateFile, replacementKeyFile := writeServerCertificateForDNSNames(
+		t,
+		"service.example.net",
+	)
 	changed, err := manager.reload(config.HTTPSConfig{
-		CertFile: replacementCertificateFile,
-		KeyFile:  replacementKeyFile,
+		Certificates: []config.HTTPSCertificateConfig{{
+			Domains:  []string{"service.example.net"},
+			CertFile: replacementCertificateFile,
+			KeyFile:  replacementKeyFile,
+		}},
 	}, false)
 	if err != nil {
-		t.Fatalf("reload HTTPS certificate paths: %v", err)
+		t.Fatalf("reload HTTPS certificate set: %v", err)
 	}
-	if !changed || manager.certificate.Load() == initialCertificate {
-		t.Fatal("certificate path update was not published")
+	if !changed || manager.snapshot.Load() == initialSnapshot {
+		t.Fatal("certificate set update was not published")
+	}
+	if _, err := manager.getCertificate(
+		&tls.ClientHelloInfo{ServerName: "service.example.net"},
+	); err != nil {
+		t.Fatalf("new SNI mapping is unavailable: %v", err)
 	}
 }

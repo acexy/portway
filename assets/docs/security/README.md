@@ -11,7 +11,7 @@ credential handling, and the applications exposed through a tunnel.
 - QUIC transport requires TLS 1.3 certificate verification and still performs
   Portway Token authentication.
 - Public HTTPS terminates at portwayd with TLS 1.2 or later and uses an
-  independently configured certificate pair.
+  independently configured SNI certificate set.
 - Portway does not support plaintext transport or automatic fallback to a less
   secure mode.
 - Invalid authentication, malformed configuration, and invalid trusted-source
@@ -47,11 +47,11 @@ distributed using normal production credential controls.
 
 ## Public HTTPS certificates
 
-Public HTTPS uses one certificate pair for all configured domains. Certificate
-content and configured certificate paths reload atomically. A missing, expired,
-invalid, or mismatched candidate leaves the previous certificate active. Public
-HTTPS certificates and QUIC transport certificates have independent TLS and
-lifecycle semantics even when they reference the same files.
+Public HTTPS selects an explicitly configured certificate by SNI. Every mapped
+name must be covered by that certificate's SAN. Certificate contents, paths,
+and mappings reload as one atomic set. A missing, expired, invalid, or mismatched
+candidate leaves the previous set active. Public HTTPS certificates and QUIC
+transport certificates remain independent even when they reference the same files.
 
 ## Source IP filtering
 

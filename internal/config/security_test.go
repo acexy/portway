@@ -66,8 +66,11 @@ func TestServerSecurityHTTPClientIPHeaderValidation(t *testing.T) {
 			configuration.Tunnel.HTTPListenAddress = testCase.httpAddress
 			configuration.Tunnel.HTTPSListenAddress = testCase.httpsAddress
 			if testCase.httpsAddress != "" {
-				configuration.HTTPS.CertFile = "server.crt"
-				configuration.HTTPS.KeyFile = "server.key"
+				configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
+					Domains: []string{"app.example.com"},
+					CertFile: "server.crt",
+					KeyFile: "server.key",
+				}}
 			}
 			err := validateServer(configuration)
 			if testCase.wantError == "" {

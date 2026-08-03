@@ -174,10 +174,16 @@ type TunnelConfig struct {
 	HTTPSListenAddress string `yaml:"https_listen_address"`
 }
 
-// HTTPSConfig configures the public HTTPS certificate pair.
+// HTTPSCertificateConfig maps SNI names to one public HTTPS certificate pair.
+type HTTPSCertificateConfig struct {
+	Domains  []string `yaml:"domains"`
+	CertFile string   `yaml:"cert_file"`
+	KeyFile  string   `yaml:"key_file"`
+}
+
+// HTTPSConfig configures the public HTTPS SNI certificate set.
 type HTTPSConfig struct {
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
+	Certificates []HTTPSCertificateConfig `yaml:"certificates"`
 }
 
 // SecurityConfig configures server-side source filtering.
@@ -502,13 +508,14 @@ func validateServer(configuration ServerConfig) error {
 			}
 		}
 	}
-	if configuration.Tunnel.HTTPSListenAddress != "" {
-		if configuration.HTTPS.CertFile == "" {
-			return errors.New("https.cert_file is required when tunnel.https_listen_address is configured")
-		}
-		if configuration.HTTPS.KeyFile == "" {
-			return errors.New("https.key_file is required when tunnel.https_listen_address is configured")
-		}
+	if err := ValidateHTTPSConfig(configuration.HTTPS); err != nil {
+		return err
+	}
+	if configuration.Tunnel.HTTPSListenAddress != "" &&
+		len(configuration.HTTPS.Certificates) == 0 {
+		return errors.New(
+			"https.certificates is required when tunnel.https_listen_address is configured",
+		)
 	}
 	if err := validateHTTPConfig(configuration.HTTP); err != nil {
 		return err

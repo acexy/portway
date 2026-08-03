@@ -49,17 +49,25 @@ tunnel:
   # which disables HTTPS. It must differ from all other TCP listeners.
   https_listen_address: ""
 
-# Optional. Public HTTPS TLS settings. The first implementation uses one
-# certificate pair for every HTTPS domain. Certificate file contents and these
-# two paths are hot-reloadable as one atomic pair; invalid updates keep the
-# previous certificate active. QUIC transport certificates are independent.
+# Optional. Public HTTPS SNI certificate set. At least one entry is required
+# when tunnel.https_listen_address is configured. Exact names take precedence
+# over single-label wildcards. Every declared name must be covered by the
+# certificate SAN. Missing or unknown SNI is rejected. File contents, paths,
+# and the complete list are hot-reloadable as one atomic snapshot; invalid
+# updates keep the previous snapshot active. QUIC certificates are independent.
 https:
-  # * Required when tunnel.https_listen_address is configured.
-  cert_file: /path/to/https-server.crt
+  certificates:
+    - domains:
+        - app.example.com
+        - "*.apps.example.com"
+      cert_file: /path/to/app-example-com.crt
+      # Keep private keys readable only by Portway.
+      key_file: /path/to/app-example-com.key
 
-  # * Required when tunnel.https_listen_address is configured.
-  # Keep this file readable only by Portway.
-  key_file: /path/to/https-server.key
+    - domains:
+        - service.example.net
+      cert_file: /path/to/service-example-net.crt
+      key_file: /path/to/service-example-net.key
 
 # Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
 # These values are shared by public HTTP and TLS-terminated HTTPS requests.

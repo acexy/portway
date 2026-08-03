@@ -86,8 +86,8 @@ Backend connections are reused where possible instead of creating a new tunnel
 for every request. Streaming responses and HTTP/1.1 Upgrade connections remain
 streamed through the authenticated client link.
 
-Both listeners share the same registry and capacity limits. HTTPS uses one
-atomically reloadable certificate pair. Socket and trusted-header IP deny rules
+Both listeners share the same registry and capacity limits. HTTPS selects from
+an atomically reloadable SNI certificate set. Socket and trusted-header IP deny rules
 run before routing for both HTTP and HTTPS.
 
 The local application receives an ordinary HTTP request. It does not implement

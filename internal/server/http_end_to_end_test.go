@@ -128,7 +128,7 @@ func TestHTTPSProxyEndToEnd(t *testing.T) {
 	defer backend.Close()
 	backendAddress := backend.Listener.Addr().(*net.TCPAddr)
 
-	certificateFile, keyFile := writeQUICServerCertificate(t)
+	certificateFile, keyFile := writeServerCertificateForDNSNames(t, "secure.example.com")
 	certificatePEM, err := os.ReadFile(certificateFile)
 	if err != nil {
 		t.Fatal(err)
@@ -147,8 +147,11 @@ func TestHTTPSProxyEndToEnd(t *testing.T) {
 	serverConfiguration.Transport.ListenAddress = serverAddress.String()
 	serverConfiguration.Tunnel.HTTPSListenAddress = httpsAddress.String()
 	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.HTTPS.CertFile = certificateFile
-	serverConfiguration.HTTPS.KeyFile = keyFile
+	serverConfiguration.HTTPS.Certificates = []config.HTTPSCertificateConfig{{
+		Domains: []string{"secure.example.com"},
+		CertFile: certificateFile,
+		KeyFile: keyFile,
+	}}
 	serverConfiguration.Authentication.SharedToken = &token
 	serverService := NewService(logging.New("test-https-server"), serverConfiguration)
 	go func() { serverErrors <- serverService.Run(serverContext) }()
@@ -171,7 +174,7 @@ func TestHTTPSProxyEndToEnd(t *testing.T) {
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    rootCertificates,
-			ServerName: "localhost",
+			ServerName: "secure.example.com",
 		},
 	}}
 	var response *http.Response

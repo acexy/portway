@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,10 +18,18 @@ import (
 	"github.com/acexy/portway/internal/logging"
 )
 
-// httpsCertificateManager owns the immutable certificate used by new TLS handshakes.
+// httpsCertificateSnapshot is an immutable SNI certificate selection index.
+type httpsCertificateSnapshot struct {
+	exact     map[string]*tls.Certificate
+	wildcards map[string]*tls.Certificate
+	count     int
+	domains   int
+}
+
+// httpsCertificateManager owns the immutable certificate set used by new TLS handshakes.
 type httpsCertificateManager struct {
 	logger        *logging.Logger
-	certificate   atomic.Pointer[tls.Certificate]
+	snapshot      atomic.Pointer[httpsCertificateSnapshot]
 	mutex         sync.Mutex
 	configuration config.HTTPSConfig
 	digest        string
@@ -38,16 +48,28 @@ func newHTTPSCertificateManager(
 }
 
 func (manager *httpsCertificateManager) getCertificate(
-	*tls.ClientHelloInfo,
+	hello *tls.ClientHelloInfo,
 ) (*tls.Certificate, error) {
-	certificate := manager.certificate.Load()
-	if certificate == nil {
-		return nil, errors.New("HTTPS certificate is unavailable")
+	if hello == nil || hello.ServerName == "" {
+		return nil, errors.New("HTTPS client did not provide SNI")
 	}
-	return certificate, nil
+	serverName := strings.ToLower(strings.TrimSuffix(hello.ServerName, "."))
+	snapshot := manager.snapshot.Load()
+	if snapshot == nil {
+		return nil, errors.New("HTTPS certificates are unavailable")
+	}
+	if certificate := snapshot.exact[serverName]; certificate != nil {
+		return certificate, nil
+	}
+	if separator := strings.IndexByte(serverName, '.'); separator > 0 {
+		if certificate := snapshot.wildcards[serverName[separator+1:]]; certificate != nil {
+			return certificate, nil
+		}
+	}
+	return nil, fmt.Errorf("no HTTPS certificate configured for SNI %q", serverName)
 }
 
-// reload validates and atomically publishes one complete certificate pair.
+// reload validates and atomically publishes one complete certificate set.
 func (manager *httpsCertificateManager) reload(
 	configuration config.HTTPSConfig,
 	force bool,
@@ -55,19 +77,60 @@ func (manager *httpsCertificateManager) reload(
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
 
-	certificate, digest, err := loadHTTPSCertificate(configuration)
+	snapshot, digest, err := loadHTTPSCertificates(configuration)
 	if err != nil {
 		return false, err
 	}
-	if !force && configuration == manager.configuration && digest == manager.digest {
+	if !force && reflect.DeepEqual(configuration, manager.configuration) &&
+		digest == manager.digest {
 		return false, nil
 	}
-	manager.publishLocked(configuration, certificate, digest)
+	manager.publishLocked(configuration, snapshot, digest)
 	return true, nil
 }
 
-func loadHTTPSCertificate(
+func loadHTTPSCertificates(
 	configuration config.HTTPSConfig,
+) (*httpsCertificateSnapshot, string, error) {
+	if err := config.ValidateHTTPSConfig(configuration); err != nil {
+		return nil, "", err
+	}
+	snapshot := &httpsCertificateSnapshot{
+		exact:     make(map[string]*tls.Certificate),
+		wildcards: make(map[string]*tls.Certificate),
+		count:     len(configuration.Certificates),
+	}
+	hasher := sha256.New()
+	for index, configuredCertificate := range configuration.Certificates {
+		certificate, certificateDigest, err := loadHTTPSCertificatePair(configuredCertificate)
+		if err != nil {
+			return nil, "", fmt.Errorf("https.certificates[%d]: %w", index, err)
+		}
+		hasher.Write([]byte(certificateDigest))
+		for _, domain := range configuredCertificate.Domains {
+			if err := verifyHTTPSCertificateDomain(certificate.Leaf, domain); err != nil {
+				return nil, "", fmt.Errorf(
+					"https.certificates[%d] does not cover domain %q: %w",
+					index,
+					domain,
+					err,
+				)
+			}
+			hasher.Write([]byte{0})
+			hasher.Write([]byte(domain))
+			if strings.HasPrefix(domain, "*.") {
+				snapshot.wildcards[strings.TrimPrefix(domain, "*.")] = certificate
+			} else {
+				snapshot.exact[domain] = certificate
+			}
+			snapshot.domains++
+		}
+	}
+	return snapshot, hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func loadHTTPSCertificatePair(
+	configuration config.HTTPSCertificateConfig,
 ) (*tls.Certificate, string, error) {
 	certificatePEM, err := os.ReadFile(configuration.CertFile)
 	if err != nil {
@@ -103,22 +166,29 @@ func loadHTTPSCertificate(
 	return &certificate, digest, nil
 }
 
+func verifyHTTPSCertificateDomain(certificate *x509.Certificate, domain string) error {
+	if strings.HasPrefix(domain, "*.") {
+		domain = "portway-validation." + strings.TrimPrefix(domain, "*.")
+	}
+	return certificate.VerifyHostname(domain)
+}
+
 func (manager *httpsCertificateManager) publish(
 	configuration config.HTTPSConfig,
-	certificate *tls.Certificate,
+	snapshot *httpsCertificateSnapshot,
 	digest string,
 ) {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
-	manager.publishLocked(configuration, certificate, digest)
+	manager.publishLocked(configuration, snapshot, digest)
 }
 
 func (manager *httpsCertificateManager) publishLocked(
 	configuration config.HTTPSConfig,
-	certificate *tls.Certificate,
+	snapshot *httpsCertificateSnapshot,
 	digest string,
 ) {
-	manager.certificate.Store(certificate)
+	manager.snapshot.Store(snapshot)
 	manager.configuration = configuration
 	manager.digest = digest
 }
@@ -126,7 +196,7 @@ func (manager *httpsCertificateManager) publishLocked(
 func (manager *httpsCertificateManager) reloadCurrent() {
 	manager.mutex.Lock()
 	configuration := manager.configuration
-	certificate, digest, err := loadHTTPSCertificate(configuration)
+	snapshot, digest, err := loadHTTPSCertificates(configuration)
 	if err != nil {
 		if err.Error() == manager.lastError {
 			manager.mutex.Unlock()
@@ -134,32 +204,26 @@ func (manager *httpsCertificateManager) reloadCurrent() {
 		}
 		manager.lastError = err.Error()
 		manager.mutex.Unlock()
-		manager.logger.WithFields(map[string]any{
-			"event":     "https_certificate_reload_failed",
-			"cert_file": configuration.CertFile,
-			"key_file":  configuration.KeyFile,
-		}).Warn("HTTPS certificate reload failed; previous certificate remains active", err)
+		manager.logger.Warn(
+			"HTTPS certificate reload failed; previous certificate set remains active",
+			err,
+		)
 		return
 	}
 	changed := digest != manager.digest
 	if changed {
-		manager.publishLocked(configuration, certificate, digest)
+		manager.publishLocked(configuration, snapshot, digest)
 	}
 	recovered := manager.lastError != ""
 	manager.lastError = ""
-	activeCertificate := manager.certificate.Load()
+	activeSnapshot := manager.snapshot.Load()
 	manager.mutex.Unlock()
 	if changed || recovered {
-		fields := map[string]any{
-			"event":     "https_certificate_reloaded",
-			"cert_file": configuration.CertFile,
-			"key_file":  configuration.KeyFile,
-		}
-		if activeCertificate != nil && activeCertificate.Leaf != nil {
-			fields["not_after"] = activeCertificate.Leaf.NotAfter
-			fields["dns_names"] = activeCertificate.Leaf.DNSNames
-		}
-		manager.logger.InfoWithFields("HTTPS certificate reloaded", fields)
+		manager.logger.InfoWithFields("HTTPS certificate set reloaded", map[string]any{
+			"event":             "https_certificate_reloaded",
+			"certificate_count": activeSnapshot.count,
+			"domain_count":      activeSnapshot.domains,
+		})
 	}
 }
 

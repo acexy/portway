@@ -19,14 +19,14 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
 - 原子化代理注册与有界会话恢复
 - HTTP/HTTPS 流式传输和 Upgrade 支持，具备连接复用能力
 - 服务端 HTTPS TLS 终止与证书原子热更新
-- 动态热加载 IPv4/IPv6 拒绝列表
+- 基于独立规则文件监视的 IPv4/IPv6 来源 IP 阻断策略
 - 严格的 YAML 配置和故障关闭（fail-closed）校验
 - 小巧的客户端和服务端二进制文件，命令行接口风格一致
 - **灵活的客户端配置治理：**
   - 面向可信客户端群组的共享配置
   - 受策略约束的客户端配置
   - 完全由服务端管理的客户端配置
-- **故障关闭的服务端配置热加载：**
+- **故障关闭的服务端主配置热加载：**
   - 完整配置代际的原子校验与发布
   - 选择性凭证吊销和 Managed 配置在线切换
   - 校验失败时自动保留上一份有效快照
@@ -90,8 +90,10 @@ tunnel:
   https_listen_address: 127.0.0.1:8443
 
 https:
-  cert_file: /path/to/https-server.crt
-  key_file: /path/to/https-server.key
+  certificates:
+    - domains: [app.example.com]
+      cert_file: /path/to/https-server.crt
+      key_file: /path/to/https-server.key
 ```
 
 在客户端注册一个域名：
@@ -107,8 +109,8 @@ proxies:
 
 公共 `Host` 会被匹配到已认证的客户端注册信息。`portwayd` 终止公网 HTTPS，
 随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。HTTP 与
-HTTPS 共用代理限制。HTTPS 证书对支持内容覆盖和路径原子热更新；无效更新会
-继续使用上一份有效证书。HTTPS 支持 HTTP/1.1、HTTP/2，最低使用 TLS 1.2。
+HTTPS 共用代理限制。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
+无效更新会继续使用上一代集合。HTTPS 支持 HTTP/1.1、HTTP/2，最低使用 TLS 1.2。
 当前不支持 HTTPS 回源、SNI 透传、ACME 和 HTTP/3。
 
 ## UDP 代理
@@ -156,6 +158,32 @@ portwayd version
 ```
 
 直接运行任一二进制文件（不带参数）即可显示命令概览。
+
+## 使用 Homebrew 安装
+
+官方 [Acexy Homebrew Tap](https://github.com/acexy/homebrew-tap) 为 macOS 和
+Linux 分别提供客户端与服务端 Formula。
+
+安装客户端：
+
+```bash
+brew install acexy/tap/portway
+```
+
+安装服务端：
+
+```bash
+brew install acexy/tap/portwayd
+```
+
+需要时可以在同一主机安装两个组件：
+
+```bash
+brew install acexy/tap/portway acexy/tap/portwayd
+```
+
+Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要自行准备对应的
+`client.yaml` 或 `server.yaml`。
 
 ## 从源码构建
 

@@ -23,14 +23,23 @@ tunnel:
   # 该地址不能与其他 TCP Listener 冲突。
   https_listen_address: ""
 
-# 公网 HTTPS TLS 配置。首个实现由所有 HTTPS 域名共用一个证书对。证书文件
-# 内容以及以下两个路径作为完整证书对原子热更新；无效更新保留旧证书。QUIC
-# Transport 证书与此配置相互独立。
+# 公网 HTTPS SNI 证书集合。启用 HTTPS Listener 时至少配置一项；精确域名优先于
+# 单层通配符，每个声明域名必须被对应证书 SAN 覆盖。缺少或未知 SNI 时拒绝握手。
+# 文件内容、路径和完整列表作为一个快照原子热更新；无效候选保留上一代快照。
+# QUIC Transport 证书与此配置相互独立。
 https:
-  # tunnel.https_listen_address 非空时必填。
-  cert_file: /path/to/https-server.crt
-  # tunnel.https_listen_address 非空时必填；私钥应仅允许 Portway 读取。
-  key_file: /path/to/https-server.key
+  certificates:
+    - domains:
+        - app.example.com
+        - "*.apps.example.com"
+      cert_file: /path/to/app-example-com.crt
+      # 私钥文件应仅允许 Portway 读取。
+      key_file: /path/to/app-example-com.key
+
+    - domains:
+        - service.example.net
+      cert_file: /path/to/service-example-net.crt
+      key_file: /path/to/service-example-net.key
 
 # HTTP 安全、容量和业务超时，由公网 HTTP 与 TLS 终止后的 HTTPS 请求共享；
 # 即使两个 Listener 均未启用也会校验。当前修改这些字段需要重启 portwayd。

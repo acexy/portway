@@ -23,14 +23,14 @@ bounded resources, and secure defaults.
 - Atomic proxy registration and bounded session recovery
 - HTTP/HTTPS streaming and Upgrade support with connection reuse
 - Server-side HTTPS TLS termination with atomic certificate reload
-- Dynamically reloaded IPv4/IPv6 deny lists
+- Source IP access control with an independently watched IPv4/IPv6 deny-list file
 - Strict YAML configuration and fail-closed validation
 - Small client and server binaries with a consistent command-line interface
 - **Flexible client governance:**
   - shared configuration for trusted fleets
   - policy-governed client configuration
   - fully server-managed configuration
-- **Fail-closed server configuration reload:**
+- **Fail-closed server main-configuration reload:**
   - atomic validation and publication of complete configuration generations
   - selective credential revocation and online Managed configuration rollout
   - retention of the previous effective snapshot on validation failure
@@ -96,8 +96,10 @@ tunnel:
   https_listen_address: 127.0.0.1:8443
 
 https:
-  cert_file: /path/to/https-server.crt
-  key_file: /path/to/https-server.key
+  certificates:
+    - domains: [app.example.com]
+      cert_file: /path/to/https-server.crt
+      key_file: /path/to/https-server.key
 ```
 
 Register a domain on the client:
@@ -114,8 +116,8 @@ proxies:
 The public `Host` is matched to an authenticated client registration. Portwayd
 terminates public HTTPS and forwards HTTP through the authenticated tunnel, so
 the local application receives a normal HTTP request. HTTP and HTTPS share the
-same proxy limits. The HTTPS certificate pair supports atomic content and path
-reloads; invalid updates leave the previous certificate active. HTTPS supports
+same proxy limits. HTTPS selects certificates by SNI from an atomically
+reloadable certificate set; invalid updates leave the previous set active. HTTPS supports
 HTTP/1.1 and HTTP/2 with a minimum TLS version of 1.2. HTTPS backend forwarding,
 SNI passthrough, ACME, and HTTP/3 are not currently supported.
 
@@ -166,6 +168,32 @@ portwayd version
 ```
 
 Run either binary without arguments to display its command overview.
+
+## Install with Homebrew
+
+The official [Acexy Homebrew tap](https://github.com/acexy/homebrew-tap)
+provides separate formulae for the client and server on macOS and Linux.
+
+Install the client:
+
+```bash
+brew install acexy/tap/portway
+```
+
+Install the server:
+
+```bash
+brew install acexy/tap/portwayd
+```
+
+Both components can be installed on the same host when needed:
+
+```bash
+brew install acexy/tap/portway acexy/tap/portwayd
+```
+
+The formulae do not create or overwrite configuration files. Prepare the
+appropriate `client.yaml` or `server.yaml` before running the installed command.
 
 ## Build from source
 

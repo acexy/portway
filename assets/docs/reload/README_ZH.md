@@ -66,8 +66,8 @@ Binding 和代理行为均保持不变。
 其中任意字段发生变化时，整个候选以 `restart_required` 拒绝。同一候选里的
 其他可热加载字段也不会被部分应用。
 
-公网 HTTPS 证书内容以及 `https.cert_file`/`https.key_file` 路径属于例外：完整
-有效的证书对会原子发布而不替换 HTTPS Listener；无效候选继续使用旧证书。
+公网 HTTPS 证书内容、路径和 `https.certificates` 条目属于例外：完整有效的 SNI
+证书集合会原子发布而不替换 HTTPS Listener；无效候选继续使用上一代集合。
 
 ## Managed 在线切换
 

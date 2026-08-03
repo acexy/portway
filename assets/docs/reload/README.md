@@ -72,9 +72,9 @@ If any of these fields changes, Portway rejects the complete candidate with
 `restart_required`. Reloadable fields included in the same candidate are not
 partially applied.
 
-Public HTTPS certificate contents and `https.cert_file`/`https.key_file` paths
-are exceptions: a complete valid pair is published atomically without replacing
-the HTTPS listener. Invalid candidates keep the previous certificate active.
+Public HTTPS certificate contents, paths, and `https.certificates` entries are
+exceptions: a complete valid SNI certificate set is published atomically without
+replacing the HTTPS listener. Invalid candidates keep the previous set active.
 
 ## Managed online rollout
 

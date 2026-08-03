@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -548,7 +549,11 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	current := config.DefaultServer()
 	current.Authentication.SharedToken = &token
 	current.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
-	current.HTTPS = config.HTTPSConfig{CertFile: certificateFile, KeyFile: keyFile}
+	current.HTTPS = config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+		Domains:  []string{"localhost"},
+		CertFile: certificateFile,
+		KeyFile:  keyFile,
+	}}}
 	snapshot, err := config.BuildAuthenticationSnapshot(current)
 	if err != nil {
 		t.Fatal(err)
@@ -560,7 +565,7 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initialCertificate := certificateManager.certificate.Load()
+	initialSnapshot := certificateManager.snapshot.Load()
 	service := &Service{
 		logger:              logging.New("test"),
 		configuration:       newConfigurationManager(current),
@@ -572,29 +577,34 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 
 	replacementCertificateFile, replacementKeyFile := writeQUICServerCertificate(t)
 	candidate := current
-	candidate.HTTPS = config.HTTPSConfig{
+	candidate.HTTPS = config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+		Domains:  []string{"localhost"},
 		CertFile: replacementCertificateFile,
 		KeyFile:  replacementKeyFile,
-	}
+	}}}
 	if err := service.applyConfigurationCandidate(candidate); err != nil {
 		t.Fatalf("apply HTTPS certificate path update: %v", err)
 	}
-	if service.configuration.snapshot().HTTPS != candidate.HTTPS {
+	if !reflect.DeepEqual(service.configuration.snapshot().HTTPS, candidate.HTTPS) {
 		t.Fatal("HTTPS certificate paths were not published")
 	}
-	if certificateManager.certificate.Load() == initialCertificate {
+	if certificateManager.snapshot.Load() == initialSnapshot {
 		t.Fatal("HTTPS certificate path update did not replace the certificate")
 	}
-	activeCertificate := certificateManager.certificate.Load()
+	activeSnapshot := certificateManager.snapshot.Load()
 	invalidCandidate := candidate
-	invalidCandidate.HTTPS.KeyFile = replacementCertificateFile
+	invalidCandidate.HTTPS.Certificates = append(
+		[]config.HTTPSCertificateConfig(nil),
+		candidate.HTTPS.Certificates...,
+	)
+	invalidCandidate.HTTPS.Certificates[0].KeyFile = replacementCertificateFile
 	if err := service.applyConfigurationCandidate(invalidCandidate); err == nil {
 		t.Fatal("invalid HTTPS certificate path update was accepted")
 	}
-	if service.configuration.snapshot().HTTPS != candidate.HTTPS {
+	if !reflect.DeepEqual(service.configuration.snapshot().HTTPS, candidate.HTTPS) {
 		t.Fatal("invalid HTTPS certificate update changed the configuration")
 	}
-	if certificateManager.certificate.Load() != activeCertificate {
+	if certificateManager.snapshot.Load() != activeSnapshot {
 		t.Fatal("invalid HTTPS certificate update replaced the active certificate")
 	}
 }

@@ -1234,7 +1234,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		}
 	}
 	httpsChanged := !reflect.DeepEqual(candidate.HTTPS, current.HTTPS)
-	var candidateHTTPSCertificate *tls.Certificate
+	var candidateHTTPSCertificates *httpsCertificateSnapshot
 	var candidateHTTPSDigest string
 	if httpsChanged {
 		if s.httpsCertificates == nil {
@@ -1243,7 +1243,7 @@ func (s *Service) applyConfigurationCandidateContext(
 			}
 		}
 		var err error
-		candidateHTTPSCertificate, candidateHTTPSDigest, err = loadHTTPSCertificate(candidate.HTTPS)
+		candidateHTTPSCertificates, candidateHTTPSDigest, err = loadHTTPSCertificates(candidate.HTTPS)
 		if err != nil {
 			return fmt.Errorf("reload HTTPS certificate: %w", err)
 		}
@@ -1313,7 +1313,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	if httpsChanged {
 		s.httpsCertificates.publish(
 			candidate.HTTPS,
-			candidateHTTPSCertificate,
+			candidateHTTPSCertificates,
 			candidateHTTPSDigest,
 		)
 	}
