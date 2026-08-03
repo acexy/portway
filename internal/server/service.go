@@ -1273,11 +1273,6 @@ func (s *Service) applyConfigurationCandidateContext(
 	if err != nil {
 		return err
 	}
-	if candidate.LogLevel != current.LogLevel {
-		if err := logging.EnableConsole(candidate.LogLevel); err != nil {
-			return fmt.Errorf("apply log level: %w", err)
-		}
-	}
 	authenticationChanged :=
 		!reflect.DeepEqual(candidate.Authentication, current.Authentication) ||
 			!reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) ||
@@ -1302,10 +1297,15 @@ func (s *Service) applyConfigurationCandidateContext(
 		if err := s.proxyRegistry.ConfigureManagedReservations(
 			candidate.ManagedClients,
 		); err != nil {
-			if candidate.LogLevel != current.LogLevel {
-				_ = logging.EnableConsole(current.LogLevel)
-			}
 			return fmt.Errorf("validate managed reservations: %w", err)
+		}
+	}
+	// Change only the level of the initialized logger after every fallible
+	// candidate validation has succeeded. EnableConsole is startup-only and the
+	// underlying logger deliberately panics when initialized more than once.
+	if candidate.LogLevel != current.LogLevel {
+		if err := logging.SetConsoleLevel(candidate.LogLevel); err != nil {
+			return fmt.Errorf("apply log level: %w", err)
 		}
 	}
 	candidate.Generation = current.Generation + 1

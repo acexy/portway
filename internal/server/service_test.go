@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	toolkitlogger "github.com/acexy/golang-toolkit/logger"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
@@ -18,6 +19,7 @@ import (
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
+	"github.com/sirupsen/logrus"
 )
 
 func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T) {
@@ -353,6 +355,91 @@ func TestApplyConfigurationCandidateUpdatesSourceDigestWithoutGeneration(t *test
 	updated := service.configuration.snapshot()
 	if updated.SourceDigest != "new" || updated.Generation != 7 {
 		t.Fatalf("unexpected metadata-only update: %+v", updated)
+	}
+}
+
+func TestApplyConfigurationCandidateChangesLogLevelRepeatedly(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+		managed:             newManagedCoordinator(),
+	}
+	activeLogger := toolkitlogger.Logrus()
+	originalLevel := activeLogger.GetLevel()
+	t.Cleanup(func() {
+		activeLogger.SetLevel(originalLevel)
+	})
+
+	for _, testCase := range []struct {
+		configured config.LogLevel
+		expected   logrus.Level
+	}{
+		{configured: config.LogLevelDebug, expected: logrus.DebugLevel},
+		{configured: config.LogLevelTrace, expected: logrus.TraceLevel},
+		{configured: config.LogLevelError, expected: logrus.ErrorLevel},
+	} {
+		candidate := service.configuration.snapshot()
+		candidate.LogLevel = testCase.configured
+		if err := service.applyConfigurationCandidate(candidate); err != nil {
+			t.Fatalf("apply log level %q: %v", testCase.configured, err)
+		}
+		if service.configuration.snapshot().LogLevel != testCase.configured {
+			t.Fatalf(
+				"configuration log level was not updated to %q",
+				testCase.configured,
+			)
+		}
+		if activeLogger.GetLevel() != testCase.expected {
+			t.Fatalf(
+				"logger level = %s, want %s",
+				activeLogger.GetLevel(),
+				testCase.expected,
+			)
+		}
+	}
+}
+
+func TestRejectedConfigurationCandidateKeepsLogLevel(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+	}
+	activeLogger := toolkitlogger.Logrus()
+	originalLevel := activeLogger.GetLevel()
+	t.Cleanup(func() {
+		activeLogger.SetLevel(originalLevel)
+	})
+	activeLogger.SetLevel(logrus.InfoLevel)
+
+	candidate := current
+	candidate.LogLevel = config.LogLevelTrace
+	candidate.Transport.ListenAddress = "127.0.0.1:7001"
+	if err := service.applyConfigurationCandidate(candidate); err == nil {
+		t.Fatal("restart-required candidate was accepted")
+	}
+	if activeLogger.GetLevel() != logrus.InfoLevel {
+		t.Fatalf("rejected candidate changed logger level to %s", activeLogger.GetLevel())
+	}
+	if service.configuration.snapshot().LogLevel != current.LogLevel {
+		t.Fatal("rejected candidate changed configuration log level")
 	}
 }
 

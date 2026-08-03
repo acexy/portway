@@ -39,6 +39,33 @@ func TestToolkitLogLevel(t *testing.T) {
 	}
 }
 
+func TestSetConsoleLevelCanBeAppliedRepeatedly(t *testing.T) {
+	activeLogger := logger.Logrus()
+	originalLevel := activeLogger.GetLevel()
+	t.Cleanup(func() {
+		activeLogger.SetLevel(originalLevel)
+	})
+
+	if err := SetConsoleLevel(config.LogLevelDebug); err != nil {
+		t.Fatal(err)
+	}
+	if activeLogger.GetLevel() != logrus.DebugLevel {
+		t.Fatalf("logger level = %s, want debug", activeLogger.GetLevel())
+	}
+	if err := SetConsoleLevel(config.LogLevelTrace); err != nil {
+		t.Fatal(err)
+	}
+	if activeLogger.GetLevel() != logrus.TraceLevel {
+		t.Fatalf("logger level = %s, want trace", activeLogger.GetLevel())
+	}
+	if err := SetConsoleLevel(config.LogLevelError); err != nil {
+		t.Fatal(err)
+	}
+	if activeLogger.GetLevel() != logrus.ErrorLevel {
+		t.Fatalf("logger level = %s, want error", activeLogger.GetLevel())
+	}
+}
+
 func TestConsoleFormatterUsesStableReadableLayout(t *testing.T) {
 	entry := &logrus.Entry{
 		Logger:  logrus.New(),

@@ -107,6 +107,17 @@ func EnableConsole(level config.LogLevel) error {
 	return nil
 }
 
+// SetConsoleLevel updates the initialized process logger without rebuilding its
+// output, formatter, or hooks. It is safe to call repeatedly during reloads.
+func SetConsoleLevel(level config.LogLevel) error {
+	toolkitLevel, err := toolkitLogLevel(level)
+	if err != nil {
+		return err
+	}
+	logger.Logrus().SetLevel(logrus.Level(toolkitLevel))
+	return nil
+}
+
 // New creates a logger associated with one project component.
 func New(component string) *Logger {
 	return &Logger{component: component}
