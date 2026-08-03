@@ -83,8 +83,6 @@ The local SSH service is now available at:
 127.0.0.1:22022
 ```
 
-Do not commit real Tokens, private keys, or production certificates.
-
 ## HTTP and HTTPS proxy
 
 Enable either or both public HTTP and HTTPS listeners on the server. HTTPS is

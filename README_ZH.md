@@ -77,8 +77,6 @@ portway run --config client.yaml
 127.0.0.1:22022
 ```
 
-请勿将真实的 Token、私钥或生产环境证书提交到版本控制中。
-
 ## HTTP 与 HTTPS 代理
 
 在服务端按需启用 HTTP、HTTPS 或两个公网 Listener；
