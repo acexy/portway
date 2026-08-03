@@ -4,10 +4,6 @@ This document summarizes possible future directions for Portway. These items
 are exploratory, are not accepted scope or implementation commitments, and do
 not represent release-date commitments.
 
-## Distribution
-
-- Publish Portway through Homebrew.
-
 ## UDP hardening
 
 - Add repeatable packet-loss, congestion, queue-overflow, and high-source-
