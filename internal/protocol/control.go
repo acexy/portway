@@ -71,7 +71,7 @@ type SessionErrorCode string
 const (
 	// SessionErrorClientIDAlreadyOnline indicates an active duplicate client ID.
 	SessionErrorClientIDAlreadyOnline SessionErrorCode = "client_id_already_online"
-	// SessionErrorClientIDRecoveryPending indicates that a suspended client ID is still reserved.
+	// SessionErrorClientIDRecoveryPending indicates that registration or recovery is waiting for the current Session lifecycle transition.
 	SessionErrorClientIDRecoveryPending SessionErrorCode = "client_id_recovery_pending"
 	// SessionErrorResumeSessionMismatch indicates an invalid recovery session ID.
 	SessionErrorResumeSessionMismatch SessionErrorCode = "resume_session_mismatch"
@@ -167,7 +167,7 @@ func WriteControlWithRequestID(
 
 	header := make([]byte, controlHeaderSize)
 	copy(header, Magic)
-	header[4] = MajorVersion
+	header[4] = CoreVersion
 	header[5] = controlEncodingJSON
 	binary.BigEndian.PutUint32(header[8:], uint32(len(envelopeBytes)))
 	if err := writeAll(writer, header); err != nil {
@@ -188,7 +188,7 @@ func ReadControl(reader io.Reader) (Envelope, error) {
 	if string(header[:4]) != Magic {
 		return Envelope{}, fmt.Errorf("%w: invalid control frame magic", ErrInvalidControlMessage)
 	}
-	if header[4] != MajorVersion {
+	if header[4] != CoreVersion {
 		return Envelope{}, fmt.Errorf(
 			"%w: unsupported control protocol version %d",
 			ErrInvalidControlMessage,

@@ -1,4 +1,5 @@
 # Portway 服务端完整配置示例。字段和值与 ../server.yaml 保持一致。
+# 最新模板：https://github.com/acexy/portway/tree/main/config
 
 # 可选，默认 info。可选值：trace、debug、info、warn、error。
 log_level: info
@@ -19,8 +20,30 @@ tunnel:
   bind_ip: 0.0.0.0
   # 可选，默认空并禁用 HTTP；不能与 transport.listen_address 相同。
   http_listen_address: ""
+  # 可选，默认空并禁用 HTTPS。portwayd 终止 TLS 后固定回源本地 HTTP 服务；
+  # 该地址不能与其他 TCP Listener 冲突。
+  https_listen_address: ""
 
-# HTTP 安全、容量和业务超时；即使未启用 HTTP Listener 也会校验。
+# 公网 HTTPS SNI 证书集合。启用 HTTPS Listener 时至少配置一项；精确域名优先于
+# 单层通配符，每个声明域名必须被对应证书 SAN 覆盖。缺少或未知 SNI 时拒绝握手。
+# 文件内容、路径和完整列表作为一个快照原子热更新；无效候选保留上一代快照。
+# QUIC Transport 证书与此配置相互独立。
+https:
+  certificates:
+    - domains:
+        - app.example.com
+        - "*.apps.example.com"
+      cert_file: /path/to/app-example-com.crt
+      # 私钥文件应仅允许 Portway 读取。
+      key_file: /path/to/app-example-com.key
+
+    - domains:
+        - service.example.net
+      cert_file: /path/to/service-example-net.crt
+      key_file: /path/to/service-example-net.key
+
+# HTTP 安全、容量和业务超时，由公网 HTTP 与 TLS 终止后的 HTTPS 请求共享；
+# 即使两个 Listener 均未启用也会校验。当前修改这些字段需要重启 portwayd。
 http:
   # 慢请求头保护：默认 10s，范围 (0s, 60s]。
   read_header_timeout: 10s
@@ -77,8 +100,11 @@ udp:
 security:
   # IPv4/IPv6 拒绝列表文件，默认空并禁用。每个非注释行是 IP 或 CIDR。
   ip_deny_file: ""
-  # 可选的 HTTP 可信来源 IP Header。启用时必须同时配置拒绝列表和 HTTP
-  # Listener，且上游代理必须覆盖该 Header；客户端可绕过上游时禁止启用。
+  # HTTP/HTTPS 共用的可信 HTTP 层来源 IP Header。默认空，此时根据 TCP socket
+  # peer IP 过滤，HTTPS 在 TLS 握手前完成过滤。配置后，两种入口都改用该 Header
+  # 而不再使用 socket peer IP；HTTPS 在 TLS 解密后检查。启用时必须配置拒绝
+  # 列表及至少一个 HTTP/HTTPS Listener，可信上游必须删除客户端原值并写入已
+  # 验证的来源链；客户端可以绕过可信上游时禁止启用。
   http_client_ip_header: ""
 
 # TCP 与 QUIC 共用同一认证快照。所有 Token 以及 Governed/Managed ClientID
@@ -90,9 +116,9 @@ authentication:
 
   # 可选。目录内每个 *.yaml 定义独立 Governed 客户端。
   # 文件名无需匹配 ClientID；完整中文记录见 ./governed/governed-client.yaml。
-  governed_clients_path: "./governed"
+  # governed_clients_path: "./governed"
 
   # 可选。目录内每个 *.yaml 定义独立 Managed 客户端及服务端锁定配置。
   # 每客户端最多 128 个代理；所有记录的同协议端口和 HTTP 域名必须唯一。
   # 完整中文记录见 ./managed/managed-client.yaml。
-  managed_clients_path: "./managed"
+  # managed_clients_path: "./managed"

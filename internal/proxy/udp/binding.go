@@ -45,15 +45,15 @@ func NewBinding(
 ) *Binding {
 	ctx, cancel := context.WithCancel(parent)
 	binding := &Binding{
-		context: ctx,
-		cancel: cancel,
+		context:       ctx,
+		cancel:        cancel,
 		configuration: configuration,
-		endpoint: endpoint,
-		broker: broker,
-		limiter: limiter,
-		filter: filter,
+		endpoint:      endpoint,
+		broker:        broker,
+		limiter:       limiter,
+		filter:        filter,
 		resolveTarget: resolveTarget,
-		associations: make(map[netip.AddrPort]*association),
+		associations:  make(map[netip.AddrPort]*association),
 	}
 	binding.waitGroup.Add(1)
 	go binding.sweep()
@@ -94,7 +94,7 @@ func (binding *Binding) HandleDatagram(source netip.AddrPort, payload []byte) {
 		if binding.filter == nil {
 			return func() {}, true
 		}
-		return binding.filter.Register(source.Addr(), association.Close)
+		return binding.filter.RegisterFor(source.Addr(), "udp_proxy", association.Close)
 	}()
 	if !sourceAllowed {
 		binding.mutex.Unlock()
@@ -192,15 +192,15 @@ func newAssociation(
 ) *association {
 	ctx, cancel := context.WithCancel(binding.context)
 	candidate := &association{
-		binding: binding,
-		source: source,
-		target: target,
-		lease: lease,
-		context: ctx,
-		cancel: cancel,
-		queue: make(chan []byte, binding.configuration.MaxQueuedDatagramsPerAssociation),
+		binding:       binding,
+		source:        source,
+		target:        target,
+		lease:         lease,
+		context:       ctx,
+		cancel:        cancel,
+		queue:         make(chan []byte, binding.configuration.MaxQueuedDatagramsPerAssociation),
 		releaseSource: func() {},
-		done: make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 	candidate.touch()
 	return candidate

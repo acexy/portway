@@ -14,15 +14,21 @@ type trackedConnection struct {
 // WrapListener rejects denied socket peers before returning accepted
 // connections and tracks allowed connections for dynamic rule enforcement.
 func WrapListener(listener net.Listener, filter *Filter) net.Listener {
+	return WrapListenerFor(listener, filter, "socket")
+}
+
+// WrapListenerFor filters socket peers and classifies deny events by ingress.
+func WrapListenerFor(listener net.Listener, filter *Filter, ingress string) net.Listener {
 	if !filter.Enabled() {
 		return listener
 	}
-	return &filteredListener{Listener: listener, filter: filter}
+	return &filteredListener{Listener: listener, filter: filter, ingress: ingress}
 }
 
 type filteredListener struct {
 	net.Listener
-	filter *Filter
+	filter  *Filter
+	ingress string
 }
 
 func (listener *filteredListener) Accept() (net.Conn, error) {
@@ -37,7 +43,7 @@ func (listener *filteredListener) Accept() (net.Conn, error) {
 			continue
 		}
 		tracked := &trackedConnection{Conn: connection}
-		release, allowed := listener.filter.Register(address, func() {
+		release, allowed := listener.filter.RegisterFor(address, listener.ingress, func() {
 			connection.Close()
 		})
 		if !allowed {

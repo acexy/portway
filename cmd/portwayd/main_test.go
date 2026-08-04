@@ -23,7 +23,8 @@ func TestRunWithoutArgumentsPrintsServerHelp(t *testing.T) {
 		"Portway Server",
 		"portwayd <command> [options]",
 		"run",
-		"cert",
+		"gen config [full]",
+		"gen cert [options]",
 		"version",
 	} {
 		if !strings.Contains(stdout.String(), expected) {
@@ -43,9 +44,9 @@ func TestRunVersionPrintsServerVersion(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("run() exit code = %d", exitCode)
 	}
-	if !strings.Contains(stdout.String(), "portwayd ") ||
-		!strings.Contains(stdout.String(), "Go:") {
-		t.Fatalf("stdout = %q", stdout.String())
+	expected := "version: development\ncore-protocol: 1\n"
+	if stdout.String() != expected {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
 	}
 }
 
@@ -54,7 +55,7 @@ func TestRunCertificateGenerateHelp(t *testing.T) {
 	var stderr bytes.Buffer
 
 	exitCode := run(
-		[]string{"cert", "generate", "--help"},
+		[]string{"gen", "cert", "--help"},
 		&stdout,
 		&stderr,
 	)
@@ -64,7 +65,7 @@ func TestRunCertificateGenerateHelp(t *testing.T) {
 	}
 	if !strings.Contains(
 		stdout.String(),
-		"portwayd cert generate [options]",
+		"portwayd gen cert [options]",
 	) {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
@@ -79,8 +80,8 @@ func TestRunCertificateGenerateUsesLocalDefaults(t *testing.T) {
 	var stderr bytes.Buffer
 
 	exitCode := run([]string{
+		"gen",
 		"cert",
-		"generate",
 		"--output-dir",
 		outputDirectory,
 	}, &stdout, &stderr)
@@ -113,8 +114,8 @@ func TestRunCertificateGenerateAcceptsRepeatedSANFlags(t *testing.T) {
 	var stderr bytes.Buffer
 
 	exitCode := run([]string{
+		"gen",
 		"cert",
-		"generate",
 		"--output-dir",
 		outputDirectory,
 		"--server-name",
@@ -152,11 +153,37 @@ func TestRunCertificateRejectsInvalidCommand(t *testing.T) {
 	var stderr bytes.Buffer
 
 	exitCode := run([]string{"cert"}, &stdout, &stderr)
-	if exitCode != 1 {
-		t.Fatalf("run() exit code = %d, want 1", exitCode)
+	if exitCode != 2 {
+		t.Fatalf("run() exit code = %d, want 2", exitCode)
 	}
-	if !strings.Contains(stderr.String(), "usage: portwayd cert generate") {
-		t.Fatalf("stderr = %q, want certificate usage", stderr.String())
+	if !strings.Contains(stderr.String(), `unknown command "cert"`) {
+		t.Fatalf("stderr = %q, want unknown legacy command", stderr.String())
+	}
+}
+
+func TestRunGenerateServerConfiguration(t *testing.T) {
+	workingDirectory := t.TempDir()
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{"gen", "config", "full"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+	content, err := os.ReadFile(filepath.Join(workingDirectory, "server.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "Portway server configuration") {
+		t.Fatalf("server.yaml does not contain the full template")
 	}
 }
 

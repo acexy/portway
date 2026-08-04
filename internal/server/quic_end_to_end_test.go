@@ -229,6 +229,10 @@ func reserveUDPAddress(t *testing.T) *net.UDPAddr {
 }
 
 func writeQUICServerCertificate(t *testing.T) (string, string) {
+	return writeServerCertificateForDNSNames(t, "localhost")
+}
+
+func writeServerCertificateForDNSNames(t *testing.T, dnsNames ...string) (string, string) {
 	t.Helper()
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -248,7 +252,7 @@ func writeQUICServerCertificate(t *testing.T) (string, string) {
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
+		DNSNames:              dnsNames,
 		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	certificateDER, err := x509.CreateCertificate(

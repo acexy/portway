@@ -15,6 +15,7 @@ configuration:
   proxies:
     - name: ssh
       type: tcp
+      # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
       local_ip: 127.0.0.1
       local_port: 22
       remote_port: 22022
@@ -22,6 +23,7 @@ configuration:
     # UDP 示例。
     - name: dns
       type: udp
+      # 可选，默认 127.0.0.1。
       local_ip: 127.0.0.1
       local_port: 53
       remote_port: 5353
@@ -29,6 +31,7 @@ configuration:
     # HTTP 示例。
     - name: web
       type: http
+      # 可选，默认 127.0.0.1。
       local_ip: 127.0.0.1
       local_port: 8080
       # HTTP 必填：规范化小写 DNS 域名；TCP/UDP 禁止配置。

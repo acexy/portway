@@ -21,17 +21,18 @@ import (
 )
 
 const (
-	reloadInterval  = 3 * time.Second
+	reloadInterval         = 3 * time.Second
 	headerErrorLogInterval = time.Minute
-	maxFileSize     = 4 * 1024 * 1024
-	maxRuleCount    = 100000
-	readLimit       = maxFileSize + 1
+	denyLogInterval        = time.Minute
+	maxFileSize            = 4 * 1024 * 1024
+	maxRuleCount           = 100000
+	readLimit              = maxFileSize + 1
 )
 
 type ruleSnapshot struct {
 	prefixes *bart.Lite
-	digest [sha256.Size]byte
-	count  int
+	digest   [sha256.Size]byte
+	count    int
 }
 
 type trackedSource struct {
@@ -42,16 +43,18 @@ type trackedSource struct {
 // Filter owns one immutable deny-list snapshot, its watcher, and active source
 // registrations that must be closed when a new rule starts matching.
 type Filter struct {
-	logger       *logging.Logger
-	path         string
-	snapshot     atomic.Pointer[ruleSnapshot]
-	mutex        sync.Mutex
-	nextSourceID uint64
-	sources      map[uint64]trackedSource
-	lastError    string
+	logger             *logging.Logger
+	path               string
+	snapshot           atomic.Pointer[ruleSnapshot]
+	mutex              sync.Mutex
+	nextSourceID       uint64
+	sources            map[uint64]trackedSource
+	lastError          string
 	lastHeaderErrorLog atomic.Int64
-	cancel       context.CancelFunc
-	waitGroup    sync.WaitGroup
+	lastDenyLog        atomic.Int64
+	deniedSinceLog     atomic.Uint64
+	cancel             context.CancelFunc
+	waitGroup          sync.WaitGroup
 }
 
 func (filter *Filter) logInvalidHTTPHeader(err error) {
@@ -64,9 +67,13 @@ func (filter *Filter) logInvalidHTTPHeader(err error) {
 	if !filter.lastHeaderErrorLog.CompareAndSwap(previous, now) {
 		return
 	}
-	filter.logger.Error(
+	filter.logger.WarnWithFields(
 		"invalid HTTP client IP header; closing connection",
 		err,
+		map[string]any{
+			"event":      "http_client_ip_header_rejected",
+			"error_code": "invalid_client_ip_header",
+		},
 	)
 }
 
@@ -94,11 +101,11 @@ func New(
 		return nil, fmt.Errorf("load source IP deny file %q: %w", path, err)
 	}
 	filter.snapshot.Store(snapshot)
-	filter.logger.InfoWithField(
-		"source IP deny list loaded",
-		"rules",
-		snapshot.count,
-	)
+	filter.logger.InfoWithFields("source IP deny list loaded", map[string]any{
+		"event": "ip_deny_list_loaded",
+		"file":  path,
+		"rules": snapshot.count,
+	})
 	filter.waitGroup.Add(1)
 	go filter.watch(filterContext)
 	return filter, nil
@@ -117,17 +124,35 @@ func (filter *Filter) Enabled() bool {
 
 // Denied reports whether a parsed source address matches the current snapshot.
 func (filter *Filter) Denied(address netip.Addr) bool {
+	return filter.DeniedFor(address, "unknown")
+}
+
+// DeniedFor reports a deny match and records a bounded ingress-aware warning.
+func (filter *Filter) DeniedFor(address netip.Addr, ingress string) bool {
 	if !address.IsValid() {
 		return true
 	}
 	address = address.Unmap()
-	return filter.snapshot.Load().prefixes.Contains(address)
+	denied := filter.snapshot.Load().prefixes.Contains(address)
+	if denied {
+		filter.recordDenied(address, ingress)
+	}
+	return denied
 }
 
 // Register records a live connection source and returns an idempotent release
 // function. A denied source is rejected without registration.
 func (filter *Filter) Register(
 	address netip.Addr,
+	closeConnection func(),
+) (release func(), allowed bool) {
+	return filter.RegisterFor(address, "unknown", closeConnection)
+}
+
+// RegisterFor tracks a live source and classifies deny logs by ingress.
+func (filter *Filter) RegisterFor(
+	address netip.Addr,
+	ingress string,
 	closeConnection func(),
 ) (release func(), allowed bool) {
 	if !filter.Enabled() {
@@ -138,13 +163,9 @@ func (filter *Filter) Register(
 	}
 	address = address.Unmap()
 	filter.mutex.Lock()
-	if filter.Denied(address) {
+	if filter.snapshot.Load().prefixes.Contains(address) {
 		filter.mutex.Unlock()
-		filter.logger.TraceWithField(
-			"source IP denied",
-			"source_ip",
-			address.String(),
-		)
+		filter.recordDenied(address, ingress)
 		return func() {}, false
 	}
 	filter.nextSourceID++
@@ -163,6 +184,29 @@ func (filter *Filter) Register(
 			filter.mutex.Unlock()
 		})
 	}, true
+}
+
+func (filter *Filter) recordDenied(address netip.Addr, ingress string) {
+	count := filter.deniedSinceLog.Add(1)
+	now := time.Now().UnixNano()
+	previous := filter.lastDenyLog.Load()
+	if previous != 0 && time.Duration(now-previous) < denyLogInterval {
+		return
+	}
+	if !filter.lastDenyLog.CompareAndSwap(previous, now) {
+		return
+	}
+	count = filter.deniedSinceLog.Swap(0)
+	filter.logger.WarnWithFields(
+		"source IP denied",
+		nil,
+		map[string]any{
+			"event":          "source_ip_denied",
+			"remote_address": address.String(),
+			"ingress":        ingress,
+			"denied_count":   count,
+		},
+	)
 }
 
 func (filter *Filter) watch(ctx context.Context) {
@@ -205,11 +249,11 @@ func (filter *Filter) reload() {
 	for _, closeConnection := range closeConnections {
 		closeConnection()
 	}
-	filter.logger.InfoWithField(
-		"source IP deny list reloaded",
-		"rules",
-		snapshot.count,
-	)
+	filter.logger.InfoWithFields("source IP deny list reloaded", map[string]any{
+		"event":              "ip_deny_reload_applied",
+		"rules":              snapshot.count,
+		"closed_connections": len(closeConnections),
+	})
 }
 
 func (filter *Filter) logReloadError(err error) {
@@ -221,7 +265,15 @@ func (filter *Filter) logReloadError(err error) {
 	}
 	filter.lastError = message
 	filter.mutex.Unlock()
-	filter.logger.Error("failed to reload source IP deny list; keeping previous rules", err)
+	filter.logger.WarnWithFields(
+		"failed to reload source IP deny list; keeping previous rules",
+		err,
+		map[string]any{
+			"event":      "ip_deny_reload_failed",
+			"error_code": "invalid_deny_list",
+			"file":       filter.path,
+		},
+	)
 }
 
 func (filter *Filter) clearReloadError() {
@@ -268,8 +320,8 @@ func loadSnapshot(path string) (*ruleSnapshot, error) {
 	}
 	return &ruleSnapshot{
 		prefixes: prefixes,
-		digest: sha256.Sum256(content),
-		count:  len(seen),
+		digest:   sha256.Sum256(content),
+		count:    len(seen),
 	}, nil
 }
 

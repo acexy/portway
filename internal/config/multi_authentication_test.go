@@ -224,6 +224,54 @@ func TestValidateManagedProxiesRejectsPublicBindingConflicts(t *testing.T) {
 	}
 }
 
+func TestProxyLocalIPDefaultsConsistently(t *testing.T) {
+	clientConfiguration := DefaultClient()
+	clientConfiguration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	clientConfiguration.Proxies = []ProxyConfig{{
+		Name: "client-proxy", Type: "tcp", LocalPort: 22, RemotePort: 22022,
+	}}
+	if err := validateClient(clientConfiguration); err != nil {
+		t.Fatalf("validate client proxies: %v", err)
+	}
+	if clientConfiguration.Proxies[0].LocalIP != "127.0.0.1" {
+		t.Fatalf("unexpected client local IP %q", clientConfiguration.Proxies[0].LocalIP)
+	}
+
+	managedProxies := []ProxyConfig{{
+		Name: "managed-proxy", Type: "tcp", LocalPort: 22, RemotePort: 22023,
+	}}
+	if err := ValidateManagedProxies(managedProxies); err != nil {
+		t.Fatalf("validate managed proxies: %v", err)
+	}
+	if managedProxies[0].LocalIP != "127.0.0.1" {
+		t.Fatalf("unexpected managed local IP %q", managedProxies[0].LocalIP)
+	}
+}
+
+func TestLoadManagedClientAppliesProxyDefaults(t *testing.T) {
+	directory := t.TempDir()
+	writeTestConfiguration(t, filepath.Join(directory, "managed-client.yaml"), `
+client_id: managed-client
+token: managed-token-with-at-least-32-random-bytes
+configuration:
+  revision: 1
+  proxies:
+    - name: ssh
+      type: tcp
+      local_port: 22
+      remote_port: 22022
+`)
+
+	clients, err := loadManagedClients(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := clients["managed-client"].Configuration.Proxies[0]
+	if proxy.LocalIP != "127.0.0.1" {
+		t.Fatalf("unexpected managed local IP %q", proxy.LocalIP)
+	}
+}
+
 func TestLoadManagedClientAllowsFileNameIndependentOfClientID(t *testing.T) {
 	directory := t.TempDir()
 	writeTestConfiguration(t, filepath.Join(directory, "customer-node.yaml"), `

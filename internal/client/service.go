@@ -38,12 +38,23 @@ type proxyRegistrationError struct {
 	retryable bool
 }
 
+type reconnectPhase string
+
+const (
+	reconnectPhaseRegistration reconnectPhase = "registration"
+	reconnectPhaseRecovery     reconnectPhase = "session_recovery"
+)
+
 var errManagedLocalProxies = errors.New(
 	"managed clients cannot configure local proxies",
 )
 
 var errClientDeclaredProxiesRequired = errors.New(
 	"shared and governed clients require at least one local proxy",
+)
+
+var errReconnectPeriodExceeded = errors.New(
+	"control connection retry period exceeded 8 hours",
 )
 
 func (registrationError *proxyRegistrationError) Error() string {
@@ -98,18 +109,31 @@ func (s *Service) Run(ctx context.Context) error {
 		return err
 	}
 	s.transport = transportClient
-	s.logger.InfoWithField(
-		"client started",
-		"server_address",
-		s.configuration.Transport.ServerAddress,
-	)
+	s.logger.InfoWithFields("client started", map[string]any{
+		"event":          "client_started",
+		"server_address": s.configuration.Transport.ServerAddress,
+	})
 	defer s.logger.Info("client stopped")
 
-	reconnectDelay := initialReconnectDelay
+	reconnectDelay := initialRegistrationReconnectDelay
+	var reconnectAttempt uint64
+	var reconnectStartedAt time.Time
 	sessionID := ""
 	var disconnectedAt time.Time
 
 	for {
+		if reconnectPeriodExceeded(reconnectStartedAt, time.Now()) {
+			return errReconnectPeriodExceeded
+		}
+		if sessionID != "" &&
+			!disconnectedAt.IsZero() &&
+			time.Since(disconnectedAt) >= sessionRecoveryWindow {
+			s.logger.InfoWithField("client session recovery window expired", "session_id", sessionID)
+			sessionID = ""
+			disconnectedAt = time.Time{}
+			reconnectDelay = initialRegistrationReconnectDelay
+			reconnectAttempt = 0
+		}
 		attemptLogger := s.logger
 		if sessionID != "" {
 			attemptLogger = attemptLogger.WithField("session_id", sessionID)
@@ -119,14 +143,6 @@ func (s *Service) Run(ctx context.Context) error {
 			"resume",
 			sessionID != "",
 		)
-
-		if sessionID != "" &&
-			!disconnectedAt.IsZero() &&
-			time.Since(disconnectedAt) >= sessionRecoveryWindow {
-			s.logger.InfoWithField("client session recovery window expired", "session_id", sessionID)
-			sessionID = ""
-			disconnectedAt = time.Time{}
-		}
 
 		establishedSessionID, established, err := s.runControlSession(ctx, sessionID)
 		if ctx.Err() != nil {
@@ -144,7 +160,11 @@ func (s *Service) Run(ctx context.Context) error {
 		if established {
 			sessionID = establishedSessionID
 			disconnectedAt = time.Now()
-			reconnectDelay = initialReconnectDelay
+			reconnectDelay = initialRecoveryReconnectDelay
+			reconnectAttempt = 0
+			reconnectStartedAt = time.Now()
+		} else if reconnectStartedAt.IsZero() {
+			reconnectStartedAt = time.Now()
 		}
 
 		var sessionError *remoteSessionError
@@ -153,7 +173,8 @@ func (s *Service) Run(ctx context.Context) error {
 			case protocol.SessionErrorSessionExpired:
 				sessionID = ""
 				disconnectedAt = time.Time{}
-				reconnectDelay = initialReconnectDelay
+				reconnectDelay = initialRegistrationReconnectDelay
+				reconnectAttempt = 0
 				continue
 			case protocol.SessionErrorClientIDRecoveryPending:
 			case protocol.SessionErrorResumeSessionMismatch,
@@ -165,19 +186,76 @@ func (s *Service) Run(ctx context.Context) error {
 				return err
 			}
 		}
-		attemptLogger.Error("control session ended", err)
+		attemptLogger.WarnWithFields(
+			"control session disconnected; recovery scheduled",
+			err,
+			map[string]any{
+				"event":  "control_session_disconnected",
+				"reason": "recoverable_error",
+			},
+		)
 
+		phase := reconnectPhaseForSession(sessionID)
+		reconnectAttempt++
 		actualReconnectDelay := reconnectDelayWithJitter(reconnectDelay)
+		actualReconnectDelay, available := boundedReconnectDelay(
+			reconnectStartedAt,
+			time.Now(),
+			actualReconnectDelay,
+		)
+		if !available {
+			return errReconnectPeriodExceeded
+		}
 		attemptLogger.TraceWithField(
 			"waiting before control connection retry",
 			"delay",
 			actualReconnectDelay,
 		)
+		attemptLogger.InfoWithFields("session reconnect scheduled", map[string]any{
+			"event":          "session_reconnect_scheduled",
+			"retry_delay_ms": actualReconnectDelay.Milliseconds(),
+			"retry_attempt":  reconnectAttempt,
+			"retry_phase":    phase,
+			"resume":         sessionID != "",
+		})
 		if !waitForRetry(ctx, actualReconnectDelay) {
 			return nil
 		}
-		reconnectDelay = min(reconnectDelay*2, maximumReconnectDelay)
+		reconnectDelay = nextReconnectDelay(reconnectDelay, phase)
 	}
+}
+
+func reconnectPhaseForSession(sessionID string) reconnectPhase {
+	if sessionID != "" {
+		return reconnectPhaseRecovery
+	}
+	return reconnectPhaseRegistration
+}
+
+func nextReconnectDelay(current time.Duration, phase reconnectPhase) time.Duration {
+	if phase == reconnectPhaseRecovery {
+		return min(current*2, maximumRecoveryReconnectDelay)
+	}
+	if current >= 8*time.Second && current < 15*time.Second {
+		return 15 * time.Second
+	}
+	return min(current*2, maximumRegistrationReconnectDelay)
+}
+
+func reconnectPeriodExceeded(startedAt time.Time, now time.Time) bool {
+	return !startedAt.IsZero() && now.Sub(startedAt) >= maximumReconnectPeriod
+}
+
+func boundedReconnectDelay(
+	startedAt time.Time,
+	now time.Time,
+	delay time.Duration,
+) (time.Duration, bool) {
+	remaining := maximumReconnectPeriod - now.Sub(startedAt)
+	if remaining <= 0 {
+		return 0, false
+	}
+	return min(delay, remaining), true
 }
 
 func (s *Service) runControlSession(
@@ -342,7 +420,10 @@ func (s *Service) runControlSession(
 		"session_id": serverHello.SessionID,
 	})
 	sessionLogger.TraceWithField("server hello received", "resumed", serverHello.Resumed)
-	sessionLogger.Info("control session established")
+	sessionLogger.InfoWithFields("control session established", map[string]any{
+		"event":   "control_session_established",
+		"resumed": serverHello.Resumed,
+	})
 	return serverHello.SessionID, true, s.runControlLoop(
 		ctx,
 		connection,
@@ -509,7 +590,9 @@ func (s *Service) runControlLoop(
 	// after the process context is canceled so it can deliver close_ack.
 	readerContext, cancelReader := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelReader()
-	messages := make(chan protocol.Envelope)
+	// Keep one decoded control message ready so a Pong that has already arrived
+	// is not hidden behind reader scheduling when the watchdog checks liveness.
+	messages := make(chan protocol.Envelope, 1)
 	readErrors := make(chan error, 1)
 	go readControlMessages(readerContext, connection, messages, readErrors)
 	linkManager := newLinkManager(
@@ -704,6 +787,9 @@ func (s *Service) runControlLoop(
 			}
 			sessionLogger.TraceWithField("heartbeat ping sent", "sequence", sentSequence)
 		case <-watchdogTicker.C:
+			if len(messages) != 0 {
+				continue
+			}
 			if time.Since(lastPongAt) >= heartbeatTimeout {
 				return fmt.Errorf(
 					"server heartbeat timed out after %s",
@@ -825,7 +911,14 @@ func (s *Service) syncProxies(
 			retryable: result.Error.Retryable,
 		}
 	}
-	s.logger.InfoWithField("proxy registration applied", "revision", result.Revision)
+	s.logger.WithComponent("proxy_registry").InfoWithFields(
+		"proxy registration applied",
+		map[string]any{
+			"event":       "proxy_registration_applied",
+			"revision":    result.Revision,
+			"proxy_count": len(s.configuration.Proxies),
+		},
+	)
 	return nil
 }
 

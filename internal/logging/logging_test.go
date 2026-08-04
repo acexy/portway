@@ -1,10 +1,13 @@
 package logging
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/acexy/golang-toolkit/logger"
 	"github.com/acexy/portway/internal/config"
+	"github.com/sirupsen/logrus"
 )
 
 func TestToolkitLogLevel(t *testing.T) {
@@ -33,5 +36,86 @@ func TestToolkitLogLevel(t *testing.T) {
 				testCase.expected,
 			)
 		}
+	}
+}
+
+func TestSetConsoleLevelCanBeAppliedRepeatedly(t *testing.T) {
+	activeLogger := logger.Logrus()
+	originalLevel := activeLogger.GetLevel()
+	t.Cleanup(func() {
+		activeLogger.SetLevel(originalLevel)
+	})
+
+	if err := SetConsoleLevel(config.LogLevelDebug); err != nil {
+		t.Fatal(err)
+	}
+	if activeLogger.GetLevel() != logrus.DebugLevel {
+		t.Fatalf("logger level = %s, want debug", activeLogger.GetLevel())
+	}
+	if err := SetConsoleLevel(config.LogLevelTrace); err != nil {
+		t.Fatal(err)
+	}
+	if activeLogger.GetLevel() != logrus.TraceLevel {
+		t.Fatalf("logger level = %s, want trace", activeLogger.GetLevel())
+	}
+	if err := SetConsoleLevel(config.LogLevelError); err != nil {
+		t.Fatal(err)
+	}
+	if activeLogger.GetLevel() != logrus.ErrorLevel {
+		t.Fatalf("logger level = %s, want error", activeLogger.GetLevel())
+	}
+}
+
+func TestConsoleFormatterUsesStableReadableLayout(t *testing.T) {
+	entry := &logrus.Entry{
+		Logger:  logrus.New(),
+		Time:    time.Date(2026, time.July, 31, 22, 22, 56, 123000000, time.Local),
+		Level:   logrus.WarnLevel,
+		Message: "control session disconnected",
+		Data: logrus.Fields{
+			"component":      "session",
+			"session_id":     "session-one",
+			"client_id":      "client-one",
+			"event":          "control_session_disconnected",
+			"remote_address": "192.0.2.1:7000",
+			"error":          "connection reset by peer",
+		},
+	}
+	formatted, err := (consoleFormatter{}).Format(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := string(formatted)
+	wantParts := []string{
+		"2026-07-31 22:22:56.123 WARN  session",
+		"control session disconnected",
+		"event=control_session_disconnected",
+		"client_id=client-one session_id=session-one",
+		"remote_address=192.0.2.1:7000",
+		`error="connection reset by peer"`,
+	}
+	for _, part := range wantParts {
+		if !strings.Contains(actual, part) {
+			t.Fatalf("formatted log %q does not contain %q", actual, part)
+		}
+	}
+}
+
+func TestWithComponentPreservesContextWithoutMutatingParent(t *testing.T) {
+	parent := New("server").WithFields(map[string]any{
+		"client_id":  "client-one",
+		"session_id": "session-one",
+	})
+	child := parent.WithComponent("session")
+
+	if parent.component != "server" {
+		t.Fatalf("parent component changed to %q", parent.component)
+	}
+	if child.component != "session" {
+		t.Fatalf("child component = %q", child.component)
+	}
+	if child.fields["client_id"] != "client-one" ||
+		child.fields["session_id"] != "session-one" {
+		t.Fatalf("child fields = %#v", child.fields)
 	}
 }

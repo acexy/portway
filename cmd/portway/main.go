@@ -9,6 +9,7 @@ import (
 	"github.com/acexy/portway/internal/cli"
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/configgenerator"
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
 )
@@ -36,9 +37,42 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 				},
 				Execute: runClientCommand,
 			},
+			{
+				Name:    "gen",
+				Summary: "Generate client resources",
+				Subcommands: []cli.Command{{
+					Name:    "config",
+					Usage:   "config [full]",
+					Summary: "Generate client.yaml in the current directory",
+					Options: []cli.Option{{
+						Usage:       "full",
+						Description: "Generate the complete annotated configuration",
+					}},
+					Execute: runGenerateClientConfiguration,
+				}},
+			},
 		},
 	}
 	return application.Run(arguments, stdout, stderr)
+}
+
+func runGenerateClientConfiguration(
+	arguments []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	full, err := configgenerator.ParseMode(arguments)
+	if err != nil {
+		_, _ = io.WriteString(stderr, "portway gen config: "+err.Error()+"\n")
+		return 2
+	}
+	path, err := configgenerator.Generate(configgenerator.TargetClient, full)
+	if err != nil {
+		_, _ = io.WriteString(stderr, "portway gen config: "+err.Error()+"\n")
+		return 1
+	}
+	_, _ = io.WriteString(stdout, "Created client configuration: "+path+"\n")
+	return 0
 }
 
 func runClientCommand(
@@ -61,7 +95,7 @@ func runClientCommand(
 		return 2
 	}
 
-	log := logging.New("portway")
+	log := logging.New("client")
 
 	configuration, err := config.LoadClient(*configPath, !configFlagWasSet(flags))
 	if err != nil {
@@ -72,6 +106,13 @@ func runClientCommand(
 		log.Error("failed to configure logging", err)
 		return 1
 	}
+	log.InfoWithFields("client configuration loaded", map[string]any{
+		"event":       "configuration_loaded",
+		"config_file": *configPath,
+		"log_level":   configuration.LogLevel,
+		"transport":   configuration.Transport.Type,
+		"proxy_count": len(configuration.Proxies),
+	})
 	clientID, generated, err := config.EnsureClientID(&configuration)
 	if err != nil {
 		log.Error("failed to generate client ID", err)

@@ -19,15 +19,15 @@ type TargetResolver func() (link.Target, error)
 
 // Binding owns one HTTP reverse proxy, its connection pool, and local limits.
 type Binding struct {
-	bindingID string
-	domain    string
-	context   context.Context
-	cancel    context.CancelFunc
-	broker    *link.Broker
-	resolve   TargetResolver
-	transport *stdhttp.Transport
-	proxy     *httputil.ReverseProxy
-	mutex     sync.Mutex
+	bindingID      string
+	domain         string
+	context        context.Context
+	cancel         context.CancelFunc
+	broker         *link.Broker
+	resolve        TargetResolver
+	transport      *stdhttp.Transport
+	proxy          *httputil.ReverseProxy
+	mutex          sync.Mutex
 	activeRequests int
 	activeUpgrades int
 	activeHTTP2    int
@@ -54,18 +54,23 @@ func NewBinding(
 	protocols := new(stdhttp.Protocols)
 	protocols.SetHTTP1(true)
 	binding.transport = &stdhttp.Transport{
-		Protocols:               protocols,
-		MaxIdleConns:            configuration.MaxIdleConnections,
-		MaxIdleConnsPerHost:     configuration.MaxIdleConnectionsPerDomain,
-		MaxResponseHeaderBytes:  int64(configuration.MaxHeaderBytes),
-		IdleConnTimeout:         configuration.IdleConnectionTimeout,
-		ResponseHeaderTimeout:   configuration.ResponseHeaderTimeout,
-		ExpectContinueTimeout:   0,
-		DialContext:             binding.dialContext,
+		Protocols:              protocols,
+		MaxIdleConns:           configuration.MaxIdleConnections,
+		MaxIdleConnsPerHost:    configuration.MaxIdleConnectionsPerDomain,
+		MaxResponseHeaderBytes: int64(configuration.MaxHeaderBytes),
+		IdleConnTimeout:        configuration.IdleConnectionTimeout,
+		ResponseHeaderTimeout:  configuration.ResponseHeaderTimeout,
+		ExpectContinueTimeout:  0,
+		DialContext:            binding.dialContext,
 	}
 	binding.proxy = &httputil.ReverseProxy{
 		Transport: binding.transport,
 		Rewrite: func(request *httputil.ProxyRequest) {
+			request.Out.Header.Del("Forwarded")
+			request.Out.Header.Del("X-Forwarded-For")
+			request.Out.Header.Del("X-Forwarded-Host")
+			request.Out.Header.Del("X-Forwarded-Proto")
+			request.SetXForwarded()
 			request.Out.URL.Scheme = "http"
 			request.Out.URL.Host = domain
 			request.Out.Host = request.In.Host

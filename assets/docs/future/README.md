@@ -4,10 +4,6 @@ This document summarizes possible future directions for Portway. These items
 are exploratory, are not accepted scope or implementation commitments, and do
 not represent release-date commitments.
 
-## Distribution
-
-- Publish Portway through Homebrew.
-
 ## UDP hardening
 
 - Add repeatable packet-loss, congestion, queue-overflow, and high-source-
@@ -18,7 +14,7 @@ not represent release-date commitments.
 
 ## Performance
 
-- Establish repeatable TCP, HTTP, UDP, and transport benchmarks.
+- Establish repeatable TCP, HTTP, HTTPS, UDP, and transport benchmarks.
 - Profile CPU, memory allocations, goroutines, and file descriptors under
   sustained load.
 - Reduce avoidable allocations and copies in verified hot paths.

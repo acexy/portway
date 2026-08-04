@@ -1,4 +1,5 @@
 # Portway server configuration.
+# Latest templates: https://github.com/acexy/portway/tree/main/config
 #
 # Field markers:
 #   * Required: the field must be configured explicitly.
@@ -25,7 +26,7 @@ transport:
   quic:
     # * Required when transport.type=quic.
     # Server certificate chain presented to QUIC clients.
-    # Run "portwayd cert generate" to create an internal CA and a server
+    # Run "portwayd gen cert" to create an internal CA and a server
     # certificate under ./certs for local or private deployments.
     cert_file: /path/to/server.crt
 
@@ -44,8 +45,35 @@ tunnel:
   # When configured, it must differ from transport.listen_address.
   http_listen_address: ""
 
+  # Optional. Public HTTPS proxy listener. Portway terminates TLS and forwards
+  # requests to the client-side local service over HTTP. Defaults to empty,
+  # which disables HTTPS. It must differ from all other TCP listeners.
+  https_listen_address: ""
+
+# Optional. Public HTTPS SNI certificate set. At least one entry is required
+# when tunnel.https_listen_address is configured. Exact names take precedence
+# over single-label wildcards. Every declared name must be covered by the
+# certificate SAN. Missing or unknown SNI is rejected. File contents, paths,
+# and the complete list are hot-reloadable as one atomic snapshot; invalid
+# updates keep the previous snapshot active. QUIC certificates are independent.
+https:
+  certificates:
+    - domains:
+        - app.example.com
+        - "*.apps.example.com"
+      cert_file: /path/to/app-example-com.crt
+      # Keep private keys readable only by Portway.
+      key_file: /path/to/app-example-com.key
+
+    - domains:
+        - service.example.net
+      cert_file: /path/to/service-example-net.crt
+      key_file: /path/to/service-example-net.key
+
 # Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
-# Defaults shown below apply even when tunnel.http_listen_address is empty.
+# These values are shared by public HTTP and TLS-terminated HTTPS requests.
+# Defaults apply even when both public listeners are empty. Changing an
+# effective value currently requires restarting portwayd.
 http:
   # Optional. Slow-header protection. Defaults to 10s.
   # Valid range: greater than 0s and at most 60s.
@@ -141,14 +169,17 @@ security:
   # source IP filtering. Relative paths are resolved from the working
   # directory. The configured file must exist and be valid at startup.
   # Each non-comment line may contain one IP address or CIDR prefix.
-  ip_deny_file: ""
+  # ip_deny_file: "./ip_block.txt"
 
-  # Optional. HTTP-only trusted source IP header. Defaults to empty, which
-  # uses the HTTP socket peer address. When configured, ip_deny_file and
-  # tunnel.http_listen_address are required. The upstream proxy must overwrite
-  # this header. Multiple header lines and comma-separated IPv4/IPv6 addresses
-  # are supported. If any address is denied, the connection is closed. Missing,
-  # empty, or partially invalid values are logged and close the connection.
+  # Optional. Trusted HTTP-layer source IP header for both HTTP and HTTPS.
+  # Defaults to empty, which filters the TCP socket peer address; HTTPS socket
+  # filtering occurs before the TLS handshake. When configured, both HTTP and
+  # TLS-terminated HTTPS use this header instead of the socket peer address;
+  # HTTPS header filtering occurs after TLS decryption. This mode requires
+  # ip_deny_file and at least one HTTP or HTTPS listener. The trusted upstream
+  # must remove client-supplied values and write the verified source IP chain.
+  # Multiple lines and comma-separated IPv4/IPv6 addresses are supported. A
+  # denied, missing, empty, or partially invalid chain closes the connection.
   # Never enable this when clients can bypass the trusted upstream proxy.
   http_client_ip_header: ""
 
@@ -167,11 +198,11 @@ authentication:
   # their documented program hard limits. File names are operator-facing labels
   # and do not need to match ClientID.
   # See config/governed/governed-client.yaml for a complete record example.
-  governed_clients_path: "./governed"
+  # governed_clients_path: "./governed"
 
   # Optional. Every *.yaml file defines one ClientID, unique Token, revision,
   # and complete server-owned proxy configuration. A client may have at most
   # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
   # TCP ports, UDP ports, and HTTP domains must each be globally unique.
   # See config/managed/managed-client.yaml for a complete record example.
-  managed_clients_path: "./managed"
+  # managed_clients_path: "./managed"

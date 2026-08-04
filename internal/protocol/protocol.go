@@ -5,8 +5,8 @@ const (
 	// Magic identifies Portway protocol frames.
 	Magic = "PTWY"
 
-	// MajorVersion is the current protocol major version.
-	MajorVersion uint8 = 1
+	// CoreVersion is the current Portway core wire protocol version.
+	CoreVersion uint8 = 1
 )
 
 // Role identifies the protocol role assigned to a connection.

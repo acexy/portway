@@ -16,6 +16,14 @@ func (manager *Registry) Activate(clientID string, sessionID string) {
 	state.active = true
 }
 
+// Active reports whether the specified Session currently accepts public traffic.
+func (manager *Registry) Active(clientID string, sessionID string) bool {
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	state, exists := manager.clients[clientID]
+	return exists && state.sessionID == sessionID && state.active
+}
+
 // Deactivate rejects new traffic without releasing the current proxy generation.
 func (manager *Registry) Deactivate(clientID string, sessionID string) {
 	manager.mutex.Lock()

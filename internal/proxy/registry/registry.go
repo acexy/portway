@@ -419,7 +419,7 @@ func (manager *Registry) Sync(
 		listenAddress := net.JoinHostPort(manager.proxyBindIP, strconv.Itoa(int(declaration.RemotePort)))
 		endpoint, err := proxytcp.Listen(
 			manager.context,
-			manager.logger,
+			manager.logger.WithComponent("proxy_tcp"),
 			listenAddress,
 			manager.sourceFilter,
 		)
@@ -446,7 +446,7 @@ func (manager *Registry) Sync(
 		)
 		endpoint, err := proxyudp.Listen(
 			manager.context,
-			manager.logger,
+			manager.logger.WithComponent("proxy_udp"),
 			listenAddress,
 			manager.sourceFilter,
 			manager.udpConfiguration.MaxDatagramSize,

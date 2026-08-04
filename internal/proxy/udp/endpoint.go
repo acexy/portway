@@ -6,26 +6,34 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/security/ipfilter"
 )
+
+const summaryInterval = time.Minute
 
 // DatagramHandler receives one validated public UDP datagram.
 type DatagramHandler func(netip.AddrPort, []byte)
 
 // Endpoint owns one public UDP socket and its read loop.
 type Endpoint struct {
-	context   context.Context
-	logger    *logging.Logger
-	connection *net.UDPConn
-	filter    *ipfilter.Filter
-	maxSize   int
-	mutex     sync.RWMutex
-	handler   DatagramHandler
-	closeOnce sync.Once
-	startOnce sync.Once
-	waitGroup sync.WaitGroup
+	context            context.Context
+	logger             *logging.Logger
+	connection         *net.UDPConn
+	filter             *ipfilter.Filter
+	maxSize            int
+	mutex              sync.RWMutex
+	handler            DatagramHandler
+	closeOnce          sync.Once
+	startOnce          sync.Once
+	waitGroup          sync.WaitGroup
+	done               chan struct{}
+	receivedDatagrams  atomic.Uint64
+	deniedDatagrams    atomic.Uint64
+	oversizedDatagrams atomic.Uint64
 }
 
 // Listen creates a UDP endpoint without starting its read loop.
@@ -45,11 +53,12 @@ func Listen(
 		return nil, err
 	}
 	return &Endpoint{
-		context: ctx,
-		logger: logger,
+		context:    ctx,
+		logger:     logger,
 		connection: connection,
-		filter: filter,
-		maxSize: maxSize,
+		filter:     filter,
+		maxSize:    maxSize,
+		done:       make(chan struct{}),
 	}, nil
 }
 
@@ -63,8 +72,9 @@ func (endpoint *Endpoint) SetHandler(handler DatagramHandler) {
 // Start starts the socket read loop once.
 func (endpoint *Endpoint) Start() {
 	endpoint.startOnce.Do(func() {
-		endpoint.waitGroup.Add(1)
+		endpoint.waitGroup.Add(2)
 		go endpoint.readLoop()
+		go endpoint.summaryLoop()
 	})
 }
 
@@ -80,8 +90,13 @@ func (endpoint *Endpoint) readLoop() {
 			endpoint.logger.Error("UDP proxy socket read failed", err)
 			return
 		}
-		if length > endpoint.maxSize ||
-			(endpoint.filter != nil && endpoint.filter.Denied(source.Addr())) {
+		endpoint.receivedDatagrams.Add(1)
+		if length > endpoint.maxSize {
+			endpoint.oversizedDatagrams.Add(1)
+			continue
+		}
+		if endpoint.filter != nil && endpoint.filter.DeniedFor(source.Addr(), "udp_proxy") {
+			endpoint.deniedDatagrams.Add(1)
 			continue
 		}
 		endpoint.mutex.RLock()
@@ -96,6 +111,37 @@ func (endpoint *Endpoint) readLoop() {
 	}
 }
 
+func (endpoint *Endpoint) summaryLoop() {
+	defer endpoint.waitGroup.Done()
+	ticker := time.NewTicker(summaryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-endpoint.context.Done():
+			return
+		case <-endpoint.done:
+			return
+		case <-ticker.C:
+			received := endpoint.receivedDatagrams.Swap(0)
+			denied := endpoint.deniedDatagrams.Swap(0)
+			oversized := endpoint.oversizedDatagrams.Swap(0)
+			if received == 0 && denied == 0 && oversized == 0 {
+				continue
+			}
+			endpoint.logger.WithComponent("proxy_udp").InfoWithFields(
+				"UDP endpoint traffic summary",
+				map[string]any{
+					"event":               "udp_endpoint_summary",
+					"interval_ms":         summaryInterval.Milliseconds(),
+					"received_datagrams":  received,
+					"denied_datagrams":    denied,
+					"oversized_datagrams": oversized,
+				},
+			)
+		}
+	}
+}
+
 // WriteTo writes one response datagram to its public visitor.
 func (endpoint *Endpoint) WriteTo(payload []byte, destination netip.AddrPort) error {
 	_, err := endpoint.connection.WriteToUDPAddrPort(payload, destination)
@@ -105,6 +151,7 @@ func (endpoint *Endpoint) WriteTo(payload []byte, destination netip.AddrPort) er
 // Close stops the read loop and releases the UDP socket.
 func (endpoint *Endpoint) Close() {
 	endpoint.closeOnce.Do(func() {
+		close(endpoint.done)
 		endpoint.connection.Close()
 	})
 	endpoint.waitGroup.Wait()

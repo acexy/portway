@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	toolkitlogger "github.com/acexy/golang-toolkit/logger"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
@@ -18,6 +20,7 @@ import (
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
+	"github.com/sirupsen/logrus"
 )
 
 func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T) {
@@ -276,6 +279,13 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 		if registrationError != nil {
 			t.Fatalf("register %s: %v", sessions[index].clientID, registrationError)
 		}
+		if !registry.Activate(
+			sessions[index].clientID,
+			fmt.Sprintf("session-%d", index),
+			time.Now(),
+		) {
+			t.Fatalf("activate %s", sessions[index].clientID)
+		}
 		service.proxyRegistry.AttachAuthenticated(
 			sessions[index].clientID,
 			fmt.Sprintf("session-%d", index),
@@ -306,13 +316,13 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 	if err := service.applyConfigurationCandidate(candidate); err != nil {
 		t.Fatal(err)
 	}
-	if registry.Heartbeat("governed-client", "session-1", time.Now()) {
+	if serverTestHeartbeatAccepted(registry, "governed-client", "session-1", 1, time.Now()) {
 		t.Fatal("changed governed session remained registered")
 	}
-	if !registry.Heartbeat("shared-instance", "session-0", time.Now()) {
+	if !serverTestHeartbeatAccepted(registry, "shared-instance", "session-0", 1, time.Now()) {
 		t.Fatal("unrelated shared session was revoked")
 	}
-	if !registry.Heartbeat("managed-client", "session-2", time.Now()) {
+	if !serverTestHeartbeatAccepted(registry, "managed-client", "session-2", 1, time.Now()) {
 		t.Fatal("unrelated managed session was revoked")
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
@@ -349,6 +359,166 @@ func TestApplyConfigurationCandidateUpdatesSourceDigestWithoutGeneration(t *test
 	}
 }
 
+func TestApplyConfigurationCandidateChangesLogLevelRepeatedly(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+		managed:             newManagedCoordinator(),
+	}
+	activeLogger := toolkitlogger.Logrus()
+	originalLevel := activeLogger.GetLevel()
+	t.Cleanup(func() {
+		activeLogger.SetLevel(originalLevel)
+	})
+
+	for _, testCase := range []struct {
+		configured config.LogLevel
+		expected   logrus.Level
+	}{
+		{configured: config.LogLevelDebug, expected: logrus.DebugLevel},
+		{configured: config.LogLevelTrace, expected: logrus.TraceLevel},
+		{configured: config.LogLevelError, expected: logrus.ErrorLevel},
+	} {
+		candidate := service.configuration.snapshot()
+		candidate.LogLevel = testCase.configured
+		if err := service.applyConfigurationCandidate(candidate); err != nil {
+			t.Fatalf("apply log level %q: %v", testCase.configured, err)
+		}
+		if service.configuration.snapshot().LogLevel != testCase.configured {
+			t.Fatalf(
+				"configuration log level was not updated to %q",
+				testCase.configured,
+			)
+		}
+		if activeLogger.GetLevel() != testCase.expected {
+			t.Fatalf(
+				"logger level = %s, want %s",
+				activeLogger.GetLevel(),
+				testCase.expected,
+			)
+		}
+	}
+}
+
+func TestRejectedConfigurationCandidateKeepsLogLevel(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+	}
+	activeLogger := toolkitlogger.Logrus()
+	originalLevel := activeLogger.GetLevel()
+	t.Cleanup(func() {
+		activeLogger.SetLevel(originalLevel)
+	})
+	activeLogger.SetLevel(logrus.InfoLevel)
+
+	candidate := current
+	candidate.LogLevel = config.LogLevelTrace
+	candidate.Transport.ListenAddress = "127.0.0.1:7001"
+	if err := service.applyConfigurationCandidate(candidate); err == nil {
+		t.Fatal("restart-required candidate was accepted")
+	}
+	if activeLogger.GetLevel() != logrus.InfoLevel {
+		t.Fatalf("rejected candidate changed logger level to %s", activeLogger.GetLevel())
+	}
+	if service.configuration.snapshot().LogLevel != current.LogLevel {
+		t.Fatal("rejected candidate changed configuration log level")
+	}
+}
+
+func TestMapChangeCounts(t *testing.T) {
+	current := map[string]int{"removed": 1, "changed": 1, "same": 1}
+	candidate := map[string]int{"added": 1, "changed": 2, "same": 1}
+	added, changed, removed := mapChangeCounts(current, candidate)
+	if added != 1 || changed != 1 || removed != 1 {
+		t.Fatalf(
+			"change counts = added:%d changed:%d removed:%d",
+			added,
+			changed,
+			removed,
+		)
+	}
+}
+
+func TestSuspendClientPreservesProxyActivationAfterHeartbeatRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverConnection, clientConnection := net.Pipe()
+	defer serverConnection.Close()
+	defer clientConnection.Close()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	clientRegistry := session.NewRegistry()
+	service := &Service{clientRegistry: clientRegistry}
+	service.proxyRegistry = proxyregistry.New(
+		ctx,
+		logging.New("test"),
+		"127.0.0.1",
+		broker,
+		false,
+		config.DefaultServer().HTTP,
+	)
+	defer service.proxyRegistry.Close()
+
+	now := time.Now()
+	clientRegistry.Register("client-one", "", "session-one", serverConnection, now)
+	clientRegistry.Activate("client-one", "session-one", now)
+	service.proxyRegistry.Attach("client-one", "session-one", control.NewWriter(serverConnection))
+	service.proxyRegistry.Activate("client-one", "session-one")
+	suspended, _ := clientRegistry.Sweep(
+		now.Add(controlHeartbeatTimeout),
+		controlHeartbeatTimeout,
+		clientRecoveryWindow,
+	)
+	if len(suspended) != 1 {
+		t.Fatalf("expected one suspended session, got %v", suspended)
+	}
+	heartbeatAccepted, reactivated := clientRegistry.Heartbeat(
+		"client-one",
+		"session-one",
+		1,
+		now.Add(controlHeartbeatTimeout+time.Millisecond),
+	)
+	if !heartbeatAccepted || !reactivated {
+		t.Fatal("heartbeat did not reactivate the suspended session")
+	}
+	if service.suspendClient(suspended[0]) {
+		t.Fatal("stale suspension was reported as applied")
+	}
+	if !service.proxyRegistry.Active("client-one", "session-one") {
+		t.Fatal("stale suspension left the recovered proxy inactive")
+	}
+}
+
+func serverTestHeartbeatAccepted(
+	registry *session.Registry,
+	clientID string,
+	sessionID string,
+	sequence uint64,
+	now time.Time,
+) bool {
+	accepted, _ := registry.Heartbeat(clientID, sessionID, sequence, now)
+	return accepted
+}
+
 func TestApplyConfigurationCandidateReportsRestartField(t *testing.T) {
 	token := "shared-token-with-at-least-32-random-bytes"
 	current := config.DefaultServer()
@@ -370,6 +540,72 @@ func TestApplyConfigurationCandidateReportsRestartField(t *testing.T) {
 	if !errors.As(err, &restartError) ||
 		restartError.field != "transport.listen_address" {
 		t.Fatalf("expected precise restart field, got %v", err)
+	}
+}
+
+func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	certificateFile, keyFile := writeQUICServerCertificate(t)
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	current.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
+	current.HTTPS = config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+		Domains:  []string{"localhost"},
+		CertFile: certificateFile,
+		KeyFile:  keyFile,
+	}}}
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateManager, err := newHTTPSCertificateManager(
+		logging.New("test"),
+		current.HTTPS,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialSnapshot := certificateManager.snapshot.Load()
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: authentication.NewStore(snapshot),
+		httpsCertificates:   certificateManager,
+		managed:             newManagedCoordinator(),
+	}
+
+	replacementCertificateFile, replacementKeyFile := writeQUICServerCertificate(t)
+	candidate := current
+	candidate.HTTPS = config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+		Domains:  []string{"localhost"},
+		CertFile: replacementCertificateFile,
+		KeyFile:  replacementKeyFile,
+	}}}
+	if err := service.applyConfigurationCandidate(candidate); err != nil {
+		t.Fatalf("apply HTTPS certificate path update: %v", err)
+	}
+	if !reflect.DeepEqual(service.configuration.snapshot().HTTPS, candidate.HTTPS) {
+		t.Fatal("HTTPS certificate paths were not published")
+	}
+	if certificateManager.snapshot.Load() == initialSnapshot {
+		t.Fatal("HTTPS certificate path update did not replace the certificate")
+	}
+	activeSnapshot := certificateManager.snapshot.Load()
+	invalidCandidate := candidate
+	invalidCandidate.HTTPS.Certificates = append(
+		[]config.HTTPSCertificateConfig(nil),
+		candidate.HTTPS.Certificates...,
+	)
+	invalidCandidate.HTTPS.Certificates[0].KeyFile = replacementCertificateFile
+	if err := service.applyConfigurationCandidate(invalidCandidate); err == nil {
+		t.Fatal("invalid HTTPS certificate path update was accepted")
+	}
+	if !reflect.DeepEqual(service.configuration.snapshot().HTTPS, candidate.HTTPS) {
+		t.Fatal("invalid HTTPS certificate update changed the configuration")
+	}
+	if certificateManager.snapshot.Load() != activeSnapshot {
+		t.Fatal("invalid HTTPS certificate update replaced the active certificate")
 	}
 }
 

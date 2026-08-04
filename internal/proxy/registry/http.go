@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
@@ -68,12 +69,15 @@ func closeHTTPBindings(
 
 // ServeHTTP routes one public HTTP request to its registered binding.
 func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	startedAt := time.Now()
 	if request.Method == http.MethodConnect {
+		manager.logHTTPRequest(request, "rejected", "method_not_allowed", "")
 		http.Error(writer, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	domain, err := proxyhttp.NormalizeRequestHost(request.Host)
 	if err != nil {
+		manager.logHTTPRequest(request, "rejected", "invalid_host", "")
 		http.Error(writer, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -84,6 +88,7 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	binding := manager.httpDomains[domain]
 	if binding == nil {
 		manager.mutex.Unlock()
+		manager.logHTTPRequest(request, "rejected", "domain_not_registered", domain)
 		http.Error(writer, "Misdirected Request", http.StatusMisdirectedRequest)
 		return
 	}
@@ -91,6 +96,7 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	if state == nil || !state.active || state.sessionID != binding.sessionID ||
 		state.httpProxies[binding.declaration.Name] != binding {
 		manager.mutex.Unlock()
+		manager.logHTTPRequest(request, "rejected", "proxy_inactive", domain)
 		http.Error(writer, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -106,6 +112,7 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			clientUpgrades >= manager.httpConfiguration.MaxUpgradeConnectionsPerClient)) ||
 		!binding.runtime.Acquire(upgrade, http2, manager.httpConfiguration) {
 		manager.mutex.Unlock()
+		manager.logHTTPRequest(request, "rejected", "capacity_exceeded", domain)
 		http.Error(writer, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -114,6 +121,7 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		manager.httpActiveUpgrades++
 	}
 	manager.mutex.Unlock()
+	manager.logHTTPRequest(request, "accepted", "", domain)
 
 	defer func() {
 		binding.runtime.Release(upgrade, http2)
@@ -125,4 +133,48 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		manager.mutex.Unlock()
 	}()
 	binding.runtime.ServeHTTP(writer, request)
+	manager.logger.WithComponent("proxy_http").DebugWithFields(
+		"HTTP request completed",
+		map[string]any{
+			"event":          "http_request_completed",
+			"scheme":         requestScheme(request),
+			"method":         request.Method,
+			"host":           domain,
+			"protocol":       request.Proto,
+			"remote_address": request.RemoteAddr,
+			"result":         "completed",
+			"duration_ms":    time.Since(startedAt).Milliseconds(),
+		},
+	)
+}
+
+func (manager *Registry) logHTTPRequest(
+	request *http.Request,
+	result string,
+	reason string,
+	domain string,
+) {
+	fields := map[string]any{
+		"event":          "http_request_routed",
+		"scheme":         requestScheme(request),
+		"method":         request.Method,
+		"host":           domain,
+		"protocol":       request.Proto,
+		"remote_address": request.RemoteAddr,
+		"result":         result,
+	}
+	if reason != "" {
+		fields["reason"] = reason
+	}
+	manager.logger.WithComponent("proxy_http").DebugWithFields(
+		"HTTP request routed",
+		fields,
+	)
+}
+
+func requestScheme(request *http.Request) string {
+	if request.TLS != nil {
+		return "https"
+	}
+	return "http"
 }

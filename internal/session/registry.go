@@ -16,9 +16,10 @@ type clientRecord struct {
 	previousSessionID string
 	state             state
 	connection        net.Conn
-	lastHeartbeatAt   time.Time
-	suspendedAt       time.Time
-	authentication    authentication.Context
+	lastHeartbeatAt       time.Time
+	lastHeartbeatSequence uint64
+	suspendedAt           time.Time
+	authentication        authentication.Context
 }
 
 // ExpiredClient identifies a session whose recovery window elapsed.
@@ -89,7 +90,7 @@ func (registry *Registry) RegisterAuthenticated(
 		registry.clients[clientID] = &clientRecord{
 			clientID:        clientID,
 			sessionID:       sessionID,
-			state:           stateActive,
+			state:           stateInitializing,
 			connection:      connection,
 			lastHeartbeatAt: now,
 			authentication:  authenticationContext,
@@ -97,7 +98,30 @@ func (registry *Registry) RegisterAuthenticated(
 		return false, true, nil, nil
 	}
 
+	if record.state == stateInitializing {
+		if resumeSessionID == "" ||
+			resumeSessionID == record.sessionID ||
+			resumeSessionID == record.previousSessionID {
+			return false, false, nil, &protocol.SessionError{
+				Code:      protocol.SessionErrorClientIDRecoveryPending,
+				Message:   "client session initialization is still in progress",
+				Retryable: true,
+			}
+		}
+		return false, false, nil, &protocol.SessionError{
+			Code:      protocol.SessionErrorClientIDAlreadyOnline,
+			Message:   "client ID is already online",
+			Retryable: false,
+		}
+	}
 	if record.state == stateActive {
+		if resumeSessionID != "" && resumeSessionID == record.sessionID {
+			return false, false, nil, &protocol.SessionError{
+				Code:      protocol.SessionErrorClientIDRecoveryPending,
+				Message:   "client session is still active and waiting to become recoverable",
+				Retryable: true,
+			}
+		}
 		return false, false, nil, &protocol.SessionError{
 			Code:      protocol.SessionErrorClientIDAlreadyOnline,
 			Message:   "client ID is already online",
@@ -122,12 +146,28 @@ func (registry *Registry) RegisterAuthenticated(
 	previousConnection = record.connection
 	record.previousSessionID = record.sessionID
 	record.sessionID = sessionID
-	record.state = stateActive
+	record.state = stateInitializing
 	record.connection = connection
 	record.lastHeartbeatAt = now
+	record.lastHeartbeatSequence = 0
 	record.suspendedAt = time.Time{}
 	record.authentication = authenticationContext
 	return true, false, previousConnection, nil
+}
+
+// Activate publishes a fully initialized Session as active.
+func (registry *Registry) Activate(clientID string, sessionID string, now time.Time) bool {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+
+	record, exists := registry.clients[clientID]
+	if !exists || record.sessionID != sessionID || record.state != stateInitializing {
+		return false
+	}
+	record.state = stateActive
+	record.lastHeartbeatAt = now
+	record.lastHeartbeatSequence = 0
+	return true
 }
 
 // RevokeAuthentication removes sessions authenticated by the specified records.
@@ -167,18 +207,36 @@ func (registry *Registry) RevokeAuthentication(
 	return revoked
 }
 
-func (registry *Registry) Heartbeat(clientID string, sessionID string, now time.Time) bool {
+func (registry *Registry) Heartbeat(
+	clientID string,
+	sessionID string,
+	sequence uint64,
+	now time.Time,
+) (accepted bool, reactivated bool) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 
 	record, exists := registry.clients[clientID]
-	if !exists || record.sessionID != sessionID {
-		return false
+	if !exists || record.sessionID != sessionID ||
+		record.state == stateInitializing ||
+		sequence == 0 || sequence <= record.lastHeartbeatSequence {
+		return false, false
 	}
+	reactivated = record.state == stateSuspended
 	record.state = stateActive
 	record.lastHeartbeatAt = now
+	record.lastHeartbeatSequence = sequence
 	record.suspendedAt = time.Time{}
-	return true
+	return true, reactivated
+}
+
+// Active reports whether the specified Session is currently active.
+func (registry *Registry) Active(clientID string, sessionID string) bool {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+
+	record, exists := registry.clients[clientID]
+	return exists && record.sessionID == sessionID && record.state == stateActive
 }
 
 func (registry *Registry) Disconnect(clientID string, sessionID string, now time.Time) {

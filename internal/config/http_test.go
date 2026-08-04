@@ -17,6 +17,12 @@ transport:
 tunnel:
   bind_ip: 127.0.0.1
   http_listen_address: 127.0.0.1:8080
+  https_listen_address: 127.0.0.1:8443
+https:
+  certificates:
+    - domains: [app.example.com]
+      cert_file: server.crt
+      key_file: server.key
 http:
   read_header_timeout: 12s
   graceful_shutdown_timeout: 40s
@@ -46,8 +52,95 @@ authentication:
 		configuration.HTTP.ResponseHeaderTimeout != 45*time.Second ||
 		configuration.HTTP.MaxConcurrentHTTP2Streams != 64 ||
 		configuration.Tunnel.BindIP != "127.0.0.1" ||
-		configuration.Tunnel.HTTPListenAddress != "127.0.0.1:8080" {
+		configuration.Tunnel.HTTPListenAddress != "127.0.0.1:8080" ||
+		configuration.Tunnel.HTTPSListenAddress != "127.0.0.1:8443" ||
+		len(configuration.HTTPS.Certificates) != 1 ||
+		configuration.HTTPS.Certificates[0].Domains[0] != "app.example.com" ||
+		configuration.HTTPS.Certificates[0].CertFile != "server.crt" ||
+		configuration.HTTPS.Certificates[0].KeyFile != "server.key" {
 		t.Fatalf("unexpected HTTP settings: %+v", configuration.HTTP)
+	}
+}
+
+func TestValidateServerRequiresHTTPSCertificatePair(t *testing.T) {
+	configuration := DefaultServer()
+	configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTPS listener without certificate pair was accepted")
+	}
+	configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
+		Domains: []string{"app.example.com"},
+		CertFile: "server.crt",
+		KeyFile: "server.key",
+	}}
+	if err := validateServer(configuration); err != nil {
+		t.Fatalf("valid HTTPS configuration was rejected: %v", err)
+	}
+	configuration.HTTPS.Certificates[0].KeyFile = ""
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTPS certificate without private key was accepted")
+	}
+}
+
+func TestValidateServerRejectsInvalidHTTPSCertificateMappings(t *testing.T) {
+	testCases := []struct {
+		name         string
+		certificates []HTTPSCertificateConfig
+	}{
+		{
+			name: "empty domains",
+			certificates: []HTTPSCertificateConfig{{
+				CertFile: "server.crt", KeyFile: "server.key",
+			}},
+		},
+		{
+			name: "noncanonical domain",
+			certificates: []HTTPSCertificateConfig{{
+				Domains: []string{"App.Example.com"}, CertFile: "server.crt", KeyFile: "server.key",
+			}},
+		},
+		{
+			name: "multi-label wildcard",
+			certificates: []HTTPSCertificateConfig{{
+				Domains: []string{"*.*.example.com"}, CertFile: "server.crt", KeyFile: "server.key",
+			}},
+		},
+		{
+			name: "duplicate domain",
+			certificates: []HTTPSCertificateConfig{
+				{Domains: []string{"app.example.com"}, CertFile: "first.crt", KeyFile: "first.key"},
+				{Domains: []string{"app.example.com"}, CertFile: "second.crt", KeyFile: "second.key"},
+			},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			configuration := DefaultServer()
+			configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
+			configuration.HTTPS.Certificates = testCase.certificates
+			if err := validateServer(configuration); err == nil {
+				t.Fatal("invalid HTTPS certificate mapping was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateServerRejectsPublicTCPListenerConflicts(t *testing.T) {
+	configuration := DefaultServer()
+	configuration.Tunnel.HTTPSListenAddress = configuration.Transport.ListenAddress
+	configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
+		Domains: []string{"app.example.com"},
+		CertFile: "server.crt",
+		KeyFile: "server.key",
+	}}
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTPS and transport listener conflict was accepted")
+	}
+
+	configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8080"
+	configuration.Tunnel.HTTPListenAddress = "127.0.0.1:8080"
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTP and HTTPS listener conflict was accepted")
 	}
 }
 

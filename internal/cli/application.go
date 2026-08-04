@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/acexy/portway/internal/buildinfo"
+	"github.com/acexy/portway/internal/protocol"
 )
 
 // ColorMode controls ANSI styling.
@@ -54,6 +55,7 @@ type Command struct {
 	Usage       string
 	Summary     string
 	Options     []Option
+	Subcommands []Command
 	Execute     func(arguments []string, stdout io.Writer, stderr io.Writer) int
 }
 
@@ -84,29 +86,31 @@ func (application Application) Run(
 			application.WriteHelp(stdout)
 			return 0
 		}
-		command, found := application.command(arguments[1])
-		if !found {
-			application.writeUnknownCommand(stderr, arguments[1])
-			return 2
-		}
-		application.WriteCommandHelp(stdout, command)
-		return 0
+		return application.writeCommandPathHelp(arguments[1:], stdout, stderr)
 	case "version", "-v", "--version":
 		application.WriteVersion(stdout)
 		return 0
 	}
 
-	command, found := application.command(arguments[0])
+	command, path, remaining, found := application.resolveCommand(arguments)
 	if !found {
-		application.writeUnknownCommand(stderr, arguments[0])
+		application.writeUnknownCommand(stderr, strings.Join(path, " "))
 		return 2
 	}
-	if len(arguments) > 1 &&
-		(arguments[1] == "-h" || arguments[1] == "--help") {
-		application.WriteCommandHelp(stdout, command)
+	if len(remaining) == 0 && len(command.Subcommands) > 0 {
+		application.writeCommandHelp(stdout, strings.Join(path, " "), command)
 		return 0
 	}
-	return command.Execute(arguments[1:], stdout, stderr)
+	if len(remaining) > 0 &&
+		(remaining[0] == "-h" || remaining[0] == "--help") {
+		application.writeCommandHelp(stdout, strings.Join(path, " "), command)
+		return 0
+	}
+	if command.Execute == nil {
+		application.writeCommandHelp(stdout, strings.Join(path, " "), command)
+		return 0
+	}
+	return command.Execute(remaining, stdout, stderr)
 }
 
 // WriteHelp renders the application overview.
@@ -132,14 +136,7 @@ func (application Application) WriteHelp(writer io.Writer) {
 	_, _ = fmt.Fprintf(writer, "Usage:\n  %s <command> [options]\n\n", application.Name)
 	_, _ = fmt.Fprintln(writer, "Commands:")
 	for _, command := range application.Commands {
-		_, _ = fmt.Fprintf(
-			writer,
-			"  %s%-12s%s %s\n",
-			renderer.theme.Command,
-			command.Name,
-			renderer.theme.Reset,
-			command.Summary,
-		)
+		application.writeCommandList(writer, renderer, command, nil, "  ")
 	}
 	_, _ = fmt.Fprintf(
 		writer,
@@ -147,7 +144,7 @@ func (application Application) WriteHelp(writer io.Writer) {
 		renderer.theme.Command,
 		"version",
 		renderer.theme.Reset,
-		"Show version and build information",
+		"Show version",
 	)
 	_, _ = fmt.Fprintf(
 		writer,
@@ -158,13 +155,21 @@ func (application Application) WriteHelp(writer io.Writer) {
 
 // WriteCommandHelp renders help for one command.
 func (application Application) WriteCommandHelp(writer io.Writer, command Command) {
+	application.writeCommandHelp(writer, command.Name, command)
+}
+
+func (application Application) writeCommandHelp(
+	writer io.Writer,
+	path string,
+	command Command,
+) {
 	renderer := application.renderer(writer)
 	_, _ = fmt.Fprintf(
 		writer,
 		"%s%s %s%s\n%s%s%s\n\n",
 		renderer.theme.Accent,
 		application.Name,
-		command.Name,
+		path,
 		renderer.theme.Reset,
 		renderer.theme.Muted,
 		command.Summary,
@@ -172,9 +177,27 @@ func (application Application) WriteCommandHelp(writer io.Writer, command Comman
 	)
 	usage := command.Usage
 	if usage == "" {
-		usage = command.Name
+		usage = path
+	} else if !strings.HasPrefix(usage, path) {
+		parent := ""
+		if separator := strings.LastIndexByte(path, ' '); separator >= 0 {
+			parent = path[:separator+1]
+		}
+		usage = parent + usage
 	}
 	_, _ = fmt.Fprintf(writer, "Usage:\n  %s %s\n", application.Name, usage)
+	if len(command.Subcommands) > 0 {
+		_, _ = fmt.Fprintln(writer, "\nSubcommands:")
+		for _, subcommand := range command.Subcommands {
+			application.writeCommandList(
+				writer,
+				renderer,
+				subcommand,
+				strings.Fields(path),
+				"  ",
+			)
+		}
+	}
 	if len(command.Options) == 0 {
 		return
 	}
@@ -191,36 +214,87 @@ func (application Application) WriteCommandHelp(writer io.Writer, command Comman
 	}
 }
 
-// WriteVersion renders operator-friendly build metadata.
+// WriteVersion renders the application and core protocol versions.
 func (application Application) WriteVersion(writer io.Writer) {
-	renderer := application.renderer(writer)
-	_, _ = fmt.Fprintf(
-		writer,
-		"%s%s%s %s\n",
-		renderer.theme.Accent,
-		application.Name,
-		renderer.theme.Reset,
-		application.Version.Version,
-	)
-	if commit := application.Version.ShortCommit(); commit != "" {
-		if application.Version.Modified {
-			commit += " (modified)"
-		}
-		_, _ = fmt.Fprintf(writer, "Commit: %s\n", commit)
-	}
-	if application.Version.BuildTime != "" {
-		_, _ = fmt.Fprintf(writer, "Built:  %s\n", application.Version.BuildTime)
-	}
-	_, _ = fmt.Fprintf(writer, "Go:     %s\n", application.Version.GoVersion)
+	_, _ = fmt.Fprintf(writer, "version: %s\n", application.Version.Version)
+	_, _ = fmt.Fprintf(writer, "core-protocol: %d\n", protocol.CoreVersion)
 }
 
-func (application Application) command(name string) (Command, bool) {
-	for _, command := range application.Commands {
+func (application Application) resolveCommand(
+	arguments []string,
+) (Command, []string, []string, bool) {
+	commands := application.Commands
+	path := make([]string, 0, len(arguments))
+	for index, argument := range arguments {
+		command, found := findCommand(commands, argument)
+		path = append(path, argument)
+		if !found {
+			return Command{}, path, nil, false
+		}
+		if len(command.Subcommands) == 0 {
+			return command, path, arguments[index+1:], true
+		}
+		if index == len(arguments)-1 {
+			return command, path, nil, true
+		}
+		if arguments[index+1] == "-h" || arguments[index+1] == "--help" {
+			return command, path, arguments[index+1:], true
+		}
+		commands = command.Subcommands
+	}
+	return Command{}, path, nil, false
+}
+
+func findCommand(commands []Command, name string) (Command, bool) {
+	for _, command := range commands {
 		if command.Name == name {
 			return command, true
 		}
 	}
 	return Command{}, false
+}
+
+func (application Application) writeCommandPathHelp(
+	path []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	command, resolvedPath, remaining, found := application.resolveCommand(path)
+	if !found || len(remaining) != 0 {
+		application.writeUnknownCommand(stderr, strings.Join(resolvedPath, " "))
+		return 2
+	}
+	application.writeCommandHelp(stdout, strings.Join(resolvedPath, " "), command)
+	return 0
+}
+
+func (application Application) writeCommandList(
+	writer io.Writer,
+	renderer renderer,
+	command Command,
+	parent []string,
+	indent string,
+) {
+	path := append(append([]string(nil), parent...), command.Name)
+	display := strings.Join(path, " ")
+	if command.Usage != "" {
+		usageWords := strings.Fields(command.Usage)
+		if len(usageWords) > 1 {
+			display += " " + strings.Join(usageWords[1:], " ")
+		}
+	}
+	_, _ = fmt.Fprintf(
+		writer,
+		"%s%s%-20s%s %s\n",
+		indent,
+		renderer.theme.Command,
+		display,
+		renderer.theme.Reset,
+		command.Summary,
+	)
+	for _, subcommand := range command.Subcommands {
+		application.writeCommandList(writer, renderer, subcommand, path, indent+"  ")
+	}
 }
 
 func (application Application) writeUnknownCommand(writer io.Writer, name string) {

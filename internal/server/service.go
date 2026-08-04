@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -56,6 +57,7 @@ type Service struct {
 	authenticationStore   *authentication.Store
 	authenticationBarrier sync.RWMutex
 	managed               *managedCoordinator
+	httpsCertificates     *httpsCertificateManager
 }
 
 // NewService creates a server service.
@@ -74,15 +76,17 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 // Run runs the server until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
 	configuration := s.configuration.snapshot()
-	s.logger.InfoWithField(
-		"server started",
-		"listen_address", configuration.Transport.ListenAddress,
-	)
+	s.logger.InfoWithFields("server started", map[string]any{
+		"event":                "server_started",
+		"listen_address":       configuration.Transport.ListenAddress,
+		"http_listen_address":  configuration.Tunnel.HTTPListenAddress,
+		"https_listen_address": configuration.Tunnel.HTTPSListenAddress,
+	})
 	defer s.logger.Info("server stopped")
 
 	sourceFilter, err := ipfilter.New(
 		ctx,
-		s.logger,
+		s.logger.WithComponent("ip_filter"),
 		configuration.Security.IPDenyFile,
 	)
 	if err != nil {
@@ -116,10 +120,11 @@ func (s *Service) Run(ctx context.Context) error {
 	defer s.linkBroker.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,
-		s.logger,
+		s.logger.WithComponent("proxy_registry"),
 		configuration.Tunnel.BindIP,
 		s.linkBroker,
-		configuration.Tunnel.HTTPListenAddress != "",
+		configuration.Tunnel.HTTPListenAddress != "" ||
+			configuration.Tunnel.HTTPSListenAddress != "",
 		configuration.HTTP,
 		configuration.UDP,
 		sourceFilter,
@@ -131,7 +136,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
-	httpErrors := make(chan error, 1)
+	httpErrors := make(chan error, 2)
 	if configuration.Tunnel.HTTPListenAddress != "" {
 		httpListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
@@ -146,8 +151,15 @@ func (s *Service) Run(ctx context.Context) error {
 			)
 		}
 		if configuration.Security.HTTPClientIPHeader == "" {
-			httpListener = ipfilter.WrapListener(httpListener, sourceFilter)
+			httpListener = ipfilter.WrapListenerFor(httpListener, sourceFilter, "http_socket")
 		}
+		s.logger.WithComponent("proxy_http").InfoWithFields(
+			"public HTTP listener started",
+			map[string]any{
+				"event":          "http_listener_started",
+				"listen_address": configuration.Tunnel.HTTPListenAddress,
+			},
+		)
 		httpProtocols := new(http.Protocols)
 		httpProtocols.SetHTTP1(true)
 		httpProtocols.SetUnencryptedHTTP2(true)
@@ -156,6 +168,7 @@ func (s *Service) Run(ctx context.Context) error {
 				sourceFilter,
 				configuration.Security.HTTPClientIPHeader,
 				s.proxyRegistry,
+				"http_header",
 			),
 			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
 			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
@@ -178,6 +191,84 @@ func (s *Service) Run(ctx context.Context) error {
 			)
 			defer cancel()
 			_ = httpServer.Shutdown(shutdownContext)
+		}()
+	}
+	if configuration.Tunnel.HTTPSListenAddress != "" {
+		s.httpsCertificates, err = newHTTPSCertificateManager(
+			s.logger.WithComponent("https_certificate"),
+			configuration.HTTPS,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize HTTPS certificate: %w", err)
+		}
+		httpsListener, listenError := (&net.ListenConfig{}).Listen(
+			ctx,
+			"tcp",
+			configuration.Tunnel.HTTPSListenAddress,
+		)
+		if listenError != nil {
+			return fmt.Errorf(
+				"listen for HTTPS proxy requests on %q: %w",
+				configuration.Tunnel.HTTPSListenAddress,
+				listenError,
+			)
+		}
+		if configuration.Security.HTTPClientIPHeader == "" {
+			httpsListener = ipfilter.WrapListenerFor(
+				httpsListener,
+				sourceFilter,
+				"https_socket",
+			)
+		}
+		s.logger.WithComponent("proxy_http").InfoWithFields(
+			"public HTTPS listener started",
+			map[string]any{
+				"event":          "https_listener_started",
+				"listen_address": configuration.Tunnel.HTTPSListenAddress,
+			},
+		)
+		tlsConfiguration := &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: s.httpsCertificates.getCertificate,
+			NextProtos:     []string{"h2", "http/1.1"},
+		}
+		httpsProtocols := new(http.Protocols)
+		httpsProtocols.SetHTTP1(true)
+		httpsProtocols.SetHTTP2(true)
+		httpsServer := &http.Server{
+			Handler: ipfilter.HTTPHandler(
+				sourceFilter,
+				configuration.Security.HTTPClientIPHeader,
+				s.proxyRegistry,
+				"https_header",
+			),
+			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
+			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
+			Protocols:         httpsProtocols,
+			ConnContext:       ipfilter.HTTPConnectionContext,
+			TLSConfig:         tlsConfiguration,
+		}
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			serveError := httpsServer.Serve(tls.NewListener(httpsListener, tlsConfiguration))
+			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
+				httpErrors <- serveError
+				transportServer.Close()
+			}
+		}()
+		defer func() {
+			shutdownContext, cancel := context.WithTimeout(
+				context.Background(),
+				configuration.HTTP.GracefulShutdownTimeout,
+			)
+			defer cancel()
+			_ = httpsServer.Shutdown(shutdownContext)
+		}()
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			s.watchHTTPSCertificate(sessionContext)
 		}()
 	}
 	sessions.Add(1)
@@ -217,7 +308,7 @@ func (s *Service) Run(ctx context.Context) error {
 				!errors.Is(err, io.EOF) &&
 				!errors.Is(err, net.ErrClosed) &&
 				sessionContext.Err() == nil {
-				s.logger.Error("client connection ended", err)
+				s.logger.Warn("client connection ended", err)
 			}
 		}(inbound)
 	}
@@ -338,10 +429,13 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 			sessionLogger.Error("failed to send client registration rejection", err)
 			return nil
 		}
-		sessionLogger.InfoWithField(
+		sessionLogger.WithComponent("session").WarnWithFields(
 			"client registration rejected",
-			"error_code",
-			sessionError.Code,
+			nil,
+			map[string]any{
+				"event":      "client_registration_rejected",
+				"error_code": sessionError.Code,
+			},
 		)
 		return nil
 	}
@@ -410,6 +504,9 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 			); err != nil {
 				return err
 			}
+			if !s.clientRegistry.Activate(clientHello.ClientID, sessionID, time.Now()) {
+				return errors.New("managed client session is no longer current")
+			}
 			if err := connection.SetDeadline(time.Time{}); err != nil {
 				return fmt.Errorf("clear managed configuration deadline: %w", err)
 			}
@@ -436,7 +533,13 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		}
 	}
 	if !initialProxySynchronizationRequired {
-		sessionLogger.InfoWithField("control session established", "resumed", resumed)
+		sessionLogger.WithComponent("session").InfoWithFields(
+			"control session established",
+			map[string]any{
+				"event":   "control_session_established",
+				"resumed": resumed,
+			},
+		)
 	}
 	gracefullyClosed, err := s.serveControlMessages(
 		connection,
@@ -449,7 +552,13 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		initialProxySynchronizationRequired,
 		func() {
 			recoverableSession = true
-			sessionLogger.InfoWithField("control session established", "resumed", resumed)
+			sessionLogger.WithComponent("session").InfoWithFields(
+				"control session established",
+				map[string]any{
+					"event":   "control_session_established",
+					"resumed": resumed,
+				},
+			)
 		},
 	)
 	if gracefullyClosed {
@@ -465,7 +574,14 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		!errors.Is(err, io.EOF) &&
 		!errors.Is(err, net.ErrClosed) &&
 		ctx.Err() == nil {
-		sessionLogger.Error("control session ended", err)
+		sessionLogger.WarnWithFields(
+			"control session disconnected",
+			err,
+			map[string]any{
+				"event":  "control_session_disconnected",
+				"reason": "recoverable_error",
+			},
+		)
 	}
 	return nil
 }
@@ -674,8 +790,17 @@ func (s *Service) serveControlMessages(
 			if err := protocol.DecodePayload(envelope, &heartbeat); err != nil {
 				return false, err
 			}
-			if !s.clientRegistry.Heartbeat(clientID, sessionID, time.Now()) {
+			heartbeatAccepted, reactivated := s.clientRegistry.Heartbeat(
+				clientID,
+				sessionID,
+				heartbeat.Sequence,
+				time.Now(),
+			)
+			if !heartbeatAccepted {
 				return false, errors.New("control session is no longer current")
+			}
+			if reactivated {
+				s.proxyRegistry.Activate(clientID, sessionID)
 			}
 			sessionLogger.TraceWithField(
 				"heartbeat ping received",
@@ -752,15 +877,21 @@ func (s *Service) serveControlMessages(
 				return false, err
 			}
 			if result.Status == protocol.ProxySyncStatusRejected {
-				sessionLogger.InfoWithField(
+				sessionLogger.WithComponent("proxy_registry").WarnWithFields(
 					"proxy registration rejected",
-					"error_code",
-					result.Error.Code,
+					nil,
+					map[string]any{
+						"event":      "proxy_registration_rejected",
+						"error_code": result.Error.Code,
+					},
 				)
 				return false, errProxyRegistrationRejected
 			}
 			s.proxyRegistry.Activate(clientID, sessionID)
 			if initialProxySynchronizationRequired {
+				if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
+					return false, errors.New("initialized client session is no longer current")
+				}
 				if err := connection.SetDeadline(time.Time{}); err != nil {
 					return false, fmt.Errorf(
 						"clear initial proxy synchronization deadline: %w",
@@ -772,10 +903,13 @@ func (s *Service) serveControlMessages(
 			if onProxySynchronizationApplied != nil {
 				onProxySynchronizationApplied()
 			}
-			sessionLogger.InfoWithField(
+			sessionLogger.WithComponent("proxy_registry").InfoWithFields(
 				"proxy registration applied",
-				"revision",
-				result.Revision,
+				map[string]any{
+					"event":       "proxy_registration_applied",
+					"revision":    result.Revision,
+					"proxy_count": len(request.Proxies),
+				},
 			)
 		case protocol.MessageLinkFailed:
 			var failure protocol.LinkFailed
@@ -826,8 +960,11 @@ func (s *Service) monitorClients(ctx context.Context) {
 				clientRecoveryWindow,
 			)
 			for _, suspended := range suspendedClients {
-				s.proxyRegistry.Suspend(suspended.ClientID, suspended.SessionID)
-				s.logger.WithFields(map[string]any{
+				if !s.suspendClient(suspended) {
+					continue
+				}
+				s.logger.WithComponent("session").WithFields(map[string]any{
+					"event":      "client_suspended",
 					"client_id":  suspended.ClientID,
 					"session_id": suspended.SessionID,
 				}).Info("client suspended")
@@ -837,13 +974,23 @@ func (s *Service) monitorClients(ctx context.Context) {
 				if expired.Connection != nil {
 					expired.Connection.Close()
 				}
-				s.logger.WithFields(map[string]any{
+				s.logger.WithComponent("session").WithFields(map[string]any{
+					"event":      "client_expired",
 					"client_id":  expired.ClientID,
 					"session_id": expired.SessionID,
 				}).Info("client expired")
 			}
 		}
 	}
+}
+
+func (s *Service) suspendClient(client session.Client) bool {
+	s.proxyRegistry.Suspend(client.ClientID, client.SessionID)
+	if s.clientRegistry.Active(client.ClientID, client.SessionID) {
+		s.proxyRegistry.Activate(client.ClientID, client.SessionID)
+		return false
+	}
+	return true
 }
 
 func (s *Service) handleDataConnection(ctx context.Context, inbound transport.Inbound) error {
@@ -997,15 +1144,16 @@ func (s *Service) watchConfiguration(ctx context.Context) {
 		if err != nil {
 			if err.Error() != lastError {
 				fields := map[string]any{
-					"event":      "config_reload_failed",
-					"error_code": reloadErrorCode(err),
-					"generation": s.currentConfigurationGeneration(),
+					"event":       "config_reload_failed",
+					"error_code":  reloadErrorCode(err),
+					"generation":  s.currentConfigurationGeneration(),
+					"config_file": sourcePath,
 				}
 				var restartError restartRequiredError
 				if errors.As(err, &restartError) {
 					fields["field"] = restartError.field
 				}
-				s.logger.WithFields(fields).Error(
+				s.logger.WithComponent("config_reload").WithFields(fields).Warn(
 					"configuration reload failed; previous snapshot remains active",
 					err,
 				)
@@ -1014,8 +1162,27 @@ func (s *Service) watchConfiguration(ctx context.Context) {
 			continue
 		}
 		if lastError != "" {
-			s.logger.Info("configuration reload recovered")
+			s.logger.WithComponent("config_reload").InfoWithFields(
+				"configuration reload recovered",
+				map[string]any{
+					"event":       "config_reload_recovered",
+					"config_file": sourcePath,
+				},
+			)
 			lastError = ""
+		}
+	}
+}
+
+func (s *Service) watchHTTPSCertificate(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.httpsCertificates.reloadCurrent()
 		}
 	}
 }
@@ -1066,6 +1233,21 @@ func (s *Service) applyConfigurationCandidateContext(
 			field: changedYAMLField("http", current.HTTP, candidate.HTTP),
 		}
 	}
+	httpsChanged := !reflect.DeepEqual(candidate.HTTPS, current.HTTPS)
+	var candidateHTTPSCertificates *httpsCertificateSnapshot
+	var candidateHTTPSDigest string
+	if httpsChanged {
+		if s.httpsCertificates == nil {
+			return restartRequiredError{
+				field: changedYAMLField("https", current.HTTPS, candidate.HTTPS),
+			}
+		}
+		var err error
+		candidateHTTPSCertificates, candidateHTTPSDigest, err = loadHTTPSCertificates(candidate.HTTPS)
+		if err != nil {
+			return fmt.Errorf("reload HTTPS certificate: %w", err)
+		}
+	}
 	if !reflect.DeepEqual(candidate.UDP, current.UDP) {
 		return restartRequiredError{
 			field: changedYAMLField("udp", current.UDP, candidate.UDP),
@@ -1082,6 +1264,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	if reflect.DeepEqual(candidate.Authentication, current.Authentication) &&
 		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
 		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
+		!httpsChanged &&
 		candidate.LogLevel == current.LogLevel {
 		s.configuration.updateSourceDigest(candidate.SourceDigest)
 		return nil
@@ -1089,11 +1272,6 @@ func (s *Service) applyConfigurationCandidateContext(
 	snapshot, err := config.BuildAuthenticationSnapshot(candidate)
 	if err != nil {
 		return err
-	}
-	if candidate.LogLevel != current.LogLevel {
-		if err := logging.EnableConsole(candidate.LogLevel); err != nil {
-			return fmt.Errorf("apply log level: %w", err)
-		}
 	}
 	authenticationChanged :=
 		!reflect.DeepEqual(candidate.Authentication, current.Authentication) ||
@@ -1107,18 +1285,38 @@ func (s *Service) applyConfigurationCandidateContext(
 		candidate,
 	)
 	managedChanges := changedManagedClients(current, candidate)
+	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
+		current.GovernedClients,
+		candidate.GovernedClients,
+	)
+	managedAdded, managedChanged, managedRemoved := mapChangeCounts(
+		current.ManagedClients,
+		candidate.ManagedClients,
+	)
 	if s.proxyRegistry != nil {
 		if err := s.proxyRegistry.ConfigureManagedReservations(
 			candidate.ManagedClients,
 		); err != nil {
-			if candidate.LogLevel != current.LogLevel {
-				_ = logging.EnableConsole(current.LogLevel)
-			}
 			return fmt.Errorf("validate managed reservations: %w", err)
+		}
+	}
+	// Change only the level of the initialized logger after every fallible
+	// candidate validation has succeeded. EnableConsole is startup-only and the
+	// underlying logger deliberately panics when initialized more than once.
+	if candidate.LogLevel != current.LogLevel {
+		if err := logging.SetConsoleLevel(candidate.LogLevel); err != nil {
+			return fmt.Errorf("apply log level: %w", err)
 		}
 	}
 	candidate.Generation = current.Generation + 1
 
+	if httpsChanged {
+		s.httpsCertificates.publish(
+			candidate.HTTPS,
+			candidateHTTPSCertificates,
+			candidateHTTPSDigest,
+		)
+	}
 	s.configuration.publish(candidate)
 	s.authenticationStore.ReplaceRevoking(snapshot, revokedContexts)
 
@@ -1150,13 +1348,32 @@ func (s *Service) applyConfigurationCandidateContext(
 		}
 	}
 	s.rolloutManagedConfigurations(ctx, managedChanges, candidate)
-	s.logger.WithFields(map[string]any{
-		"event":                   "config_reload_applied",
-		"old_generation":          current.Generation,
-		"new_generation":          candidate.Generation,
-		"revoked_authentications": len(revokedContexts),
-		"revoked_sessions":        len(revokedSessions),
-	}).Info("configuration reload applied")
+	s.logger.WithComponent("config_reload").InfoWithFields(
+		"configuration reload applied",
+		map[string]any{
+			"event":                     "config_reload_applied",
+			"config_file":               candidate.SourcePath,
+			"governed_clients_path":     candidate.Authentication.GovernedClientsPath,
+			"managed_clients_path":      candidate.Authentication.ManagedClientsPath,
+			"old_generation":            current.Generation,
+			"new_generation":            candidate.Generation,
+			"log_level_changed":         candidate.LogLevel != current.LogLevel,
+			"https_certificate_changed": httpsChanged,
+			"shared_authentication_changed": !reflect.DeepEqual(
+				candidate.Authentication.SharedToken,
+				current.Authentication.SharedToken,
+			),
+			"governed_added":          governedAdded,
+			"governed_changed":        governedChanged,
+			"governed_removed":        governedRemoved,
+			"managed_added":           managedAdded,
+			"managed_changed":         managedChanged,
+			"managed_removed":         managedRemoved,
+			"managed_rollouts":        len(managedChanges),
+			"revoked_authentications": len(revokedContexts),
+			"revoked_sessions":        len(revokedSessions),
+		},
+	)
 	return nil
 }
 
@@ -1182,7 +1399,7 @@ func (s *Service) rolloutManagedConfigurations(
 				candidate.ManagedClients[clientID],
 			); err != nil {
 				_ = managed.connection.Close()
-				s.logger.WithFields(map[string]any{
+				s.logger.WithComponent("config_reload").WithFields(map[string]any{
 					"event":      "managed_config_rollout_failed",
 					"client_id":  clientID,
 					"generation": candidate.Generation,
@@ -1235,6 +1452,12 @@ func reloadErrorCode(err error) string {
 		return "configuration_limit_exceeded"
 	case strings.Contains(message, "authentication directory"):
 		return "authentication_directory_invalid"
+	case strings.Contains(message, "HTTPS certificate") ||
+		strings.Contains(message, "HTTPS private key"):
+		return "https_certificate_invalid"
+	case strings.Contains(message, "HTTPS certificate") ||
+		strings.Contains(message, "HTTPS private key"):
+		return "https_certificate_invalid"
 	default:
 		return "invalid_configuration"
 	}
@@ -1315,6 +1538,29 @@ func changedManagedClients(
 	}
 	sort.Strings(changed)
 	return changed
+}
+
+func mapChangeCounts[T any](current map[string]T, candidate map[string]T) (
+	added int,
+	changed int,
+	removed int,
+) {
+	for key, next := range candidate {
+		previous, exists := current[key]
+		if !exists {
+			added++
+			continue
+		}
+		if !reflect.DeepEqual(previous, next) {
+			changed++
+		}
+	}
+	for key := range current {
+		if _, exists := candidate[key]; !exists {
+			removed++
+		}
+	}
+	return added, changed, removed
 }
 
 func portAllowed(port uint16, ranges []config.PortRange) bool {

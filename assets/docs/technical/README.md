@@ -75,15 +75,20 @@ relays the byte stream in both directions.
 Portway preserves TCP stream semantics, including half-close behavior. Public
 listeners and active links have explicit owners and cancellation paths.
 
-## HTTP proxy
+## HTTP and HTTPS proxy
 
-The server owns one optional public HTTP listener and routes requests by a
-validated, canonical domain registration.
+The server owns optional public HTTP and HTTPS listeners and routes requests by
+a validated, canonical domain registration. Portwayd terminates HTTPS TLS and
+keeps the backend protocol fixed to HTTP.
 
 HTTP forwarding uses Go's standard HTTP server and reverse-proxy implementation.
 Backend connections are reused where possible instead of creating a new tunnel
 for every request. Streaming responses and HTTP/1.1 Upgrade connections remain
 streamed through the authenticated client link.
+
+Both listeners share the same registry and capacity limits. HTTPS selects from
+an atomically reloadable SNI certificate set. Socket and trusted-header IP deny rules
+run before routing for both HTTP and HTTPS.
 
 The local application receives an ordinary HTTP request. It does not implement
 Portway framing, authentication, or session behavior.

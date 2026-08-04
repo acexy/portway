@@ -103,9 +103,11 @@ func (manager *linkManager) remove(linkID string) {
 }
 
 func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) {
+	startedAt := time.Now()
 	logger := manager.logger.WithFields(map[string]any{
 		"link_id":    request.LinkID,
 		"proxy_name": request.ProxyName,
+		"proxy_type": request.ProxyType,
 	})
 	proxyConfiguration, exists := manager.findProxy(request.ProxyName, request.ProxyType)
 	if !exists {
@@ -189,9 +191,14 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		}
 		failureCode := classifyLinkDialFailure(ctx, transportDialError, localDialError)
 		manager.reportFailure(request.LinkID, failureCode)
-		logger.Error(
+		logger.WarnWithFields(
 			"proxy link dial failed",
 			errors.Join(transportDialError, localDialError),
+			map[string]any{
+				"event":       "proxy_link_failed",
+				"error_code":  failureCode,
+				"duration_ms": time.Since(startedAt).Milliseconds(),
+			},
 		)
 		return
 	}
@@ -203,12 +210,26 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		return
 	}
 
-	logger.Trace("proxy link streaming started")
+	logger.DebugWithFields("proxy link streaming started", map[string]any{
+		"event": "proxy_link_started",
+	})
 	err := proxytcp.Forward(ctx, dataConnection, localConnection)
 	if err != nil && ctx.Err() == nil {
-		logger.Error("proxy link streaming ended", err)
+		logger.WarnWithFields(
+			"proxy link streaming ended",
+			err,
+			map[string]any{
+				"event":       "proxy_link_closed",
+				"result":      "failed",
+				"duration_ms": time.Since(startedAt).Milliseconds(),
+			},
+		)
 	} else {
-		logger.Trace("proxy link streaming stopped")
+		logger.DebugWithFields("proxy link streaming stopped", map[string]any{
+			"event":       "proxy_link_closed",
+			"result":      "completed",
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		})
 	}
 }
 
