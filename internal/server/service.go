@@ -123,8 +123,8 @@ func (s *Service) Run(ctx context.Context) error {
 		s.logger.WithComponent("proxy_registry"),
 		configuration.Tunnel.BindIP,
 		s.linkBroker,
-		configuration.Tunnel.HTTPListenAddress != "" ||
-			configuration.Tunnel.HTTPSListenAddress != "",
+		configuration.Tunnel.HTTPListenAddress != "",
+		configuration.Tunnel.HTTPSListenAddress != "",
 		configuration.HTTP,
 		configuration.UDP,
 		sourceFilter,
@@ -677,18 +677,26 @@ func managedConfigurationPayload(
 	)
 	for _, proxyConfiguration := range clientConfiguration.Configuration.Proxies {
 		managedProxies = append(managedProxies, protocol.ManagedProxy{
-			Name:       proxyConfiguration.Name,
-			Type:       protocol.ProxyType(proxyConfiguration.Type),
-			LocalIP:    proxyConfiguration.LocalIP,
-			LocalPort:  proxyConfiguration.LocalPort,
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			Name:          proxyConfiguration.Name,
+			Type:          protocol.ProxyType(proxyConfiguration.Type),
+			LocalIP:       proxyConfiguration.LocalIP,
+			LocalPort:     proxyConfiguration.LocalPort,
+			RemotePort:    proxyConfiguration.RemotePort,
+			Domain:        proxyConfiguration.Domain,
+			PublicSchemes: append(
+				[]protocol.HTTPPublicScheme(nil),
+				proxyConfiguration.PublicSchemes...,
+			),
 		})
 		declarations = append(declarations, protocol.ProxyDeclaration{
-			Name:       proxyConfiguration.Name,
-			Type:       protocol.ProxyType(proxyConfiguration.Type),
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			Name:          proxyConfiguration.Name,
+			Type:          protocol.ProxyType(proxyConfiguration.Type),
+			RemotePort:    proxyConfiguration.RemotePort,
+			Domain:        proxyConfiguration.Domain,
+			PublicSchemes: append(
+				[]protocol.HTTPPublicScheme(nil),
+				proxyConfiguration.PublicSchemes...,
+			),
 		})
 	}
 	digest, err := protocol.ManagedConfigurationDigest(managedProxies)
@@ -1103,6 +1111,16 @@ func (s *Service) validateGovernedProxies(
 					"HTTP domain is not allowed",
 				)
 			}
+			for _, scheme := range declaration.PublicSchemes {
+				if !publicSchemeAllowed(scheme, permissions.HTTP.PublicSchemes) {
+					return governedRejection(
+						request.Revision,
+						protocol.ProxyErrorPublicSchemeNotAllowed,
+						declaration.Name,
+						"HTTP public scheme is not allowed",
+					)
+				}
+			}
 		}
 	}
 	limits := permissions.Limits
@@ -1121,6 +1139,21 @@ func (s *Service) validateGovernedProxies(
 		)
 	}
 	return nil
+}
+
+func publicSchemeAllowed(
+	requested protocol.HTTPPublicScheme,
+	allowed []protocol.HTTPPublicScheme,
+) bool {
+	if len(allowed) == 0 {
+		return requested == protocol.HTTPPublicSchemeHTTP
+	}
+	for _, scheme := range allowed {
+		if scheme == requested {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) watchConfiguration(ctx context.Context) {

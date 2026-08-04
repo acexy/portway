@@ -6,7 +6,8 @@ client_id: governed-client
 token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
 
 permissions:
-  # 必填，至少一项。可选值：tcp、udp、http；每种类型必须配置对应非空规则。
+  # 必填，至少一项。表示 portwayd 与 portway 之间的代理语义，而非公网入口
+  # scheme；可选值：tcp、udp、http，不得重复。公网 HTTP/HTTPS 在下方单独授权。
   proxy_types:
     - tcp
     - udp
@@ -27,7 +28,14 @@ permissions:
         end: 30999
 
   http:
-    # 精确域名或仅匹配一级子域名的 *.example.com；客户端仍注册具体域名。
+    # 允许 http 时可选；留空或省略默认只授权 http。显式值可为 http、https 且
+    # 不得重复；客户端只能请求这里授权且已由服务端全局启用的公网 Listener。
+    public_schemes:
+      - https
+
+    # 不得重复的精确域名或仅匹配一级子域名的 *.example.com；客户端仍注册具体域名。
+    # HTTPS 是否可用还取决于服务端 HTTPS Listener 和 SNI 证书集合；客户端具体
+    # 域名必须被证书覆盖。TLS 在 portwayd 终止，客户端本地目标仍使用明文 HTTP。
     domains:
       - app.example.com
       - "*.customer.example.com"

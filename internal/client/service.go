@@ -531,12 +531,16 @@ func validateManagedPreparation(
 	proxies := make([]config.ProxyConfig, 0, len(preparation.Proxies))
 	for _, managedProxy := range preparation.Proxies {
 		proxies = append(proxies, config.ProxyConfig{
-			Name:       managedProxy.Name,
-			Type:       string(managedProxy.Type),
-			LocalIP:    managedProxy.LocalIP,
-			LocalPort:  managedProxy.LocalPort,
-			RemotePort: managedProxy.RemotePort,
-			Domain:     managedProxy.Domain,
+			Name:          managedProxy.Name,
+			Type:          string(managedProxy.Type),
+			LocalIP:       managedProxy.LocalIP,
+			LocalPort:     managedProxy.LocalPort,
+			RemotePort:    managedProxy.RemotePort,
+			Domain:        managedProxy.Domain,
+			PublicSchemes: append(
+				[]protocol.HTTPPublicScheme(nil),
+				managedProxy.PublicSchemes...,
+			),
 		})
 	}
 	if err := config.ValidateManagedProxies(proxies); err != nil {
@@ -865,10 +869,14 @@ func (s *Service) syncProxies(
 	declarations := make([]protocol.ProxyDeclaration, 0, len(proxies))
 	for _, proxyConfiguration := range proxies {
 		declarations = append(declarations, protocol.ProxyDeclaration{
-			Name:       proxyConfiguration.Name,
-			Type:       protocol.ProxyType(proxyConfiguration.Type),
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			Name:          proxyConfiguration.Name,
+			Type:          protocol.ProxyType(proxyConfiguration.Type),
+			RemotePort:    proxyConfiguration.RemotePort,
+			Domain:        proxyConfiguration.Domain,
+			PublicSchemes: append(
+				[]protocol.HTTPPublicScheme(nil),
+				proxyConfiguration.PublicSchemes...,
+			),
 		})
 	}
 	if err := writer.WriteRequest(

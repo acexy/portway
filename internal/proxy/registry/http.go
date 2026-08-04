@@ -92,6 +92,13 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "Misdirected Request", http.StatusMisdirectedRequest)
 		return
 	}
+	publicScheme := protocol.HTTPPublicScheme(requestScheme(request))
+	if !binding.declaration.AllowsPublicScheme(publicScheme) {
+		manager.mutex.Unlock()
+		manager.logHTTPRequest(request, "rejected", "public_scheme_not_registered", domain)
+		http.Error(writer, "Misdirected Request", http.StatusMisdirectedRequest)
+		return
+	}
 	state := manager.clients[binding.clientID]
 	if state == nil || !state.active || state.sessionID != binding.sessionID ||
 		state.httpProxies[binding.declaration.Name] != binding {

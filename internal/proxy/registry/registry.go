@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -43,6 +44,7 @@ type Registry struct {
 	udpConfiguration    config.UDPConfig
 	udpLimiter          *proxyudp.Limiter
 	httpEnabled         bool
+	httpsEnabled        bool
 	httpConfiguration   config.HTTPConfig
 	httpDomains         map[string]*httpProxyBinding
 	httpActiveRequests  int
@@ -93,6 +95,17 @@ type udpProxyBinding struct {
 	runtime     *proxyudp.Binding
 }
 
+func sameProxyDeclaration(
+	left protocol.ProxyDeclaration,
+	right protocol.ProxyDeclaration,
+) bool {
+	return left.Name == right.Name &&
+		left.Type == right.Type &&
+		left.RemotePort == right.RemotePort &&
+		left.Domain == right.Domain &&
+		slices.Equal(left.PublicSchemes, right.PublicSchemes)
+}
+
 // New creates a proxy registry.
 func New(
 	ctx context.Context,
@@ -109,6 +122,7 @@ func New(
 		proxyBindIP,
 		broker,
 		httpEnabled,
+		false,
 		httpConfiguration,
 		config.DefaultUDPConfig(),
 		sourceFilters...,
@@ -122,6 +136,7 @@ func NewConfigured(
 	proxyBindIP string,
 	broker *link.Broker,
 	httpEnabled bool,
+	httpsEnabled bool,
 	httpConfiguration config.HTTPConfig,
 	udpConfiguration config.UDPConfig,
 	sourceFilters ...*ipfilter.Filter,
@@ -132,6 +147,7 @@ func NewConfigured(
 		proxyBindIP,
 		broker,
 		httpEnabled,
+		httpsEnabled,
 		httpConfiguration,
 		udpConfiguration,
 		sourceFilters...,
@@ -144,6 +160,7 @@ func newRegistry(
 	proxyBindIP string,
 	broker *link.Broker,
 	httpEnabled bool,
+	httpsEnabled bool,
 	httpConfiguration config.HTTPConfig,
 	udpConfiguration config.UDPConfig,
 	sourceFilters ...*ipfilter.Filter,
@@ -158,6 +175,7 @@ func newRegistry(
 		context:             ctx,
 		linkBroker:          broker,
 		httpEnabled:         httpEnabled,
+		httpsEnabled:        httpsEnabled,
 		httpConfiguration:   httpConfiguration,
 		udpConfiguration:    udpConfiguration,
 		udpLimiter:          proxyudp.NewLimiter(udpConfiguration),
@@ -326,6 +344,7 @@ func (manager *Registry) Sync(
 		request.Revision,
 		request.Proxies,
 		manager.httpEnabled,
+		manager.httpsEnabled,
 	); rejection != nil {
 		return *rejection
 	}
@@ -473,7 +492,8 @@ func (manager *Registry) Sync(
 			continue
 		}
 		existing := existingProxies[declaration.Name]
-		unchanged := existing != nil && existing.declaration == declaration
+		unchanged := existing != nil &&
+			sameProxyDeclaration(existing.declaration, declaration)
 		if unchanged && existing.sessionID == sessionID {
 			nextProxies[declaration.Name] = existing
 			results = append(results, protocol.ProxyResult{
@@ -521,7 +541,8 @@ func (manager *Registry) Sync(
 			continue
 		}
 		existing := existingUDPProxies[declaration.Name]
-		unchanged := existing != nil && existing.declaration == declaration &&
+		unchanged := existing != nil &&
+			sameProxyDeclaration(existing.declaration, declaration) &&
 			existing.sessionID == sessionID
 		if unchanged {
 			nextUDPProxies[declaration.Name] = existing
@@ -582,7 +603,8 @@ func (manager *Registry) Sync(
 			continue
 		}
 		existing := existingHTTPProxies[declaration.Name]
-		unchanged := existing != nil && existing.declaration == declaration &&
+		unchanged := existing != nil &&
+			sameProxyDeclaration(existing.declaration, declaration) &&
 			existing.sessionID == sessionID
 		if unchanged {
 			nextHTTPProxies[declaration.Name] = existing

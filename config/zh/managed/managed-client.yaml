@@ -9,11 +9,14 @@ configuration:
   # 必填。正整数；每次修改配置都必须递增，不能以相同 revision 修改内容。
   revision: 1
 
-  # 可选，默认空。TCP/UDP/HTTP 合计硬上限 128。
+  # 可选，默认空。TCP/UDP/HTTP 合计硬上限 128；HTTPS 复用 type=http，
+  # 不是第四种代理类型。
   # 所有 Managed 记录之间，同协议公网端口和 HTTP 域名必须全局唯一；
   # 客户端离线时资源仍为该 ClientID 保留。
   proxies:
     - name: ssh
+      # 必填。表示 portwayd 与 portway 之间的代理语义，而非公网入口 scheme；
+      # 可选值：tcp、udp、http。公网 TLS 在 portwayd 终止，不存在 https 类型。
       type: tcp
       # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
       local_ip: 127.0.0.1
@@ -28,9 +31,15 @@ configuration:
       local_port: 53
       remote_port: 5353
 
-    # HTTP 示例。
+    # 公网 HTTP/HTTPS 示例。同一域名绑定由所有已启用的 HTTP/HTTPS Listener
+    # 共用；HTTPS 还要求服务端 SNI 证书覆盖该域名。TLS 在 portwayd 终止，
+    # 并始终以明文 HTTP 回源 Managed 客户端的本地目标。
     - name: web
       type: http
+      # HTTP 可选；留空或省略默认 [http]。显式值可为 http、https 且不得重复；
+      # 每个所选入口都必须全局启用。TCP/UDP 禁止配置。
+      public_schemes:
+        - https
       # 可选，默认 127.0.0.1。
       local_ip: 127.0.0.1
       local_port: 8080

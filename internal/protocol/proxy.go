@@ -1,6 +1,6 @@
 package protocol
 
-// ProxyType identifies a supported proxy protocol.
+// ProxyType identifies end-to-end proxy semantics carried through Portway.
 type ProxyType string
 
 const (
@@ -10,6 +10,16 @@ const (
 	ProxyTypeHTTP ProxyType = "http"
 	// ProxyTypeUDP identifies a UDP datagram proxy.
 	ProxyTypeUDP ProxyType = "udp"
+)
+
+// HTTPPublicScheme identifies one public listener allowed for an HTTP proxy.
+type HTTPPublicScheme string
+
+const (
+	// HTTPPublicSchemeHTTP allows plaintext requests from the public HTTP listener.
+	HTTPPublicSchemeHTTP HTTPPublicScheme = "http"
+	// HTTPPublicSchemeHTTPS allows TLS-terminated requests from the public HTTPS listener.
+	HTTPPublicSchemeHTTPS HTTPPublicScheme = "https"
 )
 
 // ProxySyncStatus identifies the result of an atomic proxy declaration.
@@ -36,25 +46,40 @@ const (
 type ProxyErrorCode string
 
 const (
-	ProxyErrorInvalidRequest       ProxyErrorCode = "invalid_request"
-	ProxyErrorInvalidProxy         ProxyErrorCode = "invalid_proxy"
-	ProxyErrorPortConflict         ProxyErrorCode = "port_conflict"
-	ProxyErrorCapacityExceeded     ProxyErrorCode = "capacity_exceeded"
-	ProxyErrorSessionInactive      ProxyErrorCode = "session_inactive"
-	ProxyErrorHTTPDisabled         ProxyErrorCode = "http_listener_disabled"
-	ProxyErrorDomainConflict       ProxyErrorCode = "domain_conflict"
-	ProxyErrorProxyTypeNotAllowed  ProxyErrorCode = "proxy_type_not_allowed"
-	ProxyErrorRemotePortNotAllowed ProxyErrorCode = "remote_port_not_allowed"
-	ProxyErrorDomainNotAllowed     ProxyErrorCode = "domain_not_allowed"
-	ProxyErrorClientLimitExceeded  ProxyErrorCode = "client_limit_exceeded"
+	ProxyErrorInvalidRequest          ProxyErrorCode = "invalid_request"
+	ProxyErrorInvalidProxy            ProxyErrorCode = "invalid_proxy"
+	ProxyErrorPortConflict            ProxyErrorCode = "port_conflict"
+	ProxyErrorCapacityExceeded        ProxyErrorCode = "capacity_exceeded"
+	ProxyErrorSessionInactive         ProxyErrorCode = "session_inactive"
+	ProxyErrorPublicSchemeUnavailable ProxyErrorCode = "public_scheme_unavailable"
+	ProxyErrorDomainConflict          ProxyErrorCode = "domain_conflict"
+	ProxyErrorProxyTypeNotAllowed     ProxyErrorCode = "proxy_type_not_allowed"
+	ProxyErrorRemotePortNotAllowed    ProxyErrorCode = "remote_port_not_allowed"
+	ProxyErrorDomainNotAllowed        ProxyErrorCode = "domain_not_allowed"
+	ProxyErrorPublicSchemeNotAllowed  ProxyErrorCode = "public_scheme_not_allowed"
+	ProxyErrorClientLimitExceeded     ProxyErrorCode = "client_limit_exceeded"
 )
 
 // ProxyDeclaration contains server-visible proxy configuration.
 type ProxyDeclaration struct {
-	Name       string    `json:"name"`
-	Type       ProxyType `json:"type"`
-	RemotePort uint16    `json:"remote_port,omitempty"`
-	Domain     string    `json:"domain,omitempty"`
+	Name          string             `json:"name"`
+	Type          ProxyType          `json:"type"`
+	RemotePort    uint16             `json:"remote_port,omitempty"`
+	Domain        string             `json:"domain,omitempty"`
+	PublicSchemes []HTTPPublicScheme `json:"public_schemes,omitempty"`
+}
+
+// AllowsPublicScheme reports whether an HTTP declaration permits one listener.
+func (declaration ProxyDeclaration) AllowsPublicScheme(scheme HTTPPublicScheme) bool {
+	if len(declaration.PublicSchemes) == 0 {
+		return scheme == HTTPPublicSchemeHTTP
+	}
+	for _, allowed := range declaration.PublicSchemes {
+		if allowed == scheme {
+			return true
+		}
+	}
+	return false
 }
 
 // SyncProxies atomically declares the complete proxy set for one session.

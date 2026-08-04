@@ -100,11 +100,17 @@ https:
 proxies:
   - name: web
     type: http
+    public_schemes:
+      - https
+      - http
     domain: app.example.com
     local_ip: 127.0.0.1
     local_port: 8080
 ```
 
+`type` 表示 `portwayd` 与 `portway` 之间的代理语义，`public_schemes` 显式选择
+公网 HTTP/HTTPS Listener；任一所选 Listener 未启用都会拒绝整批注册。
+省略或留空 `public_schemes` 时默认仅使用 HTTP 入口。
 公共 `Host` 会被匹配到已认证的客户端注册信息。`portwayd` 终止公网 HTTPS，
 随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。HTTP 与
 HTTPS 共用代理限制。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；

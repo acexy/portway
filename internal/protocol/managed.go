@@ -9,12 +9,13 @@ import (
 
 // ManagedProxy contains the complete server-owned client proxy configuration.
 type ManagedProxy struct {
-	Name       string    `json:"name"`
-	Type       ProxyType `json:"type"`
-	LocalIP    string    `json:"local_ip"`
-	LocalPort  uint16    `json:"local_port"`
-	RemotePort uint16    `json:"remote_port,omitempty"`
-	Domain     string    `json:"domain,omitempty"`
+	Name          string             `json:"name"`
+	Type          ProxyType          `json:"type"`
+	LocalIP       string             `json:"local_ip"`
+	LocalPort     uint16             `json:"local_port"`
+	RemotePort    uint16             `json:"remote_port,omitempty"`
+	Domain        string             `json:"domain,omitempty"`
+	PublicSchemes []HTTPPublicScheme `json:"public_schemes,omitempty"`
 }
 
 // ManagedConfigPrepare stages one complete managed configuration generation.

@@ -35,6 +35,9 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 							RemotePortRanges: []config.PortRange{{Start: 20000, End: 20999}},
 						},
 						HTTP: config.HTTPPermission{
+							PublicSchemes: []protocol.HTTPPublicScheme{
+								protocol.HTTPPublicSchemeHTTPS,
+							},
 							Domains: []string{"*.customer-a.example.com"},
 						},
 						Limits: config.PermissionLimits{MaxProxies: 2},
@@ -47,7 +50,11 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 		Revision: 1,
 		Proxies: []protocol.ProxyDeclaration{
 			{Name: "ssh", Type: protocol.ProxyTypeTCP, RemotePort: 20022},
-			{Name: "web", Type: protocol.ProxyTypeHTTP, Domain: "app.customer-a.example.com"},
+			{
+				Name: "web", Type: protocol.ProxyTypeHTTP,
+				Domain: "app.customer-a.example.com",
+				PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+			},
 		},
 	}
 	if result := service.validateGovernedProxies("customer-a", allowed); result != nil {
@@ -61,6 +68,17 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 	if result == nil || result.Error == nil ||
 		result.Error.Code != protocol.ProxyErrorRemotePortNotAllowed {
 		t.Fatalf("expected remote port rejection, got %+v", result)
+	}
+
+	disallowed = allowed
+	disallowed.Proxies = append([]protocol.ProxyDeclaration(nil), allowed.Proxies...)
+	disallowed.Proxies[1].PublicSchemes = []protocol.HTTPPublicScheme{
+		protocol.HTTPPublicSchemeHTTP,
+	}
+	result = service.validateGovernedProxies("customer-a", disallowed)
+	if result == nil || result.Error == nil ||
+		result.Error.Code != protocol.ProxyErrorPublicSchemeNotAllowed {
+		t.Fatalf("expected public scheme rejection, got %+v", result)
 	}
 }
 

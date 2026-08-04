@@ -80,6 +80,7 @@ permissions:
         end: 20999
 
   http:
+    public_schemes: [https]
     domains:
       - app.customer-a.example.com
       - "*.customer-a.example.com"
@@ -104,6 +105,7 @@ authentication:
 proxies:
   - name: app
     type: http
+    public_schemes: [https]
     domain: app.customer-a.example.com
     local_ip: 127.0.0.1
     local_port: 8080
@@ -116,8 +118,9 @@ Token Proof 通过后，服务端必须在注册 Session 前确认客户端声�
 服务端不会静默发布部分代理。
 
 `proxy_types` 中列出的每种类型都必须配置非空的对应规则：TCP 和 UDP 至少包含
-一个 `remote_port_ranges` 区间，HTTP 至少包含一个域名。未列入
-`proxy_types` 的类型必须省略对应规则或保持为空。配置多个区间可以分配互不连续
+一个 `remote_port_ranges` 区间，HTTP 至少包含一个域名；`public_schemes` 留空或
+省略时默认只授权 HTTP。未列入 `proxy_types` 的类型必须省略对应规则或保持为空。配置多个区间可以
+分配互不连续
 的公网端口段，而不必授权这些区间之间原本不应开放的端口。
 
 Governed 配额字段缺省时使用生产安全默认值：代理总数 20、TCP 代理 10、UDP

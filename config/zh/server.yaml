@@ -115,10 +115,14 @@ authentication:
   shared_token: ""
 
   # 可选。目录内每个 *.yaml 定义独立 Governed 客户端。
+  # http 权限分别约束 type=http 的 public_schemes 和域名；Listener 与 HTTPS
+  # 证书策略仍由服务端全局配置。
   # 文件名无需匹配 ClientID；完整中文记录见 ./governed/governed-client.yaml。
   # governed_clients_path: "./governed"
 
   # 可选。目录内每个 *.yaml 定义独立 Managed 客户端及服务端锁定配置。
   # 每客户端最多 128 个代理；所有记录的同协议端口和 HTTP 域名必须唯一。
+  # Managed type=http 显式选择 public_schemes，所选 Listener 必须全局启用；
+  # TLS 在服务端终止，本地目标仍提供 HTTP。
   # 完整中文记录见 ./managed/managed-client.yaml。
   # managed_clients_path: "./managed"

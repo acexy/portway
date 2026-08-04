@@ -60,7 +60,10 @@ proxies:
   # lowercase letter or digit.
   - name: ssh
 
-    # * Required for every proxy. Allowed values: tcp, udp, http.
+    # * Required for every proxy. Selects the end-to-end proxy semantics
+    # carried between portwayd and portway, not the public listener scheme.
+    # Allowed values: tcp (byte stream), udp (datagram), http (HTTP request).
+    # There is no https proxy type because public TLS terminates at portwayd.
     type: tcp
 
     # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
@@ -74,23 +77,34 @@ proxies:
     # Not allowed when type=http.
     remote_port: 22022
 
-  # HTTP example:
-  # - name: web
-  #   type: http
-  #   # * Required when type=http. Canonical lowercase DNS name without a
-  #   # scheme, port, path, wildcard, IP literal, or trailing dot.
-  #   domain: app.example.com
-  #   # Optional. Defaults to 127.0.0.1.
-  #   local_ip: 127.0.0.1
-  #   # * Required for every proxy. Range 1-65535.
-  #   local_port: 8080
+  # HTTP/HTTPS public entry example. public_schemes explicitly selects the
+  # allowed public listeners; every requested listener must be enabled on
+  # portwayd or the complete proxy registration is rejected. For HTTPS, portwayd
+  # terminates TLS, selects a configured SNI certificate, and forwards plain
+  # HTTP to local_ip:local_port; the local service must therefore speak HTTP.
+  # The server must enable at least one HTTP/HTTPS listener, and HTTPS access
+  # additionally requires a certificate mapping that covers this exact domain.
+  - name: web
+    type: http
+    # Optional when type=http. Defaults to [http] when empty or omitted.
+    # Explicit values must be unique and may be http or https.
+    # Not allowed for tcp or udp.
+    public_schemes:
+      - https
+    # * Required when type=http. Canonical lowercase DNS name without a
+    # scheme, port, path, wildcard, IP literal, or trailing dot.
+    domain: app.example.com
+    # Optional. Defaults to 127.0.0.1.
+    local_ip: 127.0.0.1
+    # * Required for every proxy. Range 1-65535.
+    local_port: 8080
 
   # UDP example:
-  # - name: dns
-  #   type: udp
-  #   # Optional. Defaults to 127.0.0.1.
-  #   local_ip: 127.0.0.1
-  #   # * Required for every proxy. Range 1-65535.
-  #   local_port: 53
-  #   # * Required when type=udp. Public UDP port, range 1-65535.
-  #   remote_port: 5353
+  - name: dns
+    type: udp
+    # Optional. Defaults to 127.0.0.1.
+    local_ip: 127.0.0.1
+    # * Required for every proxy. Range 1-65535.
+    local_port: 53
+    # * Required when type=udp. Public UDP port, range 1-65535.
+    remote_port: 5353

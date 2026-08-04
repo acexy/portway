@@ -16,6 +16,7 @@ import (
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 )
 
 func TestHTTPProxyEndToEnd(t *testing.T) {
@@ -63,6 +64,7 @@ func TestHTTPProxyEndToEnd(t *testing.T) {
 	clientConfiguration.Proxies = []config.ProxyConfig{{
 		Name: "web", Type: "http", Domain: "app.example.com",
 		LocalIP: "127.0.0.1", LocalPort: uint16(backendAddress.Port),
+		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 	}}
 	clientService := client.NewService(logging.New("test-http-client"), clientConfiguration)
 	go func() { clientErrors <- clientService.Run(clientContext) }()
@@ -165,6 +167,7 @@ func TestHTTPSProxyEndToEnd(t *testing.T) {
 	clientConfiguration.Proxies = []config.ProxyConfig{{
 		Name: "secure-web", Type: "http", Domain: "secure.example.com",
 		LocalIP: "127.0.0.1", LocalPort: uint16(backendAddress.Port),
+		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
 	}}
 	clientService := client.NewService(logging.New("test-https-client"), clientConfiguration)
 	go func() { clientErrors <- clientService.Run(clientContext) }()

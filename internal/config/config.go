@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 	"gopkg.in/yaml.v3"
 )
@@ -81,7 +82,8 @@ type ProxyPermission struct {
 
 // HTTPPermission configures authorized exact or single-label wildcard domains.
 type HTTPPermission struct {
-	Domains []string `yaml:"domains"`
+	PublicSchemes []protocol.HTTPPublicScheme `yaml:"public_schemes"`
+	Domains       []string                    `yaml:"domains"`
 }
 
 // PermissionLimits configures per-client resource ceilings.
@@ -150,12 +152,13 @@ type ServerTransportConfig struct {
 
 // ProxyConfig describes one client-side proxy.
 type ProxyConfig struct {
-	Name       string `yaml:"name"`
-	Type       string `yaml:"type"`
-	LocalIP    string `yaml:"local_ip"`
-	LocalPort  uint16 `yaml:"local_port"`
-	RemotePort uint16 `yaml:"remote_port"`
-	Domain     string `yaml:"domain"`
+	Name          string                      `yaml:"name"`
+	Type          string                      `yaml:"type"`
+	LocalIP       string                      `yaml:"local_ip"`
+	LocalPort     uint16                      `yaml:"local_port"`
+	RemotePort    uint16                      `yaml:"remote_port"`
+	Domain        string                      `yaml:"domain"`
+	PublicSchemes []protocol.HTTPPublicScheme `yaml:"public_schemes"`
 }
 
 // ClientConfig contains the complete client configuration.
@@ -309,6 +312,9 @@ func LoadServer(path string, allowMissing bool) (ServerConfig, error) {
 		return ServerConfig{}, errors.New("configuration files changed while loading")
 	}
 	if err := loadServerAuthenticationFiles(&configuration); err != nil {
+		return ServerConfig{}, err
+	}
+	if err := validateConfiguredPublicSchemeAvailability(configuration); err != nil {
 		return ServerConfig{}, err
 	}
 	after, err := serverSourceManifest(configuration)
@@ -728,6 +734,7 @@ func loadGovernedClients(path string) (map[string]GovernedClientConfig, error) {
 		if err := loadAuthenticationYAML(file, &client); err != nil {
 			return nil, err
 		}
+		applyGovernedPermissionDefaults(&client.Permissions)
 		if err := validateAuthenticationClientFile(file, client.ClientID, client.Token); err != nil {
 			return nil, err
 		}
@@ -1008,15 +1015,26 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 	if err := validatePortRanges("permissions.udp.remote_port_ranges", permissions.UDP.RemotePortRanges); err != nil {
 		return err
 	}
+	domains := make(map[string]struct{}, len(permissions.HTTP.Domains))
 	for index, domain := range permissions.HTTP.Domains {
 		if strings.HasPrefix(domain, "*.") {
 			if err := ValidateHTTPDomain(strings.TrimPrefix(domain, "*.")); err != nil {
 				return fmt.Errorf("permissions.http.domains[%d]: invalid wildcard domain", index)
 			}
-			continue
-		}
-		if err := ValidateHTTPDomain(domain); err != nil {
+		} else if err := ValidateHTTPDomain(domain); err != nil {
 			return fmt.Errorf("permissions.http.domains[%d]: %w", index, err)
+		}
+		if _, duplicate := domains[domain]; duplicate {
+			return fmt.Errorf("permissions.http.domains contains duplicate domain %q", domain)
+		}
+		domains[domain] = struct{}{}
+	}
+	if len(permissions.HTTP.PublicSchemes) > 0 {
+		if err := validateHTTPPublicSchemes(
+			permissions.HTTP.PublicSchemes,
+			"permissions.http.public_schemes",
+		); err != nil {
+			return err
 		}
 	}
 	limits := permissions.Limits
@@ -1070,7 +1088,27 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 	); err != nil {
 		return err
 	}
+	if _, httpAllowed := types["http"]; !httpAllowed &&
+		len(permissions.HTTP.PublicSchemes) != 0 {
+		return errors.New(
+			"permissions.http.public_schemes must be empty when http is not allowed",
+		)
+	}
 	return nil
+}
+
+func applyGovernedPermissionDefaults(permissions *GovernedPermissions) {
+	if len(permissions.HTTP.PublicSchemes) != 0 {
+		return
+	}
+	for _, proxyType := range permissions.ProxyTypes {
+		if proxyType == "http" {
+			permissions.HTTP.PublicSchemes = []protocol.HTTPPublicScheme{
+				protocol.HTTPPublicSchemeHTTP,
+			}
+			return
+		}
+	}
 }
 
 func validateGovernedRulePresence(
@@ -1111,6 +1149,55 @@ func validateManagedProxies(proxies []ProxyConfig) error {
 	return validateProxies(proxies, "configuration.proxies")
 }
 
+func validateConfiguredPublicSchemeAvailability(configuration ServerConfig) error {
+	for clientID, client := range configuration.GovernedClients {
+		for _, scheme := range client.Permissions.HTTP.PublicSchemes {
+			if err := validatePublicSchemeListener(
+				configuration,
+				scheme,
+				fmt.Sprintf("governed client %q", clientID),
+			); err != nil {
+				return err
+			}
+		}
+	}
+	for clientID, client := range configuration.ManagedClients {
+		for _, proxy := range client.Configuration.Proxies {
+			if proxy.Type != "http" {
+				continue
+			}
+			for _, scheme := range proxy.PublicSchemes {
+				if err := validatePublicSchemeListener(
+					configuration,
+					scheme,
+					fmt.Sprintf("managed client %q proxy %q", clientID, proxy.Name),
+				); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validatePublicSchemeListener(
+	configuration ServerConfig,
+	scheme protocol.HTTPPublicScheme,
+	owner string,
+) error {
+	switch scheme {
+	case protocol.HTTPPublicSchemeHTTP:
+		if configuration.Tunnel.HTTPListenAddress == "" {
+			return fmt.Errorf("%s requires the public HTTP listener", owner)
+		}
+	case protocol.HTTPPublicSchemeHTTPS:
+		if configuration.Tunnel.HTTPSListenAddress == "" {
+			return fmt.Errorf("%s requires the public HTTPS listener", owner)
+		}
+	}
+	return nil
+}
+
 func validateProxies(proxies []ProxyConfig, field string) error {
 	if len(proxies) > hardMaxProxiesPerClient {
 		return fmt.Errorf(
@@ -1133,7 +1220,8 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 		names[proxy.Name] = struct{}{}
 		switch proxy.Type {
 		case "tcp":
-			if proxy.RemotePort == 0 || proxy.Domain != "" {
+			if proxy.RemotePort == 0 || proxy.Domain != "" ||
+				len(proxy.PublicSchemes) != 0 {
 				return fmt.Errorf("%s[%d] has invalid %s fields", field, index, proxy.Type)
 			}
 			if _, duplicate := tcpPorts[proxy.RemotePort]; duplicate {
@@ -1145,7 +1233,8 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 			}
 			tcpPorts[proxy.RemotePort] = struct{}{}
 		case "udp":
-			if proxy.RemotePort == 0 || proxy.Domain != "" {
+			if proxy.RemotePort == 0 || proxy.Domain != "" ||
+				len(proxy.PublicSchemes) != 0 {
 				return fmt.Errorf("%s[%d] has invalid %s fields", field, index, proxy.Type)
 			}
 			if _, duplicate := udpPorts[proxy.RemotePort]; duplicate {
@@ -1162,6 +1251,18 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 			}
 			if err := ValidateHTTPDomain(proxy.Domain); err != nil {
 				return fmt.Errorf("%s[%d].domain: %w", field, index, err)
+			}
+			if len(proxy.PublicSchemes) == 0 {
+				proxy.PublicSchemes = []protocol.HTTPPublicScheme{
+					protocol.HTTPPublicSchemeHTTP,
+				}
+				proxies[index].PublicSchemes = proxy.PublicSchemes
+			}
+			if err := validateHTTPPublicSchemes(
+				proxy.PublicSchemes,
+				fmt.Sprintf("%s[%d].public_schemes", field, index),
+			); err != nil {
+				return err
 			}
 			if _, duplicate := httpDomains[proxy.Domain]; duplicate {
 				return fmt.Errorf(
@@ -1182,6 +1283,28 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 		if proxy.LocalPort == 0 {
 			return fmt.Errorf("%s[%d].local_port must be between 1 and 65535", field, index)
 		}
+	}
+	return nil
+}
+
+func validateHTTPPublicSchemes(
+	schemes []protocol.HTTPPublicScheme,
+	field string,
+) error {
+	if len(schemes) == 0 {
+		return fmt.Errorf("%s must not be empty for http", field)
+	}
+	seen := make(map[protocol.HTTPPublicScheme]struct{}, len(schemes))
+	for index, scheme := range schemes {
+		switch scheme {
+		case protocol.HTTPPublicSchemeHTTP, protocol.HTTPPublicSchemeHTTPS:
+		default:
+			return fmt.Errorf("%s[%d] must be http or https", field, index)
+		}
+		if _, duplicate := seen[scheme]; duplicate {
+			return fmt.Errorf("%s contains duplicate scheme %q", field, scheme)
+		}
+		seen[scheme] = struct{}{}
 	}
 	return nil
 }
