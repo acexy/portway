@@ -3,6 +3,9 @@ package registry
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/acexy/portway/internal/authentication"
@@ -65,6 +68,119 @@ func TestProxySyncRejectsEmptyDeclaration(t *testing.T) {
 		result.Error.Code != protocol.ProxyErrorInvalidProxy ||
 		result.Error.Retryable {
 		t.Fatalf("expected permanent empty proxy rejection, got %+v", result)
+	}
+}
+
+func TestProxySyncRejectsReusedRequestIDWithDifferentPayload(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	manager.Attach("client-one", "session-one", nil)
+	first := manager.Sync(
+		"client-one", "session-one", "request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{tcpProxyDeclaration("first", port)},
+		},
+	)
+	if first.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("initial synchronization failed: %+v", first.Error)
+	}
+	second := manager.Sync(
+		"client-one", "session-one", "request-one",
+		protocol.SyncProxies{
+			Revision: 2,
+			Proxies: []protocol.ProxyDeclaration{tcpProxyDeclaration("second", port)},
+		},
+	)
+	if second.Status != protocol.ProxySyncStatusRejected ||
+		second.Error == nil || second.Error.Code != protocol.ProxyErrorInvalidRequest {
+		t.Fatalf("changed request ID payload was not rejected: %+v", second)
+	}
+	if manager.clients["client-one"].revision != 1 ||
+		manager.clients["client-one"].tcpProxies["first"] == nil {
+		t.Fatal("rejected request changed the active proxy generation")
+	}
+}
+
+func TestProxySyncReturnsBoundedCachedResultForHistoricalRequest(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	manager.Attach("client-one", "session-one", nil)
+	declaration := tcpProxyDeclaration("proxy", port)
+	first := manager.Sync(
+		"client-one", "session-one", "request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies:  []protocol.ProxyDeclaration{declaration},
+		},
+	)
+	if first.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("first synchronization failed: %+v", first.Error)
+	}
+	second := manager.Sync(
+		"client-one", "session-one", "request-two",
+		protocol.SyncProxies{
+			Revision: 2,
+			Proxies:  []protocol.ProxyDeclaration{declaration},
+		},
+	)
+	if second.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("second synchronization failed: %+v", second.Error)
+	}
+	replayed := manager.Sync(
+		"client-one", "session-one", "request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies:  []protocol.ProxyDeclaration{declaration},
+		},
+	)
+	if !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("historical idempotent request did not return its cached result: %+v", replayed)
+	}
+	if manager.clients["client-one"].revision != 2 {
+		t.Fatal("historical idempotent request changed the active revision")
+	}
+}
+
+func TestHTTPClientCapacityUsesAggregateCounter(t *testing.T) {
+	configuration := config.DefaultServer().HTTP
+	configuration.MaxConcurrentRequestsPerClient = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	manager := New(
+		ctx,
+		logging.New("test"),
+		"127.0.0.1",
+		broker,
+		true,
+		configuration,
+	)
+	defer manager.Close()
+	manager.Attach("client-one", "session-one", nil)
+	declaration := protocol.ProxyDeclaration{
+		Name: "web", Type: protocol.ProxyTypeHTTP, Domain: "example.test",
+	}
+	binding, err := manager.newHTTPBinding("client-one", "session-one", declaration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := manager.clients["client-one"]
+	state.active = true
+	state.httpProxies[declaration.Name] = binding
+	state.httpActiveRequests = 1
+	manager.httpDomains[declaration.Domain] = binding
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	response := httptest.NewRecorder()
+	manager.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected client capacity rejection, got %d", response.Code)
 	}
 }
 

@@ -9,5 +9,6 @@ const (
 	clientRecoveryWindow     = 60 * time.Second
 	clientMonitorInterval    = time.Second
 	maxConcurrentConnections = 256
+	maxClientSessions         = 256
 	dataBindTimeout          = 5 * time.Second
 )

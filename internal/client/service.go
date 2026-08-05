@@ -1009,7 +1009,8 @@ func validateSessionErrorRetryable(response protocol.SessionError) error {
 	var expected bool
 	switch response.Code {
 	case protocol.SessionErrorClientIDRecoveryPending,
-		protocol.SessionErrorSessionExpired:
+		protocol.SessionErrorSessionExpired,
+		protocol.SessionErrorServerCapacityReached:
 		expected = true
 	case protocol.SessionErrorAuthenticationFailed,
 		protocol.SessionErrorInvalidClientID,

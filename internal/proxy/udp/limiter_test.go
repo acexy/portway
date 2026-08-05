@@ -67,3 +67,32 @@ func TestLimiterEnforcesAssociationCreationRate(t *testing.T) {
 		t.Fatal("association creation rate was not enforced")
 	}
 }
+
+func TestLimiterDoesNotConsumeGlobalRateWhenClientRateRejects(t *testing.T) {
+	configuration := config.DefaultUDPConfig()
+	configuration.MaxNewAssociationsPerSecond = 2
+	configuration.MaxNewAssociationsPerSecondPerClient = 1
+	configuration.MaxNewAssociationsPerSecondPerProxy = 2
+	limiter := NewLimiter(configuration)
+	now := time.Now()
+
+	first, allowed := limiter.Acquire(
+		"client-one", "proxy", netip.MustParseAddr("192.0.2.10"), now,
+	)
+	if !allowed {
+		t.Fatal("first association was rejected")
+	}
+	defer first.Close()
+	if _, allowed := limiter.Acquire(
+		"client-one", "proxy", netip.MustParseAddr("192.0.2.11"), now,
+	); allowed {
+		t.Fatal("per-client rate limit was not enforced")
+	}
+	second, allowed := limiter.Acquire(
+		"client-two", "proxy", netip.MustParseAddr("192.0.2.12"), now,
+	)
+	if !allowed {
+		t.Fatal("rejected client consumed the remaining global rate capacity")
+	}
+	second.Close()
+}
