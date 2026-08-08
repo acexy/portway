@@ -11,7 +11,7 @@ import (
 	"github.com/acexy/portway/internal/certificate"
 	"github.com/acexy/portway/internal/cli"
 	"github.com/acexy/portway/internal/config"
-	"github.com/acexy/portway/internal/configgenerator"
+	"github.com/acexy/portway/internal/config/gen"
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/server"
@@ -98,12 +98,12 @@ func runGenerateServerConfiguration(
 	stdout io.Writer,
 	stderr io.Writer,
 ) int {
-	full, err := configgenerator.ParseMode(arguments)
+	full, err := gen.ParseMode(arguments)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portwayd gen config: %v\n", err)
 		return 2
 	}
-	path, err := configgenerator.Generate(configgenerator.TargetServer, full)
+	path, err := gen.Generate(gen.TargetServer, full)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portwayd gen config: %v\n", err)
 		return 1

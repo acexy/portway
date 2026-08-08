@@ -81,6 +81,8 @@ const (
 	SessionErrorInvalidClientID SessionErrorCode = "invalid_client_id"
 	// SessionErrorAuthenticationFailed hides credential and identity failure details.
 	SessionErrorAuthenticationFailed SessionErrorCode = "authentication_failed"
+	// SessionErrorServerCapacityReached indicates that the server cannot admit another control Session.
+	SessionErrorServerCapacityReached SessionErrorCode = "server_capacity_reached"
 )
 
 // Envelope is the common control message container.

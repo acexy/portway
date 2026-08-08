@@ -88,6 +88,7 @@ permissions:
         end: 20999
 
   http:
+    public_schemes: [https]
     domains:
       - app.customer-a.example.com
       - "*.customer-a.example.com"
@@ -113,6 +114,7 @@ authentication:
 proxies:
   - name: app
     type: http
+    public_schemes: [https]
     domain: app.customer-a.example.com
     local_ip: 127.0.0.1
     local_port: 8080
@@ -127,8 +129,9 @@ complete update and closes the rejected control session; the server never
 silently publishes a partial set.
 
 Every type listed in `proxy_types` must have a non-empty corresponding rule:
-TCP and UDP require at least one `remote_port_ranges` entry, and HTTP requires
-at least one domain. Rules for a type not listed in `proxy_types` must be empty
+TCP and UDP require at least one `remote_port_ranges` entry. HTTP requires at
+least one domain; omitted or empty `public_schemes` authorizes HTTP only. Rules for a type not
+listed in `proxy_types` must be empty
 or omitted. Multiple ranges allow disjoint public port allocations without
 granting the unused ports between them.
 

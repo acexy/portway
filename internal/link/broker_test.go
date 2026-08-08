@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -16,6 +17,7 @@ func TestBrokerAppliesPerClientActiveLinkLimit(t *testing.T) {
 	broker := NewBroker(context.Background())
 	target := Target{ClientID: "client-a", MaxActiveLinks: 1}
 	broker.active["active"] = &brokerActiveLink{target: target}
+	broker.incrementActiveLocked(target)
 	if !broker.limitReachedLocked(target) {
 		t.Fatal("per-client active Link limit was not applied")
 	}
@@ -77,5 +79,115 @@ func TestBrokerRejectsTicketFromDifferentAuthenticationGeneration(t *testing.T) 
 	}
 	if err := <-result; err == nil {
 		t.Fatal("stale authentication generation was accepted")
+	}
+}
+
+func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
+	broker := NewBroker(context.Background())
+	defer broker.Close()
+	serverControl, clientControl := net.Pipe()
+	defer serverControl.Close()
+	defer clientControl.Close()
+	target := Target{
+		ClientID: "client-a", SessionID: "session-a", ProxyName: "proxy-a",
+		ProxyType: protocol.ProxyTypeTCP, BindingID: "binding-a",
+		Writer: control.NewWriter(serverControl),
+	}
+	handlerObserved := make(chan bool, 1)
+	requestResult := make(chan error, 1)
+	go func() {
+		requestResult <- broker.ServeStream(target, nil, func(_ context.Context, _ net.Conn) error {
+			broker.mutex.Lock()
+			active := broker.activeClients[target.ClientID] == 1 &&
+				broker.activeProxies[brokerProxyKey(target)] == 1 &&
+				broker.pendingClients[target.ClientID] == 0
+			broker.mutex.Unlock()
+			handlerObserved <- active
+			return nil
+		})
+	}()
+	envelope, err := protocol.ReadControl(clientControl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var open protocol.OpenLink
+	if err := protocol.DecodePayload(envelope, &open); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-requestResult; err != nil {
+		t.Fatal(err)
+	}
+	broker.mutex.Lock()
+	pendingCounted := broker.pendingClients[target.ClientID] == 1 &&
+		broker.pendingProxies[brokerProxyKey(target)] == 1
+	broker.mutex.Unlock()
+	if !pendingCounted {
+		t.Fatal("pending Link counters were not incremented")
+	}
+
+	serverData, clientData := net.Pipe()
+	defer serverData.Close()
+	defer clientData.Close()
+	bindResult := make(chan error, 1)
+	go func() {
+		bindResult <- broker.Bind(context.Background(), serverData, protocol.BindLink{
+			ClientID: target.ClientID, SessionID: target.SessionID,
+			ProxyType: target.ProxyType, BindingID: target.BindingID,
+			LinkID: open.LinkID, Ticket: open.Ticket,
+		}, authentication.Context{})
+	}()
+	if _, err := protocol.ReadControl(clientData); err != nil {
+		t.Fatal(err)
+	}
+	if !<-handlerObserved {
+		t.Fatal("pending and active Link counters did not transition atomically")
+	}
+	if err := <-bindResult; err != nil {
+		t.Fatal(err)
+	}
+	broker.mutex.Lock()
+	defer broker.mutex.Unlock()
+	if len(broker.pendingClients) != 0 || len(broker.pendingProxies) != 0 ||
+		len(broker.activeClients) != 0 || len(broker.activeProxies) != 0 {
+		t.Fatal("Link capacity counters were not released")
+	}
+}
+
+func TestBrokerParentContextReleasesPendingLinks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	broker := NewBroker(ctx)
+	serverControl, clientControl := net.Pipe()
+	defer serverControl.Close()
+	defer clientControl.Close()
+	cancelled := make(chan struct{}, 1)
+	requestResult := make(chan error, 1)
+	go func() {
+		requestResult <- broker.ServeStream(
+			Target{
+				ClientID: "client-a", SessionID: "session-a", ProxyName: "proxy-a",
+				ProxyType: protocol.ProxyTypeTCP, BindingID: "binding-a",
+				Writer: control.NewWriter(serverControl),
+			},
+			func() { cancelled <- struct{}{} },
+			func(context.Context, net.Conn) error { return nil },
+		)
+	}()
+	if _, err := protocol.ReadControl(clientControl); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-requestResult; err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("parent context did not cancel the pending Link")
+	}
+	broker.mutex.Lock()
+	defer broker.mutex.Unlock()
+	if len(broker.pending) != 0 || len(broker.pendingClients) != 0 ||
+		len(broker.pendingProxies) != 0 {
+		t.Fatal("parent context cancellation retained pending Link state")
 	}
 }

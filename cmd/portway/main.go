@@ -9,7 +9,7 @@ import (
 	"github.com/acexy/portway/internal/cli"
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
-	"github.com/acexy/portway/internal/configgenerator"
+	"github.com/acexy/portway/internal/config/gen"
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
 )
@@ -61,12 +61,12 @@ func runGenerateClientConfiguration(
 	stdout io.Writer,
 	stderr io.Writer,
 ) int {
-	full, err := configgenerator.ParseMode(arguments)
+	full, err := gen.ParseMode(arguments)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "portway gen config: "+err.Error()+"\n")
 		return 2
 	}
-	path, err := configgenerator.Generate(configgenerator.TargetClient, full)
+	path, err := gen.Generate(gen.TargetClient, full)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "portway gen config: "+err.Error()+"\n")
 		return 1

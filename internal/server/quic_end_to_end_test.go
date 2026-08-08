@@ -22,6 +22,7 @@ import (
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -75,6 +76,7 @@ func TestHTTPProxyOverQUICEndToEnd(t *testing.T) {
 		Domain:    "app.example.com",
 		LocalIP:   "127.0.0.1",
 		LocalPort: uint16(backendAddress.Port),
+		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 	}}
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)

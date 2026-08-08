@@ -76,11 +76,14 @@ func (limiter *Limiter) Acquire(
 		limiter.pending >= limiter.configuration.MaxPendingAssociations ||
 		limiter.pendingClients[clientID] >= limiter.configuration.MaxPendingAssociationsPerClient ||
 		limiter.pendingProxies[proxyKey] >= limiter.configuration.MaxPendingAssociationsPerProxy ||
-		!allowRate(&limiter.globalRate, now, limiter.configuration.MaxNewAssociationsPerSecond) ||
-		!allowMapRate(limiter.clientRates, clientID, now, limiter.configuration.MaxNewAssociationsPerSecondPerClient) ||
-		!allowMapRate(limiter.proxyRates, proxyKey, now, limiter.configuration.MaxNewAssociationsPerSecondPerProxy) {
+		!rateAllowed(limiter.globalRate, now, limiter.configuration.MaxNewAssociationsPerSecond) ||
+		!mapRateAllowed(limiter.clientRates, clientID, now, limiter.configuration.MaxNewAssociationsPerSecondPerClient) ||
+		!mapRateAllowed(limiter.proxyRates, proxyKey, now, limiter.configuration.MaxNewAssociationsPerSecondPerProxy) {
 		return nil, false
 	}
+	limiter.globalRate = incrementRate(limiter.globalRate, now)
+	limiter.clientRates[clientID] = incrementRate(limiter.clientRates[clientID], now)
+	limiter.proxyRates[proxyKey] = incrementRate(limiter.proxyRates[proxyKey], now)
 	limiter.total++
 	limiter.pending++
 	limiter.clients[clientID]++
@@ -115,32 +118,30 @@ func (limiter *Limiter) cleanupRates(now time.Time) {
 	}
 }
 
-func allowRate(counter *rateCounter, now time.Time, limit int) bool {
+func rateAllowed(counter rateCounter, now time.Time, limit int) bool {
 	window := now.Truncate(time.Second)
 	if !counter.window.Equal(window) {
-		counter.window = window
-		counter.count = 0
+		return limit > 0
 	}
-	if counter.count >= limit {
-		return false
-	}
-	counter.count++
-	return true
+	return counter.count < limit
 }
 
-func allowMapRate(
+func mapRateAllowed(
 	counters map[string]rateCounter,
 	key string,
 	now time.Time,
 	limit int,
 ) bool {
-	counter := counters[key]
-	if !allowRate(&counter, now, limit) {
-		counters[key] = counter
-		return false
+	return rateAllowed(counters[key], now, limit)
+}
+
+func incrementRate(counter rateCounter, now time.Time) rateCounter {
+	window := now.Truncate(time.Second)
+	if !counter.window.Equal(window) {
+		return rateCounter{window: window, count: 1}
 	}
-	counters[key] = counter
-	return true
+	counter.count++
+	return counter
 }
 
 // Activate transitions a pending association to active accounting.

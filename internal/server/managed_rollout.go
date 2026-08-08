@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
+	"time"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/transport"
 )
 
 type managedExchange interface {
@@ -55,6 +59,68 @@ func (exchange initialManagedExchange) activate(
 
 type onlineManagedExchange struct {
 	session *managedSession
+}
+
+func (s *Service) initializeManagedSession(
+	ctx context.Context,
+	connection net.Conn,
+	clientID string,
+	sessionID string,
+	writer *control.Writer,
+	authenticationContext authentication.Context,
+) error {
+	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
+		return fmt.Errorf("set managed configuration deadline: %w", err)
+	}
+	for {
+		s.authenticationBarrier.RLock()
+		if !s.authenticationStore.IsCurrent(authenticationContext) {
+			s.authenticationBarrier.RUnlock()
+			return transport.ErrAuthentication
+		}
+		clientConfiguration, exists := s.configuration.managedClient(clientID)
+		s.authenticationBarrier.RUnlock()
+		if !exists {
+			return errors.New("managed client configuration is unavailable")
+		}
+
+		// Prepare and Activate perform network I/O and must never hold the
+		// authentication publication barrier.
+		if err := s.applyManagedConfiguration(
+			ctx,
+			connection,
+			clientID,
+			sessionID,
+			writer,
+			clientConfiguration,
+		); err != nil {
+			return err
+		}
+
+		s.authenticationBarrier.RLock()
+		latest, exists := s.configuration.managedClient(clientID)
+		if !s.authenticationStore.IsCurrent(authenticationContext) {
+			s.authenticationBarrier.RUnlock()
+			return transport.ErrAuthentication
+		}
+		if !exists || !reflect.DeepEqual(latest, clientConfiguration) {
+			s.authenticationBarrier.RUnlock()
+			continue
+		}
+		if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
+			s.authenticationBarrier.RUnlock()
+			return errors.New("managed client session is no longer current")
+		}
+		s.proxyRegistry.Activate(clientID, sessionID)
+		s.registerManagedSession(clientID, sessionID, connection, writer)
+		s.authenticationBarrier.RUnlock()
+
+		if err := connection.SetDeadline(time.Time{}); err != nil {
+			s.unregisterManagedSession(clientID, sessionID)
+			return fmt.Errorf("clear managed configuration deadline: %w", err)
+		}
+		return nil
+	}
 }
 
 func (exchange onlineManagedExchange) prepare(
@@ -127,6 +193,8 @@ func (s *Service) applyManagedGeneration(
 	if err := exchange.activate(ctx, status); err != nil {
 		return err
 	}
-	s.proxyRegistry.Activate(clientID, sessionID)
+	if deactivate {
+		s.proxyRegistry.Activate(clientID, sessionID)
+	}
 	return nil
 }

@@ -106,11 +106,18 @@ Register a domain on the client:
 proxies:
   - name: web
     type: http
+    public_schemes:
+      - https
+      - http
     domain: app.example.com
     local_ip: 127.0.0.1
     local_port: 8080
 ```
 
+`type` selects the proxy semantics carried between `portwayd` and `portway`;
+`public_schemes` explicitly selects the public HTTP/HTTPS listeners. Every
+selected listener must be enabled or the complete registration is rejected.
+When omitted or empty, `public_schemes` defaults to HTTP only.
 The public `Host` is matched to an authenticated client registration. Portwayd
 terminates public HTTPS and forwards HTTP through the authenticated tunnel, so
 the local application receives a normal HTTP request. HTTP and HTTPS share the

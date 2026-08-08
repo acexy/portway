@@ -38,14 +38,22 @@ type Client struct {
 
 // Registry owns the current session record for every ClientID.
 type Registry struct {
-	mutex   sync.Mutex
-	clients map[string]*clientRecord
+	mutex      sync.Mutex
+	clients    map[string]*clientRecord
+	maxClients int
 }
 
 // NewRegistry creates an empty session registry.
 func NewRegistry() *Registry {
+	return NewRegistryWithLimit(0)
+}
+
+// NewRegistryWithLimit creates a registry with an optional hard client limit.
+// A non-positive limit preserves the unbounded behavior used by focused unit tests.
+func NewRegistryWithLimit(maxClients int) *Registry {
 	return &Registry{
-		clients: make(map[string]*clientRecord),
+		clients:    make(map[string]*clientRecord),
+		maxClients: maxClients,
 	}
 }
 
@@ -84,6 +92,13 @@ func (registry *Registry) RegisterAuthenticated(
 			return false, false, nil, &protocol.SessionError{
 				Code:      protocol.SessionErrorSessionExpired,
 				Message:   "recoverable client session no longer exists",
+				Retryable: true,
+			}
+		}
+		if registry.maxClients > 0 && len(registry.clients) >= registry.maxClients {
+			return false, false, nil, &protocol.SessionError{
+				Code:      protocol.SessionErrorServerCapacityReached,
+				Message:   "server control session capacity reached",
 				Retryable: true,
 			}
 		}
@@ -135,7 +150,7 @@ func (registry *Registry) RegisterAuthenticated(
 			Retryable: true,
 		}
 	}
-	if resumeSessionID != record.sessionID && resumeSessionID != record.previousSessionID {
+	if resumeSessionID != record.sessionID {
 		return false, false, nil, &protocol.SessionError{
 			Code:      protocol.SessionErrorResumeSessionMismatch,
 			Message:   "resume session ID does not match the suspended client",
@@ -165,6 +180,7 @@ func (registry *Registry) Activate(clientID string, sessionID string, now time.T
 		return false
 	}
 	record.state = stateActive
+	record.previousSessionID = ""
 	record.lastHeartbeatAt = now
 	record.lastHeartbeatSequence = 0
 	return true

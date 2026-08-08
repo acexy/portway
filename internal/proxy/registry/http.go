@@ -92,6 +92,13 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "Misdirected Request", http.StatusMisdirectedRequest)
 		return
 	}
+	publicScheme := protocol.HTTPPublicScheme(requestScheme(request))
+	if !binding.declaration.AllowsPublicScheme(publicScheme) {
+		manager.mutex.Unlock()
+		manager.logHTTPRequest(request, "rejected", "public_scheme_not_registered", domain)
+		http.Error(writer, "Misdirected Request", http.StatusMisdirectedRequest)
+		return
+	}
 	state := manager.clients[binding.clientID]
 	if state == nil || !state.active || state.sessionID != binding.sessionID ||
 		state.httpProxies[binding.declaration.Name] != binding {
@@ -100,16 +107,10 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	clientActive, clientUpgrades := 0, 0
-	for _, candidate := range state.httpProxies {
-		active, upgrades := candidate.runtime.Active()
-		clientActive += active
-		clientUpgrades += upgrades
-	}
 	if manager.httpActiveRequests >= manager.httpConfiguration.MaxConcurrentRequests ||
-		clientActive >= manager.httpConfiguration.MaxConcurrentRequestsPerClient ||
+		state.httpActiveRequests >= manager.httpConfiguration.MaxConcurrentRequestsPerClient ||
 		(upgrade && (manager.httpActiveUpgrades >= manager.httpConfiguration.MaxUpgradeConnections ||
-			clientUpgrades >= manager.httpConfiguration.MaxUpgradeConnectionsPerClient)) ||
+			state.httpActiveUpgrades >= manager.httpConfiguration.MaxUpgradeConnectionsPerClient)) ||
 		!binding.runtime.Acquire(upgrade, http2, manager.httpConfiguration) {
 		manager.mutex.Unlock()
 		manager.logHTTPRequest(request, "rejected", "capacity_exceeded", domain)
@@ -117,8 +118,10 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	manager.httpActiveRequests++
+	state.httpActiveRequests++
 	if upgrade {
 		manager.httpActiveUpgrades++
+		state.httpActiveUpgrades++
 	}
 	manager.mutex.Unlock()
 	manager.logHTTPRequest(request, "accepted", "", domain)
@@ -127,8 +130,10 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		binding.runtime.Release(upgrade, http2)
 		manager.mutex.Lock()
 		manager.httpActiveRequests--
+		state.httpActiveRequests--
 		if upgrade {
 			manager.httpActiveUpgrades--
+			state.httpActiveUpgrades--
 		}
 		manager.mutex.Unlock()
 	}()

@@ -263,6 +263,64 @@ func TestClientRegistryResumesSuspendedClient(t *testing.T) {
 	}
 }
 
+func TestClientRegistryRejectsPreviousSessionIDAfterSuccessfulResume(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Now()
+	oldConnection, oldPeer := net.Pipe()
+	defer oldConnection.Close()
+	defer oldPeer.Close()
+	newConnection, newPeer := net.Pipe()
+	defer newConnection.Close()
+	defer newPeer.Close()
+
+	registry.Register("client-one", "", "session-one", oldConnection, now)
+	registry.Activate("client-one", "session-one", now)
+	registry.Disconnect("client-one", "session-one", now.Add(time.Second))
+	resumed, _, _, sessionError := registry.Register(
+		"client-one", "session-one", "session-two", newConnection, now.Add(2*time.Second),
+	)
+	if !resumed || sessionError != nil ||
+		!registry.Activate("client-one", "session-two", now.Add(2*time.Second)) {
+		t.Fatal("failed to establish the resumed session")
+	}
+	registry.Disconnect("client-one", "session-two", now.Add(3*time.Second))
+
+	_, _, _, sessionError = registry.Register(
+		"client-one", "session-one", "session-three", oldConnection, now.Add(4*time.Second),
+	)
+	if sessionError == nil ||
+		sessionError.Code != protocol.SessionErrorResumeSessionMismatch ||
+		sessionError.Retryable {
+		t.Fatalf("previous session ID remained recoverable: %#v", sessionError)
+	}
+}
+
+func TestClientRegistryEnforcesClientCapacity(t *testing.T) {
+	registry := NewRegistryWithLimit(1)
+	now := time.Now()
+	firstConnection, firstPeer := net.Pipe()
+	defer firstConnection.Close()
+	defer firstPeer.Close()
+	secondConnection, secondPeer := net.Pipe()
+	defer secondConnection.Close()
+	defer secondPeer.Close()
+
+	_, created, _, sessionError := registry.Register(
+		"client-one", "", "session-one", firstConnection, now,
+	)
+	if !created || sessionError != nil {
+		t.Fatal("first client was not admitted")
+	}
+	_, _, _, sessionError = registry.Register(
+		"client-two", "", "session-two", secondConnection, now,
+	)
+	if sessionError == nil ||
+		sessionError.Code != protocol.SessionErrorServerCapacityReached ||
+		!sessionError.Retryable {
+		t.Fatalf("expected retryable server capacity error, got %#v", sessionError)
+	}
+}
+
 func TestClientRegistryReportsRecoveryPendingWithoutSessionID(t *testing.T) {
 	registry := NewRegistry()
 	now := time.Now()

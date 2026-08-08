@@ -1,4 +1,4 @@
-package configgenerator
+package gen
 
 import (
 	"os"

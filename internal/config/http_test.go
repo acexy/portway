@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/acexy/portway/internal/protocol"
 )
 
 func TestLoadServerParsesHTTPSettings(t *testing.T) {
@@ -151,6 +153,54 @@ func TestValidateClientAcceptsHTTPProxy(t *testing.T) {
 	}
 }
 
+func TestValidateClientRejectsInvalidHTTPPublicSchemes(t *testing.T) {
+	testCases := []struct {
+		name    string
+		schemes []protocol.HTTPPublicScheme
+	}{
+		{name: "unknown", schemes: []protocol.HTTPPublicScheme{"h3"}},
+		{name: "duplicate", schemes: []protocol.HTTPPublicScheme{
+			protocol.HTTPPublicSchemeHTTPS,
+			protocol.HTTPPublicSchemeHTTPS,
+		}},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			configuration := validHTTPClientConfiguration()
+			configuration.Proxies[0].PublicSchemes = testCase.schemes
+			if err := validateClient(configuration); err == nil {
+				t.Fatal("invalid HTTP public schemes were accepted")
+			}
+		})
+	}
+}
+
+func TestValidateClientDefaultsHTTPPublicSchemes(t *testing.T) {
+	configuration := validHTTPClientConfiguration()
+	configuration.Proxies[0].PublicSchemes = nil
+	if err := validateClient(configuration); err != nil {
+		t.Fatalf("default HTTP public scheme was rejected: %v", err)
+	}
+	if len(configuration.Proxies[0].PublicSchemes) != 1 ||
+		configuration.Proxies[0].PublicSchemes[0] != protocol.HTTPPublicSchemeHTTP {
+		t.Fatalf("public schemes = %v, want [http]", configuration.Proxies[0].PublicSchemes)
+	}
+}
+
+func TestValidateClientRejectsPublicSchemesForTCP(t *testing.T) {
+	configuration := DefaultClient()
+	configuration.ClientID = "tcp-client"
+	configuration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	configuration.Proxies = []ProxyConfig{{
+		Name: "ssh", Type: "tcp", LocalIP: "127.0.0.1",
+		LocalPort: 22, RemotePort: 22022,
+		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+	}}
+	if err := validateClient(configuration); err == nil {
+		t.Fatal("TCP proxy with public schemes was accepted")
+	}
+}
+
 func TestValidateClientRejectsNonCanonicalHTTPDomain(t *testing.T) {
 	invalidDomains := []string{
 		"App.Example.com",
@@ -233,6 +283,7 @@ func validHTTPClientConfiguration() ClientConfig {
 	configuration.Proxies = []ProxyConfig{{
 		Name: "web", Type: "http", Domain: "app.example.com",
 		LocalIP: "127.0.0.1", LocalPort: 8080,
+		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 	}}
 	return configuration
 }

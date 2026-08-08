@@ -36,7 +36,7 @@ transport:
 
 # Optional. Public proxy listener settings.
 tunnel:
-  # Optional. IP used by public TCP proxy listeners.
+  # Optional. IP used by public TCP and UDP proxy listeners.
   # Defaults to 0.0.0.0. Must be an IP address, not a hostname.
   bind_ip: 0.0.0.0
 
@@ -197,6 +197,8 @@ authentication:
   # fields use production-safe defaults; explicit values must remain within
   # their documented program hard limits. File names are operator-facing labels
   # and do not need to match ClientID.
+  # The http permission separately allows public_schemes and domains for
+  # type=http declarations; listeners and HTTPS certificates remain global.
   # See config/governed/governed-client.yaml for a complete record example.
   # governed_clients_path: "./governed"
 
@@ -204,5 +206,8 @@ authentication:
   # and complete server-owned proxy configuration. A client may have at most
   # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
   # TCP ports, UDP ports, and HTTP domains must each be globally unique.
+  # Managed type=http entries explicitly select public_schemes. Every selected
+  # listener must be enabled globally; HTTPS certificates are configured above,
+  # while each managed local target still speaks HTTP.
   # See config/managed/managed-client.yaml for a complete record example.
   # managed_clients_path: "./managed"

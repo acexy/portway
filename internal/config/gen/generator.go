@@ -1,5 +1,5 @@
 // Package configgenerator writes safe starter configuration files.
-package configgenerator
+package gen
 
 import (
 	"errors"

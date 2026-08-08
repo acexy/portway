@@ -28,7 +28,8 @@ configuration:
 
   # Optional. Complete desired proxy set. Defaults to empty, which means that
   # this client exposes no proxies. Hard maximum: 128 entries across TCP, UDP,
-  # and HTTP. Names must be unique within this record. Exceeding the hard
+  # and HTTP. HTTPS uses the same type=http entries and is not a fourth proxy
+  # type. Names must be unique within this record. Exceeding the hard
   # maximum prevents server startup or rejects the hot-reload candidate.
   # Across all Managed records, TCP remote ports, UDP remote ports, and HTTP
   # domains must each be globally unique. TCP and UDP may use the same numeric
@@ -37,7 +38,10 @@ configuration:
   proxies:
     # TCP example.
     - name: ssh
-      # * Required. Allowed values: tcp, udp, http.
+      # * Required. Selects end-to-end proxy semantics carried between
+      # portwayd and portway, not a public listener scheme. Allowed values:
+      # tcp, udp, http. Public TLS terminates at portwayd, so there is no https
+      # proxy type.
       type: tcp
       # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
       # by the client.
@@ -56,9 +60,17 @@ configuration:
       local_port: 53
       remote_port: 5353
 
-    # HTTP example.
+    # HTTP/HTTPS public entry example. This one domain binding is served by
+    # every enabled public HTTP or HTTPS listener. HTTPS additionally requires
+    # the server SNI certificate set to cover this domain. TLS terminates at
+    # portwayd, which always forwards plain HTTP to the managed local target.
     - name: web
       type: http
+      # Optional for http. Empty or omitted defaults to [http]. Explicit values
+      # must be unique and may be http or https. Every requested listener must
+      # be enabled globally. Not allowed for tcp or udp.
+      public_schemes:
+        - https
       # Optional. Defaults to 127.0.0.1.
       local_ip: 127.0.0.1
       local_port: 8080

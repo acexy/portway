@@ -54,20 +54,29 @@ type linkOpenResult struct {
 
 // Broker owns pending and active logical data links.
 type Broker struct {
-	context context.Context
-	mutex   sync.Mutex
-	pending map[string]*brokerPendingLink
-	active  map[string]*brokerActiveLink
-	closed  bool
+	mutex          sync.Mutex
+	pending        map[string]*brokerPendingLink
+	active         map[string]*brokerActiveLink
+	pendingClients map[string]int
+	pendingProxies map[string]int
+	activeClients  map[string]int
+	activeProxies  map[string]int
+	closed         bool
+	closeOnce      sync.Once
 }
 
 // NewBroker creates a link broker.
 func NewBroker(ctx context.Context) *Broker {
-	return &Broker{
-		context: ctx,
-		pending: make(map[string]*brokerPendingLink),
-		active:  make(map[string]*brokerActiveLink),
+	broker := &Broker{
+		pending:        make(map[string]*brokerPendingLink),
+		active:         make(map[string]*brokerActiveLink),
+		pendingClients: make(map[string]int),
+		pendingProxies: make(map[string]int),
+		activeClients:  make(map[string]int),
+		activeProxies:  make(map[string]int),
 	}
+	context.AfterFunc(ctx, broker.Close)
+	return broker
 }
 
 func (broker *Broker) ServeStream(
@@ -139,6 +148,7 @@ func (broker *Broker) request(
 		handler:      handler,
 	}
 	broker.pending[linkID] = pending
+	broker.incrementPendingLocked(target)
 	pending.timer = time.AfterFunc(pendingTimeout, func() {
 		broker.cancel(linkID, true, context.DeadlineExceeded)
 	})
@@ -185,12 +195,14 @@ func (broker *Broker) Bind(
 		return broker.rejectBinding(connection, binding.LinkID, protocol.LinkErrorInvalidBinding)
 	}
 	delete(broker.pending, binding.LinkID)
+	broker.decrementPendingLocked(pending.target)
 	pending.timer.Stop()
 	managed := newManagedLinkConnection(connection)
 	broker.active[binding.LinkID] = &brokerActiveLink{
 		target:     pending.target,
 		connection: managed,
 	}
+	broker.incrementActiveLocked(pending.target)
 	broker.mutex.Unlock()
 
 	if err := protocol.WriteControl(connection, protocol.MessageBindResult, protocol.BindResult{
@@ -243,6 +255,7 @@ func (broker *Broker) cancel(linkID string, notify bool, err error) {
 		return
 	}
 	delete(broker.pending, linkID)
+	broker.decrementPendingLocked(pending.target)
 	broker.mutex.Unlock()
 	pending.timer.Stop()
 	if pending.onCancel != nil {
@@ -273,6 +286,7 @@ func (broker *Broker) cancelAny(linkID string, err error) {
 		return
 	}
 	delete(broker.pending, linkID)
+	broker.decrementPendingLocked(pending.target)
 	broker.mutex.Unlock()
 	pending.timer.Stop()
 	if pending.onCancel != nil {
@@ -348,28 +362,34 @@ func (broker *Broker) ReportFailure(
 }
 
 func (broker *Broker) Close() {
-	broker.mutex.Lock()
-	broker.closed = true
-	pendingIDs := make([]string, 0, len(broker.pending))
-	active := make([]*managedLinkConnection, 0, len(broker.active))
-	for linkID := range broker.pending {
-		pendingIDs = append(pendingIDs, linkID)
-	}
-	for _, link := range broker.active {
-		active = append(active, link.connection)
-	}
-	broker.mutex.Unlock()
-	for _, linkID := range pendingIDs {
-		broker.cancel(linkID, false, net.ErrClosed)
-	}
-	for _, connection := range active {
-		connection.Close()
-	}
+	broker.closeOnce.Do(func() {
+		broker.mutex.Lock()
+		broker.closed = true
+		pendingIDs := make([]string, 0, len(broker.pending))
+		active := make([]*managedLinkConnection, 0, len(broker.active))
+		for linkID := range broker.pending {
+			pendingIDs = append(pendingIDs, linkID)
+		}
+		for _, link := range broker.active {
+			active = append(active, link.connection)
+		}
+		broker.mutex.Unlock()
+		for _, linkID := range pendingIDs {
+			broker.cancel(linkID, false, net.ErrClosed)
+		}
+		for _, connection := range active {
+			connection.Close()
+		}
+	})
 }
 
 func (broker *Broker) finish(linkID string) {
 	broker.mutex.Lock()
-	delete(broker.active, linkID)
+	active := broker.active[linkID]
+	if active != nil {
+		delete(broker.active, linkID)
+		broker.decrementActiveLocked(active.target)
+	}
 	broker.mutex.Unlock()
 }
 
@@ -378,29 +398,49 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 		len(broker.active) >= maxActive {
 		return true
 	}
-	pendingClient, pendingProxy, activeClient, activeProxy := 0, 0, 0, 0
-	for _, link := range broker.pending {
-		if link.target.ClientID == target.ClientID {
-			pendingClient++
-			if link.target.ProxyName == target.ProxyName {
-				pendingProxy++
-			}
-		}
-	}
-	for _, link := range broker.active {
-		if link.target.ClientID == target.ClientID {
-			activeClient++
-			if link.target.ProxyName == target.ProxyName {
-				activeProxy++
-			}
-		}
-	}
+	proxyKey := brokerProxyKey(target)
+	pendingClient := broker.pendingClients[target.ClientID]
+	pendingProxy := broker.pendingProxies[proxyKey]
+	activeClient := broker.activeClients[target.ClientID]
+	activeProxy := broker.activeProxies[proxyKey]
 	return pendingClient >= maxPendingPerClient ||
 		pendingProxy >= maxPendingPerProxy ||
 		(target.MaxActiveLinks > 0 &&
 			pendingClient+activeClient >= target.MaxActiveLinks) ||
 		activeClient >= maxActivePerClient ||
 		activeProxy >= maxActivePerProxy
+}
+
+func (broker *Broker) incrementPendingLocked(target Target) {
+	broker.pendingClients[target.ClientID]++
+	broker.pendingProxies[brokerProxyKey(target)]++
+}
+
+func (broker *Broker) decrementPendingLocked(target Target) {
+	decrementBrokerCount(broker.pendingClients, target.ClientID)
+	decrementBrokerCount(broker.pendingProxies, brokerProxyKey(target))
+}
+
+func (broker *Broker) incrementActiveLocked(target Target) {
+	broker.activeClients[target.ClientID]++
+	broker.activeProxies[brokerProxyKey(target)]++
+}
+
+func (broker *Broker) decrementActiveLocked(target Target) {
+	decrementBrokerCount(broker.activeClients, target.ClientID)
+	decrementBrokerCount(broker.activeProxies, brokerProxyKey(target))
+}
+
+func brokerProxyKey(target Target) string {
+	return target.ClientID + "\x00" + target.ProxyName
+}
+
+func decrementBrokerCount(counts map[string]int, key string) {
+	if counts[key] <= 1 {
+		delete(counts, key)
+		return
+	}
+	counts[key]--
 }
 
 func newBrokerLinkCredentials() (string, string, [sha256.Size]byte, error) {

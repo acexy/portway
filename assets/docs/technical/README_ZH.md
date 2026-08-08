@@ -68,6 +68,10 @@ HTTP 转发使用 Go 标准 HTTP 服务端和反向代理实现。后端连接�
 两个入口共用域名注册表和容量限制。HTTPS 根据 SNI 使用可原子热更新的证书集合。
 HTTP/HTTPS 都会在域名路由前执行 socket 或可信 Header 来源 IP 拒绝规则。
 
+HTTP 代理类型表示隧道内承载的请求语义，不会自动启用公网入口。每个 HTTP 代理
+通过 `public_schemes` 显式选择 `http`、`https` 或两者；所选 Listener 不可用时
+拒绝整批注册。留空或省略时默认仅使用 HTTP。
+
 本地应用程序接收的是普通的 HTTP 请求，无需实现 Portway 帧封装、认证或会话行为。
 
 ## UDP 代理

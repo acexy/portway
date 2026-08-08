@@ -107,13 +107,6 @@ func (binding *Binding) Close() {
 	binding.broker.CancelBinding(binding.bindingID)
 }
 
-// Active returns the current request and Upgrade counts.
-func (binding *Binding) Active() (requests int, upgrades int) {
-	binding.mutex.Lock()
-	defer binding.mutex.Unlock()
-	return binding.activeRequests, binding.activeUpgrades
-}
-
 // Acquire reserves this binding's request capacity.
 func (binding *Binding) Acquire(
 	upgrade bool,

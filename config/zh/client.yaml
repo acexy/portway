@@ -30,7 +30,9 @@ authentication:
 # 同一 ClientID 下所有代理名称必须唯一。
 proxies:
   - name: ssh
-    # 必填。可选值：tcp、udp、http。
+    # 必填。表示 portwayd 与 portway 之间承载的端到端代理语义，而非公网入口
+    # scheme。可选值：tcp（字节流）、udp（数据报）、http（HTTP 请求）。公网 TLS
+    # 在 portwayd 终止，因此不存在 https 代理类型。
     type: tcp
     # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
     local_ip: 127.0.0.1
@@ -39,17 +41,25 @@ proxies:
     # TCP/UDP 必填，HTTP 禁止配置；范围 1-65535。
     remote_port: 22022
 
-  # HTTP 示例：
-  # - name: web
-  #   type: http
-  #   # 必填：规范化小写 DNS 域名，不含协议、端口、路径、通配符或尾点。
-  #   domain: app.example.com
-  #   local_ip: 127.0.0.1
-  #   local_port: 8080
+  # 公网 HTTP/HTTPS 示例：public_schemes 显式选择允许的公网 Listener；任一声明
+  # 的入口未在 portwayd 启用时，整批代理注册都会被拒绝。HTTPS 在 portwayd
+  # 终止 TLS、按 SNI 选择证书，
+  # 再以明文 HTTP 回源 local_ip:local_port，因此本地服务必须提供 HTTP。
+  # 服务端至少启用一个 HTTP/HTTPS Listener；使用 HTTPS 时证书映射还必须覆盖该域名。
+  - name: web
+    type: http
+    # type=http 时可选；留空或省略默认 [http]。显式值可为 http、https 且不得
+    # 重复。TCP/UDP 禁止配置。
+    public_schemes:
+      - https
+    # 必填：规范化小写 DNS 域名，不含协议、端口、路径、通配符或尾点。
+    domain: app.example.com
+    local_ip: 127.0.0.1
+    local_port: 8080
 
   # UDP 示例：
-  # - name: dns
-  #   type: udp
-  #   local_ip: 127.0.0.1
-  #   local_port: 53
-  #   remote_port: 5353
+  - name: dns
+    type: udp
+    local_ip: 127.0.0.1
+    local_port: 53
+    remote_port: 5353

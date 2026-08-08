@@ -13,6 +13,7 @@ func validateProxyDeclarations(
 	revision uint64,
 	declarations []protocol.ProxyDeclaration,
 	httpEnabled bool,
+	httpsEnabled bool,
 ) *protocol.SyncResult {
 	names := make(map[string]struct{}, len(declarations))
 	tcpPorts := make(map[uint16]struct{})
@@ -30,7 +31,8 @@ func validateProxyDeclarations(
 		}
 		switch declaration.Type {
 		case protocol.ProxyTypeTCP:
-			if declaration.RemotePort == 0 || declaration.Domain != "" {
+			if declaration.RemotePort == 0 || declaration.Domain != "" ||
+				len(declaration.PublicSchemes) != 0 {
 				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid TCP proxy declaration")
 				return &result
 			}
@@ -40,7 +42,8 @@ func validateProxyDeclarations(
 			}
 			tcpPorts[declaration.RemotePort] = struct{}{}
 		case protocol.ProxyTypeUDP:
-			if declaration.RemotePort == 0 || declaration.Domain != "" {
+			if declaration.RemotePort == 0 || declaration.Domain != "" ||
+				len(declaration.PublicSchemes) != 0 {
 				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid UDP proxy declaration")
 				return &result
 			}
@@ -51,12 +54,21 @@ func validateProxyDeclarations(
 			udpPorts[declaration.RemotePort] = struct{}{}
 		case protocol.ProxyTypeHTTP:
 			if declaration.RemotePort != 0 ||
-				config.ValidateHTTPDomain(declaration.Domain) != nil {
+				config.ValidateHTTPDomain(declaration.Domain) != nil ||
+				!validPublicSchemes(declaration.PublicSchemes) {
 				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid HTTP proxy declaration")
 				return &result
 			}
-			if !httpEnabled {
-				result := rejectedSyncResult(revision, protocol.ProxyErrorHTTPDisabled, declaration.Name, "HTTP listener is disabled")
+			if (declaration.AllowsPublicScheme(protocol.HTTPPublicSchemeHTTP) &&
+				!httpEnabled) ||
+				(declaration.AllowsPublicScheme(protocol.HTTPPublicSchemeHTTPS) &&
+					!httpsEnabled) {
+				result := rejectedSyncResult(
+					revision,
+					protocol.ProxyErrorPublicSchemeUnavailable,
+					declaration.Name,
+					"requested public scheme is unavailable",
+				)
 				return &result
 			}
 			if _, duplicate := httpDomains[declaration.Domain]; duplicate {
@@ -80,4 +92,22 @@ func validateProxyDeclarations(
 		names[declaration.Name] = struct{}{}
 	}
 	return nil
+}
+
+func validPublicSchemes(schemes []protocol.HTTPPublicScheme) bool {
+	if len(schemes) == 0 {
+		return true
+	}
+	seen := make(map[protocol.HTTPPublicScheme]struct{}, len(schemes))
+	for _, scheme := range schemes {
+		if scheme != protocol.HTTPPublicSchemeHTTP &&
+			scheme != protocol.HTTPPublicSchemeHTTPS {
+			return false
+		}
+		if _, duplicate := seen[scheme]; duplicate {
+			return false
+		}
+		seen[scheme] = struct{}{}
+	}
+	return true
 }

@@ -90,6 +90,11 @@ Both listeners share the same registry and capacity limits. HTTPS selects from
 an atomically reloadable SNI certificate set. Socket and trusted-header IP deny rules
 run before routing for both HTTP and HTTPS.
 
+The HTTP proxy type describes the request semantics carried through the tunnel,
+not an automatically enabled public scheme. Each HTTP proxy explicitly selects
+`http`, `https`, or both with `public_schemes`; unavailable listeners reject the
+complete registration. Empty or omitted values default to HTTP only.
+
 The local application receives an ordinary HTTP request. It does not implement
 Portway framing, authentication, or session behavior.
 

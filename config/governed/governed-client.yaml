@@ -23,7 +23,9 @@ token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
 # these permissions; it never silently removes individual proxies.
 permissions:
   # Optional. Proxy type allowlist. Empty means that no proxy type is allowed.
-  # Allowed values: tcp, udp, http. Values must not be repeated.
+  # These values select end-to-end proxy semantics carried between portwayd
+  # and portway, not public listener schemes. Allowed values: tcp, udp, http.
+  # Values must not be repeated. Public HTTP/HTTPS access is authorized below.
   proxy_types:
     - tcp
     - udp
@@ -52,10 +54,20 @@ permissions:
   # Required and non-empty when http is allowed. Must be empty or omitted when
   # http is not allowed.
   http:
-    # Authorized exact domains or single-label wildcard domains.
-    # Exact names must be lowercase canonical DNS names.
+    # Optional when http is allowed. Empty or omitted authorizes only http.
+    # Explicit unique values may be http or https. Each client declaration may
+    # request only these listeners, which must also be enabled globally.
+    public_schemes:
+      - https
+
+    # Authorized unique exact domains or single-label wildcard domains.
+    # Values must not repeat. Exact names must be lowercase canonical DNS names.
     # "*.example.com" matches "app.example.com", but not "example.com" or
     # "a.b.example.com". Clients still register exact domains, not wildcards.
+    # HTTPS availability is controlled independently by the server listener
+    # and SNI certificate set. An allowed client domain must also be covered by
+    # a configured certificate before visitors can use HTTPS. TLS terminates
+    # at portwayd and the client-side target remains plain HTTP.
     domains:
       - app.example.com
       - "*.customer.example.com"

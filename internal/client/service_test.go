@@ -197,6 +197,7 @@ func TestKnownSessionErrorsRejectContradictoryRetryableValue(t *testing.T) {
 		{Code: protocol.SessionErrorResumeSessionMismatch, Retryable: true},
 		{Code: protocol.SessionErrorClientIDRecoveryPending, Retryable: false},
 		{Code: protocol.SessionErrorSessionExpired, Retryable: false},
+		{Code: protocol.SessionErrorServerCapacityReached, Retryable: false},
 	}
 	for _, testCase := range testCases {
 		if err := validateSessionErrorRetryable(testCase); !errors.Is(

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/protocol"
 )
 
 func TestLoadServerBuildsMultiModeAuthenticationSnapshot(t *testing.T) {
@@ -30,6 +31,7 @@ permissions:
       - start: 20000
         end: 20999
   http:
+    public_schemes: [http]
     domains:
       - "*.customer-a.example.com"
 `)
@@ -46,7 +48,9 @@ configuration:
       remote_port: 22022
 `)
 	serverPath := filepath.Join(configurationDirectory, "server.yaml")
-	writeTestConfiguration(t, serverPath, `
+writeTestConfiguration(t, serverPath, `
+tunnel:
+  http_listen_address: 127.0.0.1:8080
 authentication:
   shared_token: shared-token-with-at-least-32-random-bytes
   governed_clients_path: governed
@@ -96,6 +100,37 @@ authentication:
 			record.Context.ClientID != expected.clientID {
 			t.Fatalf("unexpected %s authentication context: %+v", expected.mode, record.Context)
 		}
+	}
+}
+
+func TestLoadServerRejectsManagedUnavailablePublicScheme(t *testing.T) {
+	configurationDirectory := t.TempDir()
+	managedDirectory := filepath.Join(configurationDirectory, "managed")
+	if err := os.Mkdir(managedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestConfiguration(t, filepath.Join(managedDirectory, "web.yaml"), `
+client_id: managed-web
+token: managed-token-with-at-least-32-random-bytes
+configuration:
+  revision: 1
+  proxies:
+    - name: web
+      type: http
+      public_schemes: [http]
+      domain: app.example.com
+      local_ip: 127.0.0.1
+      local_port: 8080
+`)
+	serverPath := filepath.Join(configurationDirectory, "server.yaml")
+	writeTestConfiguration(t, serverPath, `
+authentication:
+  managed_clients_path: managed
+`)
+
+	if _, err := LoadServer(serverPath, false); err == nil ||
+		!strings.Contains(err.Error(), "requires the public HTTP listener") {
+		t.Fatalf("managed unavailable scheme error = %v", err)
 	}
 }
 
@@ -210,8 +245,8 @@ func TestValidateManagedProxiesRejectsPublicBindingConflicts(t *testing.T) {
 		{
 			name: "duplicate HTTP domain",
 			proxies: []ProxyConfig{
-				{Name: "first", Type: "http", LocalIP: "127.0.0.1", LocalPort: 1, Domain: "app.example.com"},
-				{Name: "second", Type: "http", LocalIP: "127.0.0.1", LocalPort: 2, Domain: "app.example.com"},
+				{Name: "first", Type: "http", LocalIP: "127.0.0.1", LocalPort: 1, Domain: "app.example.com", PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
+				{Name: "second", Type: "http", LocalIP: "127.0.0.1", LocalPort: 2, Domain: "app.example.com", PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
 			},
 		},
 	}
@@ -321,10 +356,10 @@ func TestValidateManagedClientConflictsRejectsGlobalBindings(t *testing.T) {
 		{
 			name: "HTTP domain",
 			firstProxy: ProxyConfig{
-				Name: "first", Type: "http", Domain: "app.example.com",
+				Name: "first", Type: "http", Domain: "app.example.com", PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 			},
 			secondProxy: ProxyConfig{
-				Name: "second", Type: "http", Domain: "app.example.com",
+				Name: "second", Type: "http", Domain: "app.example.com", PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 			},
 			errorText: "managed HTTP domain",
 		},
@@ -445,6 +480,10 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 			RemotePortRanges: []PortRange{{Start: 30000, End: 30999}},
 		},
 		HTTP: HTTPPermission{
+			PublicSchemes: []protocol.HTTPPublicScheme{
+				protocol.HTTPPublicSchemeHTTP,
+				protocol.HTTPPublicSchemeHTTPS,
+			},
 			Domains: []string{"app.example.com"},
 		},
 	}
