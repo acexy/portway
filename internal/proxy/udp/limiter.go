@@ -15,46 +15,46 @@ type rateCounter struct {
 
 // Limiter owns global UDP association, rate, and queued-byte accounting.
 type Limiter struct {
-	configuration config.UDPConfig
-	mutex         sync.Mutex
-	total         int
-	pending       int
-	queuedBytes   int
-	clients       map[string]int
-	pendingClients map[string]int
-	proxies       map[string]int
-	pendingProxies map[string]int
-	sources       map[netip.Addr]int
-	globalRate    rateCounter
-	clientRates   map[string]rateCounter
-	proxyRates    map[string]rateCounter
+	configuration     config.UDPConfig
+	mutex             sync.Mutex
+	total             int
+	pending           int
+	queuedBytes       int
+	clients           map[string]int
+	pendingClients    map[string]int
+	proxies           map[string]int
+	pendingProxies    map[string]int
+	sources           map[netip.Addr]int
+	globalRate        rateCounter
+	clientRates       map[string]rateCounter
+	proxyRates        map[string]rateCounter
 	rateCleanupWindow time.Time
 }
 
 // NewLimiter creates a process-scoped UDP limiter.
 func NewLimiter(configuration config.UDPConfig) *Limiter {
 	return &Limiter{
-		configuration: configuration,
-		clients: make(map[string]int),
+		configuration:  configuration,
+		clients:        make(map[string]int),
 		pendingClients: make(map[string]int),
-		proxies: make(map[string]int),
+		proxies:        make(map[string]int),
 		pendingProxies: make(map[string]int),
-		sources: make(map[netip.Addr]int),
-		clientRates: make(map[string]rateCounter),
-		proxyRates: make(map[string]rateCounter),
+		sources:        make(map[netip.Addr]int),
+		clientRates:    make(map[string]rateCounter),
+		proxyRates:     make(map[string]rateCounter),
 	}
 }
 
 // AssociationLease owns all accounting for one UDP association.
 type AssociationLease struct {
-	limiter   *Limiter
-	clientID  string
-	proxyKey  string
-	source    netip.Addr
-	mutex     sync.Mutex
-	pending   bool
-	queued    int
-	closed    bool
+	limiter  *Limiter
+	clientID string
+	proxyKey string
+	source   netip.Addr
+	mutex    sync.Mutex
+	pending  bool
+	queued   int
+	closed   bool
 }
 
 // Acquire reserves capacity for a pending association.
@@ -92,11 +92,11 @@ func (limiter *Limiter) Acquire(
 	limiter.pendingProxies[proxyKey]++
 	limiter.sources[source]++
 	return &AssociationLease{
-		limiter: limiter,
+		limiter:  limiter,
 		clientID: clientID,
 		proxyKey: proxyKey,
-		source: source,
-		pending: true,
+		source:   source,
+		pending:  true,
 	}, true
 }
 

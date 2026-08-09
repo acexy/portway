@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
 )
+
+const maxHTTPSCertificateFileBytes = 4 * 1024 * 1024
 
 // httpsCertificateSnapshot is an immutable SNI certificate selection index.
 type httpsCertificateSnapshot struct {
@@ -132,11 +135,11 @@ func loadHTTPSCertificates(
 func loadHTTPSCertificatePair(
 	configuration config.HTTPSCertificateConfig,
 ) (*tls.Certificate, string, error) {
-	certificatePEM, err := os.ReadFile(configuration.CertFile)
+	certificatePEM, err := readHTTPSCertificateFile(configuration.CertFile)
 	if err != nil {
 		return nil, "", fmt.Errorf("read HTTPS certificate: %w", err)
 	}
-	keyPEM, err := os.ReadFile(configuration.KeyFile)
+	keyPEM, err := readHTTPSCertificateFile(configuration.KeyFile)
 	if err != nil {
 		return nil, "", fmt.Errorf("read HTTPS private key: %w", err)
 	}
@@ -164,6 +167,29 @@ func loadHTTPSCertificatePair(
 	}
 	certificate.Leaf = leaf
 	return &certificate, digest, nil
+}
+
+func readHTTPSCertificateFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("certificate source is not a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxHTTPSCertificateFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxHTTPSCertificateFileBytes {
+		return nil, fmt.Errorf("certificate source exceeds %d bytes", maxHTTPSCertificateFileBytes)
+	}
+	return data, nil
 }
 
 func verifyHTTPSCertificateDomain(certificate *x509.Certificate, domain string) error {

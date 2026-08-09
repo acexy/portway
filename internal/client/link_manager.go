@@ -416,7 +416,7 @@ func (manager *linkManager) findProxy(
 	defer manager.mutex.Unlock()
 	proxyConfiguration, exists := manager.proxies[name]
 	return proxyConfiguration, exists &&
-		proxyConfiguration.Type == string(proxyType)
+		proxyConfiguration.Type == proxyType
 }
 
 func (manager *linkManager) updateProxies(proxies []config.ProxyConfig) {

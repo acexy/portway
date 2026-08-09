@@ -11,11 +11,11 @@ import (
 )
 
 type clientRecord struct {
-	clientID          string
-	sessionID         string
-	previousSessionID string
-	state             state
-	connection        net.Conn
+	clientID              string
+	sessionID             string
+	previousSessionID     string
+	state                 state
+	connection            net.Conn
 	lastHeartbeatAt       time.Time
 	lastHeartbeatSequence uint64
 	suspendedAt           time.Time

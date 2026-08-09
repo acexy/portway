@@ -112,8 +112,10 @@ proxies:
 公网 HTTP/HTTPS Listener；任一所选 Listener 未启用都会拒绝整批注册。
 省略或留空 `public_schemes` 时默认仅使用 HTTP 入口。
 公共 `Host` 会被匹配到已认证的客户端注册信息。`portwayd` 终止公网 HTTPS，
-随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。HTTP 与
-HTTPS 共用代理限制。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
+随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。Visitor
+提供的 `Forwarded` 和 `X-Forwarded-*` 会被删除，`portwayd` 写入可信的
+`X-Forwarded-For`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。HTTP 与 HTTPS
+共用代理限制。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
 无效更新会继续使用上一代集合。HTTPS 支持 HTTP/1.1、HTTP/2，最低使用 TLS 1.2。
 当前不支持 HTTPS 回源、SNI 透传、ACME 和 HTTP/3。
 

@@ -20,10 +20,10 @@ func TestClientUDPProxyConfigurationIsAccepted(t *testing.T) {
 	configuration := DefaultClient()
 	configuration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
 	configuration.Proxies = []ProxyConfig{{
-		Name: "dns",
-		Type: "udp",
-		LocalIP: "127.0.0.1",
-		LocalPort: 53,
+		Name:       "dns",
+		Type:       "udp",
+		LocalIP:    "127.0.0.1",
+		LocalPort:  53,
 		RemotePort: 5353,
 	}}
 	if err := validateClient(configuration); err != nil {

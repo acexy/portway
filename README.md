@@ -120,8 +120,10 @@ selected listener must be enabled or the complete registration is rejected.
 When omitted or empty, `public_schemes` defaults to HTTP only.
 The public `Host` is matched to an authenticated client registration. Portwayd
 terminates public HTTPS and forwards HTTP through the authenticated tunnel, so
-the local application receives a normal HTTP request. HTTP and HTTPS share the
-same proxy limits. HTTPS selects certificates by SNI from an atomically
+the local application receives a normal HTTP request. Visitor-supplied
+`Forwarded` and `X-Forwarded-*` values are removed; Portwayd writes trusted
+`X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto` values. HTTP and
+HTTPS share the same proxy limits. HTTPS selects certificates by SNI from an atomically
 reloadable certificate set; invalid updates leave the previous set active. HTTPS supports
 HTTP/1.1 and HTTP/2 with a minimum TLS version of 1.2. HTTPS backend forwarding,
 SNI passthrough, ACME, and HTTP/3 are not currently supported.

@@ -1,9 +1,11 @@
 package registry
 
-import "sync"
+import (
+	"sync"
 
-import proxytcp "github.com/acexy/portway/internal/proxy/tcp"
-import proxyudp "github.com/acexy/portway/internal/proxy/udp"
+	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
+	proxyudp "github.com/acexy/portway/internal/proxy/udp"
+)
 
 // Activate makes a fully registered client available to public traffic.
 func (manager *Registry) Activate(clientID string, sessionID string) {

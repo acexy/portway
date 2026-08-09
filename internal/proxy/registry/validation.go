@@ -1,13 +1,9 @@
 package registry
 
 import (
-	"regexp"
-
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
 )
-
-var proxyNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 func validateProxyDeclarations(
 	revision uint64,
@@ -20,7 +16,7 @@ func validateProxyDeclarations(
 	udpPorts := make(map[uint16]struct{})
 	httpDomains := make(map[string]struct{})
 	for _, declaration := range declarations {
-		if !proxyNamePattern.MatchString(declaration.Name) {
+		if config.ValidateProxyName(declaration.Name) != nil {
 			result := rejectedSyncResult(
 				revision,
 				protocol.ProxyErrorInvalidProxy,

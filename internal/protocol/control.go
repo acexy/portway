@@ -13,6 +13,7 @@ const (
 	controlHeaderSize      = 12
 	controlEncodingJSON    = 1
 	maxControlPayloadBytes = 1024 * 1024
+	maxRequestIDBytes      = 128
 )
 
 // ErrInvalidControlMessage indicates malformed framing or message content from
@@ -21,6 +22,25 @@ var ErrInvalidControlMessage = errors.New("invalid control message")
 
 // MessageType identifies a control protocol message.
 type MessageType string
+
+// Capability identifies one negotiated control or proxy capability.
+type Capability string
+
+const (
+	CapabilityTCP         Capability = "tcp"
+	CapabilityUDP         Capability = "udp"
+	CapabilityHTTP        Capability = "http"
+	CapabilityJSONControl Capability = "json-control"
+)
+
+// ManagementMode identifies who owns a client's proxy configuration.
+type ManagementMode string
+
+const (
+	ManagementModeShared   ManagementMode = "shared_token"
+	ManagementModeGoverned ManagementMode = "governed"
+	ManagementModeManaged  ManagementMode = "managed"
+)
 
 const (
 	// MessageClientHello starts control protocol negotiation.
@@ -94,18 +114,18 @@ type Envelope struct {
 
 // ClientHello advertises capabilities supported by the client.
 type ClientHello struct {
-	ClientID        string   `json:"client_id"`
-	ResumeSessionID string   `json:"resume_session_id,omitempty"`
-	Capabilities    []string `json:"capabilities"`
+	ClientID        string       `json:"client_id"`
+	ResumeSessionID string       `json:"resume_session_id,omitempty"`
+	Capabilities    []Capability `json:"capabilities"`
 }
 
 // ServerHello confirms the session and negotiated capabilities.
 type ServerHello struct {
-	ClientID       string   `json:"client_id"`
-	ManagementMode string   `json:"management_mode"`
-	SessionID      string   `json:"session_id"`
-	Resumed        bool     `json:"resumed"`
-	Capabilities   []string `json:"capabilities"`
+	ClientID       string         `json:"client_id"`
+	ManagementMode ManagementMode `json:"management_mode"`
+	SessionID      string         `json:"session_id"`
+	Resumed        bool           `json:"resumed"`
+	Capabilities   []Capability   `json:"capabilities"`
 }
 
 // Heartbeat carries a monotonically increasing session sequence.
@@ -151,6 +171,11 @@ func WriteControlWithRequestID(
 	requestID string,
 	payload any,
 ) error {
+	if requestID != "" {
+		if err := ValidateRequestID(requestID); err != nil {
+			return err
+		}
+	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode control payload: %w", err)
@@ -254,7 +279,34 @@ func ReadControl(reader io.Reader) (Envelope, error) {
 			ErrInvalidControlMessage,
 		)
 	}
+	if envelope.RequestID != "" {
+		if err := ValidateRequestID(envelope.RequestID); err != nil {
+			return Envelope{}, fmt.Errorf("%w: %v", ErrInvalidControlMessage, err)
+		}
+	}
 	return envelope, nil
+}
+
+// ValidateRequestID rejects correlation identifiers that could amplify the
+// bounded replay cache or make operator-visible identifiers ambiguous.
+func ValidateRequestID(requestID string) error {
+	if requestID == "" {
+		return errors.New("request ID is required")
+	}
+	if len(requestID) > maxRequestIDBytes {
+		return fmt.Errorf("request ID exceeds %d bytes", maxRequestIDBytes)
+	}
+	for index := 0; index < len(requestID); index++ {
+		character := requestID[index]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '-' || character == '_' {
+			continue
+		}
+		return errors.New("request ID must use Base64URL characters without padding")
+	}
+	return nil
 }
 
 // DecodePayload strictly decodes a control message payload.

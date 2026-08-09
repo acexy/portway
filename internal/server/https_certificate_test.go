@@ -3,6 +3,8 @@ package server
 import (
 	"crypto/tls"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/acexy/portway/internal/config"
@@ -50,6 +52,28 @@ func TestHTTPSCertificateManagerSelectsExactAndWildcardSNI(t *testing.T) {
 		if _, err := manager.getCertificate(&tls.ClientHelloInfo{ServerName: serverName}); err == nil {
 			t.Fatalf("SNI %q unexpectedly selected a certificate", serverName)
 		}
+	}
+}
+
+func TestHTTPSCertificatePairRejectsOversizedSource(t *testing.T) {
+	certificatePath := filepath.Join(t.TempDir(), "oversized.pem")
+	file, err := os.Create(certificatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxHTTPSCertificateFileBytes + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = loadHTTPSCertificatePair(config.HTTPSCertificateConfig{
+		CertFile: certificatePath,
+		KeyFile:  certificatePath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized certificate error = %v", err)
 	}
 }
 

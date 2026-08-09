@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/acexy/portway/internal/authentication"
@@ -71,6 +72,55 @@ func TestProxySyncRejectsEmptyDeclaration(t *testing.T) {
 	}
 }
 
+func TestProxySyncRejectsOversizedRequestIDWithoutCaching(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	manager.Attach("client-a", "session-a", nil)
+	result := manager.Sync(
+		"client-a",
+		"session-a",
+		strings.Repeat("x", 129),
+		protocol.SyncProxies{Revision: 1},
+	)
+	if result.Status != protocol.ProxySyncStatusRejected ||
+		result.Error == nil || result.Error.Code != protocol.ProxyErrorInvalidRequest {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	if len(manager.clients["client-a"].requestCache) != 0 {
+		t.Fatal("invalid request ID entered the replay cache")
+	}
+}
+
+func TestManagedReservationTransactionPublishesOnlyOnCommit(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	transaction, err := manager.BeginManagedReservationUpdate(
+		map[string]config.ManagedClientConfig{
+			"managed-a": {
+				ClientID: "managed-a",
+				Configuration: config.ManagedConfiguration{Proxies: []config.ProxyConfig{{
+					Name: "ssh", Type: protocol.ProxyTypeTCP, RemotePort: 22022,
+				}}},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	if manager.managedTCPPorts[22022] != "" {
+		manager.mutex.Unlock()
+		t.Fatal("candidate reservation was visible before commit")
+	}
+	manager.mutex.Unlock()
+	transaction.Commit()
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	if manager.managedTCPPorts[22022] != "managed-a" {
+		t.Fatal("committed reservation was not published")
+	}
+}
+
 func TestProxySyncRejectsReusedRequestIDWithDifferentPayload(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +131,7 @@ func TestProxySyncRejectsReusedRequestIDWithDifferentPayload(t *testing.T) {
 		"client-one", "session-one", "request-one",
 		protocol.SyncProxies{
 			Revision: 1,
-			Proxies: []protocol.ProxyDeclaration{tcpProxyDeclaration("first", port)},
+			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("first", port)},
 		},
 	)
 	if first.Status != protocol.ProxySyncStatusApplied {
@@ -91,7 +141,7 @@ func TestProxySyncRejectsReusedRequestIDWithDifferentPayload(t *testing.T) {
 		"client-one", "session-one", "request-one",
 		protocol.SyncProxies{
 			Revision: 2,
-			Proxies: []protocol.ProxyDeclaration{tcpProxyDeclaration("second", port)},
+			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("second", port)},
 		},
 	)
 	if second.Status != protocol.ProxySyncStatusRejected ||

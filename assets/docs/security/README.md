@@ -17,9 +17,14 @@ credential handling, and the applications exposed through a tunnel.
 - Invalid authentication, malformed configuration, and invalid trusted-source
   headers fail closed.
 
-The same high-entropy Token is currently shared by the server and its clients.
-Use at least 32 bytes of cryptographically random data. Treat the Token as a
-long-term credential.
+The server can combine one Shared Token with independently owned Governed and
+Managed client records. Every configured Token must be globally unique within
+that server and contain at least 32 bytes of cryptographically random data.
+Treat each Token as a long-term credential.
+
+Authentication failures are rate-limited per normalized source IP with bounded
+server memory. This is an application safety boundary, not a replacement for
+upstream or kernel-level denial-of-service controls.
 
 ## Credential handling
 

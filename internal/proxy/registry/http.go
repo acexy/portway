@@ -29,6 +29,7 @@ func (manager *Registry) newHTTPBinding(
 		bindingID,
 		declaration.Domain,
 		manager.linkBroker,
+		manager.httpConnectionLimiter,
 		binding.resolveTarget,
 	)
 	return binding, nil

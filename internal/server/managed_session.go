@@ -99,22 +99,22 @@ func managedConfigurationPayload(
 	)
 	for _, proxyConfiguration := range clientConfiguration.Configuration.Proxies {
 		managedProxies = append(managedProxies, protocol.ManagedProxy{
-			Name:          proxyConfiguration.Name,
-			Type:          protocol.ProxyType(proxyConfiguration.Type),
-			LocalIP:       proxyConfiguration.LocalIP,
-			LocalPort:     proxyConfiguration.LocalPort,
-			RemotePort:    proxyConfiguration.RemotePort,
-			Domain:        proxyConfiguration.Domain,
+			Name:       proxyConfiguration.Name,
+			Type:       proxyConfiguration.Type,
+			LocalIP:    proxyConfiguration.LocalIP,
+			LocalPort:  proxyConfiguration.LocalPort,
+			RemotePort: proxyConfiguration.RemotePort,
+			Domain:     proxyConfiguration.Domain,
 			PublicSchemes: append(
 				[]protocol.HTTPPublicScheme(nil),
 				proxyConfiguration.PublicSchemes...,
 			),
 		})
 		declarations = append(declarations, protocol.ProxyDeclaration{
-			Name:          proxyConfiguration.Name,
-			Type:          protocol.ProxyType(proxyConfiguration.Type),
-			RemotePort:    proxyConfiguration.RemotePort,
-			Domain:        proxyConfiguration.Domain,
+			Name:       proxyConfiguration.Name,
+			Type:       proxyConfiguration.Type,
+			RemotePort: proxyConfiguration.RemotePort,
+			Domain:     proxyConfiguration.Domain,
 			PublicSchemes: append(
 				[]protocol.HTTPPublicScheme(nil),
 				proxyConfiguration.PublicSchemes...,

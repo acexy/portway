@@ -291,6 +291,7 @@ func validateAuthenticationClientFile(path string, clientID string, token string
 	}
 	return nil
 }
+
 type managedBindingOwner struct {
 	clientID  string
 	proxyName string
@@ -313,7 +314,7 @@ func validateManagedClientConflicts(clients map[string]ManagedClientConfig) erro
 				proxyName: proxy.Name,
 			}
 			switch proxy.Type {
-			case "tcp":
+			case protocol.ProxyTypeTCP:
 				if previous, exists := tcpPorts[proxy.RemotePort]; exists {
 					return managedBindingConflict(
 						"TCP remote port",
@@ -323,7 +324,7 @@ func validateManagedClientConflicts(clients map[string]ManagedClientConfig) erro
 					)
 				}
 				tcpPorts[proxy.RemotePort] = owner
-			case "udp":
+			case protocol.ProxyTypeUDP:
 				if previous, exists := udpPorts[proxy.RemotePort]; exists {
 					return managedBindingConflict(
 						"UDP remote port",
@@ -333,7 +334,7 @@ func validateManagedClientConflicts(clients map[string]ManagedClientConfig) erro
 					)
 				}
 				udpPorts[proxy.RemotePort] = owner
-			case "http":
+			case protocol.ProxyTypeHTTP:
 				if previous, exists := httpDomains[proxy.Domain]; exists {
 					return managedBindingConflict(
 						"HTTP domain",
@@ -367,10 +368,10 @@ func managedBindingConflict(
 }
 
 func validateGovernedPermissions(permissions GovernedPermissions) error {
-	types := make(map[string]struct{}, len(permissions.ProxyTypes))
+	types := make(map[protocol.ProxyType]struct{}, len(permissions.ProxyTypes))
 	for _, proxyType := range permissions.ProxyTypes {
 		switch proxyType {
-		case "tcp", "udp", "http":
+		case protocol.ProxyTypeTCP, protocol.ProxyTypeUDP, protocol.ProxyTypeHTTP:
 		default:
 			return fmt.Errorf("permissions.proxy_types contains unsupported type %q", proxyType)
 		}
@@ -435,7 +436,7 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 		)
 	}
 	if err := validateGovernedRulePresence(
-		"tcp",
+		protocol.ProxyTypeTCP,
 		types,
 		len(permissions.TCP.RemotePortRanges),
 		"permissions.tcp.remote_port_ranges",
@@ -443,7 +444,7 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 		return err
 	}
 	if err := validateGovernedRulePresence(
-		"udp",
+		protocol.ProxyTypeUDP,
 		types,
 		len(permissions.UDP.RemotePortRanges),
 		"permissions.udp.remote_port_ranges",
@@ -451,14 +452,14 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 		return err
 	}
 	if err := validateGovernedRulePresence(
-		"http",
+		protocol.ProxyTypeHTTP,
 		types,
 		len(permissions.HTTP.Domains),
 		"permissions.http.domains",
 	); err != nil {
 		return err
 	}
-	if _, httpAllowed := types["http"]; !httpAllowed &&
+	if _, httpAllowed := types[protocol.ProxyTypeHTTP]; !httpAllowed &&
 		len(permissions.HTTP.PublicSchemes) != 0 {
 		return errors.New(
 			"permissions.http.public_schemes must be empty when http is not allowed",
@@ -472,7 +473,7 @@ func applyGovernedPermissionDefaults(permissions *GovernedPermissions) {
 		return
 	}
 	for _, proxyType := range permissions.ProxyTypes {
-		if proxyType == "http" {
+		if proxyType == protocol.ProxyTypeHTTP {
 			permissions.HTTP.PublicSchemes = []protocol.HTTPPublicScheme{
 				protocol.HTTPPublicSchemeHTTP,
 			}
@@ -482,8 +483,8 @@ func applyGovernedPermissionDefaults(permissions *GovernedPermissions) {
 }
 
 func validateGovernedRulePresence(
-	proxyType string,
-	allowedTypes map[string]struct{},
+	proxyType protocol.ProxyType,
+	allowedTypes map[protocol.ProxyType]struct{},
 	ruleCount int,
 	field string,
 ) error {

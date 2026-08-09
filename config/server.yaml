@@ -107,10 +107,10 @@ http:
   # Hard maximum: 1024.
   max_concurrent_requests_per_domain: 256
 
-  # Hard maximum: 4096.
+  # Global cap across all active and idle backend Links. Hard maximum: 4096.
   max_idle_connections: 1024
 
-  # Hard maximum: 128.
+  # Per-domain idle pool cap. Hard maximum: 128.
   max_idle_connections_per_domain: 32
 
   # Hard maximum: 4096.

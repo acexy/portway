@@ -150,9 +150,9 @@ func TestHTTPSProxyEndToEnd(t *testing.T) {
 	serverConfiguration.Tunnel.HTTPSListenAddress = httpsAddress.String()
 	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
 	serverConfiguration.HTTPS.Certificates = []config.HTTPSCertificateConfig{{
-		Domains: []string{"secure.example.com"},
+		Domains:  []string{"secure.example.com"},
 		CertFile: certificateFile,
-		KeyFile: keyFile,
+		KeyFile:  keyFile,
 	}}
 	serverConfiguration.Authentication.SharedToken = &token
 	serverService := NewService(logging.New("test-https-server"), serverConfiguration)

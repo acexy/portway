@@ -10,20 +10,20 @@ import (
 
 // HTTPConfig configures the public HTTP server and its bounded resources.
 type HTTPConfig struct {
-	ReadHeaderTimeout                time.Duration `yaml:"read_header_timeout"`
-	GracefulShutdownTimeout          time.Duration `yaml:"graceful_shutdown_timeout"`
-	IdleConnectionTimeout            time.Duration `yaml:"idle_connection_timeout"`
-	ResponseHeaderTimeout            time.Duration `yaml:"response_header_timeout"`
-	MaxHeaderBytes                   int           `yaml:"max_header_bytes"`
-	MaxConcurrentRequests            int           `yaml:"max_concurrent_requests"`
-	MaxConcurrentRequestsPerClient   int           `yaml:"max_concurrent_requests_per_client"`
-	MaxConcurrentRequestsPerDomain   int           `yaml:"max_concurrent_requests_per_domain"`
-	MaxIdleConnections               int           `yaml:"max_idle_connections"`
-	MaxIdleConnectionsPerDomain      int           `yaml:"max_idle_connections_per_domain"`
-	MaxUpgradeConnections            int           `yaml:"max_upgrade_connections"`
-	MaxUpgradeConnectionsPerClient   int           `yaml:"max_upgrade_connections_per_client"`
-	MaxUpgradeConnectionsPerDomain   int           `yaml:"max_upgrade_connections_per_domain"`
-	MaxConcurrentHTTP2Streams        int           `yaml:"max_concurrent_http2_streams"`
+	ReadHeaderTimeout              time.Duration `yaml:"read_header_timeout"`
+	GracefulShutdownTimeout        time.Duration `yaml:"graceful_shutdown_timeout"`
+	IdleConnectionTimeout          time.Duration `yaml:"idle_connection_timeout"`
+	ResponseHeaderTimeout          time.Duration `yaml:"response_header_timeout"`
+	MaxHeaderBytes                 int           `yaml:"max_header_bytes"`
+	MaxConcurrentRequests          int           `yaml:"max_concurrent_requests"`
+	MaxConcurrentRequestsPerClient int           `yaml:"max_concurrent_requests_per_client"`
+	MaxConcurrentRequestsPerDomain int           `yaml:"max_concurrent_requests_per_domain"`
+	MaxIdleConnections             int           `yaml:"max_idle_connections"`
+	MaxIdleConnectionsPerDomain    int           `yaml:"max_idle_connections_per_domain"`
+	MaxUpgradeConnections          int           `yaml:"max_upgrade_connections"`
+	MaxUpgradeConnectionsPerClient int           `yaml:"max_upgrade_connections_per_client"`
+	MaxUpgradeConnectionsPerDomain int           `yaml:"max_upgrade_connections_per_domain"`
+	MaxConcurrentHTTP2Streams      int           `yaml:"max_concurrent_http2_streams"`
 }
 
 func validateHTTPConfig(configuration HTTPConfig) error {
@@ -37,7 +37,7 @@ func validateHTTPConfig(configuration HTTPConfig) error {
 	}
 	for name, value := range map[string]time.Duration{
 		"idle_connection_timeout": configuration.IdleConnectionTimeout,
-		"response_header_timeout":  configuration.ResponseHeaderTimeout,
+		"response_header_timeout": configuration.ResponseHeaderTimeout,
 	} {
 		if value < 0 || value > httpHardMaxBusinessTimeout {
 			return fmt.Errorf("http.%s must be zero or at most %s", name, httpHardMaxBusinessTimeout)

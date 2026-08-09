@@ -30,7 +30,10 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 				"customer-a": {
 					ClientID: "customer-a",
 					Permissions: config.GovernedPermissions{
-						ProxyTypes: []string{"tcp", "http"},
+						ProxyTypes: []protocol.ProxyType{
+							protocol.ProxyTypeTCP,
+							protocol.ProxyTypeHTTP,
+						},
 						TCP: config.ProxyPermission{
 							RemotePortRanges: []config.PortRange{{Start: 20000, End: 20999}},
 						},
@@ -52,7 +55,7 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 			{Name: "ssh", Type: protocol.ProxyTypeTCP, RemotePort: 20022},
 			{
 				Name: "web", Type: protocol.ProxyTypeHTTP,
-				Domain: "app.customer-a.example.com",
+				Domain:        "app.customer-a.example.com",
 				PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
 			},
 		},
@@ -123,7 +126,7 @@ func TestRevokedAuthenticationContextsSelectsChangedClient(t *testing.T) {
 			ClientID: "governed",
 			Token:    governedToken,
 			Permissions: config.GovernedPermissions{
-				ProxyTypes: []string{"tcp"},
+				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
 			},
 		},
 	}
@@ -223,7 +226,7 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 			ClientID: "governed-client",
 			Token:    governedToken,
 			Permissions: config.GovernedPermissions{
-				ProxyTypes: []string{"tcp"},
+				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
 			},
 		},
 	}
@@ -701,7 +704,7 @@ func TestManagedConfigurationRolloutCompletesOnActiveSession(t *testing.T) {
 			"session-one",
 			logging.New("test"),
 			writer,
-			[]string{"json-control"},
+			[]protocol.Capability{protocol.CapabilityJSONControl},
 			authentication.ModeManaged,
 			false,
 			nil,
@@ -822,7 +825,7 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 			"session-one",
 			logging.New("test"),
 			writer,
-			[]string{"json-control"},
+			[]protocol.Capability{protocol.CapabilityJSONControl},
 			authentication.ModeManaged,
 			false,
 			nil,
@@ -1032,7 +1035,7 @@ func TestHandleConnectionRejectsAuthenticatedClientIDMismatchBeforeRegistration(
 		protocol.MessageClientHello,
 		protocol.ClientHello{
 			ClientID:     "different-client",
-			Capabilities: []string{"json-control"},
+			Capabilities: []protocol.Capability{protocol.CapabilityJSONControl},
 		},
 	); err != nil {
 		t.Fatalf("write client hello: %v", err)
@@ -1127,8 +1130,13 @@ func TestManagedInitializationFailureRemovesNewSession(t *testing.T) {
 		clientConnection,
 		protocol.MessageClientHello,
 		protocol.ClientHello{
-			ClientID:     "managed-client",
-			Capabilities: []string{"tcp", "udp", "http", "json-control"},
+			ClientID: "managed-client",
+			Capabilities: []protocol.Capability{
+				protocol.CapabilityTCP,
+				protocol.CapabilityUDP,
+				protocol.CapabilityHTTP,
+				protocol.CapabilityJSONControl,
+			},
 		},
 	); err != nil {
 		t.Fatalf("write client hello: %v", err)
@@ -1191,7 +1199,7 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 				"session_id": "session-one",
 			}),
 			writer,
-			[]string{"tcp", "json-control"},
+			[]protocol.Capability{protocol.CapabilityTCP, protocol.CapabilityJSONControl},
 			authentication.ModeShared,
 			false,
 			nil,
@@ -1251,7 +1259,7 @@ func TestServeControlMessagesRequiresInitialProxySynchronization(t *testing.T) {
 			"session-one",
 			logging.New("test"),
 			control.NewWriter(serverConnection),
-			[]string{"tcp", "json-control"},
+			[]protocol.Capability{protocol.CapabilityTCP, protocol.CapabilityJSONControl},
 			authentication.ModeShared,
 			true,
 			nil,
@@ -1288,7 +1296,7 @@ func TestServeControlMessagesRejectsTCPMessageWithoutCapability(t *testing.T) {
 			"session-one",
 			logging.New("test"),
 			control.NewWriter(serverConnection),
-			[]string{"json-control"},
+			[]protocol.Capability{protocol.CapabilityJSONControl},
 			authentication.ModeShared,
 			false,
 			nil,

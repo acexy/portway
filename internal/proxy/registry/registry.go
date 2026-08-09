@@ -21,30 +21,31 @@ import (
 
 // Registry owns the complete proxy set and public routing resources.
 type Registry struct {
-	logger              *logging.Logger
-	proxyBindIP         string
-	context             context.Context
-	linkBroker          *link.Broker
-	mutex               sync.Mutex
-	registrationMutex   sync.Mutex
-	clients             map[string]*clientState
-	endpoints           map[uint16]*proxytcp.Endpoint
-	endpointBindings    map[uint16]*tcpProxyBinding
-	udpEndpoints        map[uint16]*proxyudp.Endpoint
-	udpEndpointBindings map[uint16]*udpProxyBinding
-	managedTCPPorts     map[uint16]string
-	managedUDPPorts     map[uint16]string
-	managedHTTPDomains  map[string]string
-	udpConfiguration    config.UDPConfig
-	udpLimiter          *proxyudp.Limiter
-	httpEnabled         bool
-	httpsEnabled        bool
-	httpConfiguration   config.HTTPConfig
-	httpDomains         map[string]*httpProxyBinding
-	httpActiveRequests  int
-	httpActiveUpgrades  int
-	sourceFilter        *ipfilter.Filter
-	closed              bool
+	logger                *logging.Logger
+	proxyBindIP           string
+	context               context.Context
+	linkBroker            *link.Broker
+	mutex                 sync.Mutex
+	registrationMutex     sync.Mutex
+	clients               map[string]*clientState
+	endpoints             map[uint16]*proxytcp.Endpoint
+	endpointBindings      map[uint16]*tcpProxyBinding
+	udpEndpoints          map[uint16]*proxyudp.Endpoint
+	udpEndpointBindings   map[uint16]*udpProxyBinding
+	managedTCPPorts       map[uint16]string
+	managedUDPPorts       map[uint16]string
+	managedHTTPDomains    map[string]string
+	udpConfiguration      config.UDPConfig
+	udpLimiter            *proxyudp.Limiter
+	httpEnabled           bool
+	httpsEnabled          bool
+	httpConfiguration     config.HTTPConfig
+	httpConnectionLimiter *proxyhttp.ConnectionLimiter
+	httpDomains           map[string]*httpProxyBinding
+	httpActiveRequests    int
+	httpActiveUpgrades    int
+	sourceFilter          *ipfilter.Filter
+	closed                bool
 }
 
 type clientState struct {
@@ -174,25 +175,26 @@ func newRegistry(
 		sourceFilter = sourceFilters[0]
 	}
 	return &Registry{
-		logger:              logger,
-		proxyBindIP:         proxyBindIP,
-		context:             ctx,
-		linkBroker:          broker,
-		httpEnabled:         httpEnabled,
-		httpsEnabled:        httpsEnabled,
-		httpConfiguration:   httpConfiguration,
-		udpConfiguration:    udpConfiguration,
-		udpLimiter:          proxyudp.NewLimiter(udpConfiguration),
-		sourceFilter:        sourceFilter,
-		httpDomains:         make(map[string]*httpProxyBinding),
-		clients:             make(map[string]*clientState),
-		endpoints:           make(map[uint16]*proxytcp.Endpoint),
-		endpointBindings:    make(map[uint16]*tcpProxyBinding),
-		udpEndpoints:        make(map[uint16]*proxyudp.Endpoint),
-		udpEndpointBindings: make(map[uint16]*udpProxyBinding),
-		managedTCPPorts:     make(map[uint16]string),
-		managedUDPPorts:     make(map[uint16]string),
-		managedHTTPDomains:  make(map[string]string),
+		logger:                logger,
+		proxyBindIP:           proxyBindIP,
+		context:               ctx,
+		linkBroker:            broker,
+		httpEnabled:           httpEnabled,
+		httpsEnabled:          httpsEnabled,
+		httpConfiguration:     httpConfiguration,
+		httpConnectionLimiter: proxyhttp.NewConnectionLimiter(httpConfiguration.MaxIdleConnections),
+		udpConfiguration:      udpConfiguration,
+		udpLimiter:            proxyudp.NewLimiter(udpConfiguration),
+		sourceFilter:          sourceFilter,
+		httpDomains:           make(map[string]*httpProxyBinding),
+		clients:               make(map[string]*clientState),
+		endpoints:             make(map[uint16]*proxytcp.Endpoint),
+		endpointBindings:      make(map[uint16]*tcpProxyBinding),
+		udpEndpoints:          make(map[uint16]*proxyudp.Endpoint),
+		udpEndpointBindings:   make(map[uint16]*udpProxyBinding),
+		managedTCPPorts:       make(map[uint16]string),
+		managedUDPPorts:       make(map[uint16]string),
+		managedHTTPDomains:    make(map[string]string),
 	}
 }
 
@@ -224,9 +226,9 @@ func (manager *Registry) AttachAuthenticated(
 	state, exists := manager.clients[clientID]
 	if !exists {
 		state = &clientState{
-			tcpProxies:  make(map[string]*tcpProxyBinding),
-			udpProxies:  make(map[string]*udpProxyBinding),
-			httpProxies: make(map[string]*httpProxyBinding),
+			tcpProxies:   make(map[string]*tcpProxyBinding),
+			udpProxies:   make(map[string]*udpProxyBinding),
+			httpProxies:  make(map[string]*httpProxyBinding),
 			requestCache: make(map[string]cachedSyncRequest),
 		}
 		manager.clients[clientID] = state

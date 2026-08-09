@@ -23,14 +23,14 @@ const (
 
 // OpenLink asks a client to create one RoleData stream and local connection.
 type OpenLink struct {
-	LinkID          string `json:"link_id"`
-	ProxyName       string `json:"proxy_name"`
+	LinkID          string    `json:"link_id"`
+	ProxyName       string    `json:"proxy_name"`
 	ProxyType       ProxyType `json:"proxy_type"`
-	BindingID       string `json:"binding_id"`
-	Ticket          string `json:"ticket"`
-	ExpiresAtUnixMS int64  `json:"expires_at_unix_ms"`
-	MaxDatagramSize uint32 `json:"max_datagram_size,omitempty"`
-	WriteTimeoutMS  uint32 `json:"write_timeout_ms,omitempty"`
+	BindingID       string    `json:"binding_id"`
+	Ticket          string    `json:"ticket"`
+	ExpiresAtUnixMS int64     `json:"expires_at_unix_ms"`
+	MaxDatagramSize uint32    `json:"max_datagram_size,omitempty"`
+	WriteTimeoutMS  uint32    `json:"write_timeout_ms,omitempty"`
 }
 
 // CancelLink asks a client to cancel an unbound link.
@@ -47,12 +47,12 @@ type LinkFailed struct {
 
 // BindLink is the first encrypted frame on a RoleData connection.
 type BindLink struct {
-	ClientID  string `json:"client_id"`
-	SessionID string `json:"session_id"`
-	LinkID    string `json:"link_id"`
+	ClientID  string    `json:"client_id"`
+	SessionID string    `json:"session_id"`
+	LinkID    string    `json:"link_id"`
 	ProxyType ProxyType `json:"proxy_type"`
-	BindingID string `json:"binding_id"`
-	Ticket    string `json:"ticket"`
+	BindingID string    `json:"binding_id"`
+	Ticket    string    `json:"ticket"`
 }
 
 // BindResult confirms or rejects a RoleData binding.

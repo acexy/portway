@@ -36,6 +36,7 @@ type brokerPendingLink struct {
 	target       Target
 	linkID       string
 	ticketDigest [sha256.Size]byte
+	expiresAt    time.Time
 	timer        *time.Timer
 	onCancel     func()
 	ready        chan linkOpenResult
@@ -130,6 +131,13 @@ func (broker *Broker) request(
 	ready chan linkOpenResult,
 	handler func(context.Context, net.Conn) error,
 ) (string, error) {
+	broker.mutex.Lock()
+	if broker.closed || broker.limitReachedLocked(target) {
+		broker.mutex.Unlock()
+		return "", errors.New("link capacity reached")
+	}
+	broker.mutex.Unlock()
+
 	linkID, ticket, digest, err := newBrokerLinkCredentials()
 	if err != nil {
 		return "", err
@@ -139,10 +147,12 @@ func (broker *Broker) request(
 		broker.mutex.Unlock()
 		return "", errors.New("link capacity reached")
 	}
+	expiresAt := time.Now().Add(pendingTimeout)
 	pending := &brokerPendingLink{
 		target:       target,
 		linkID:       linkID,
 		ticketDigest: digest,
+		expiresAt:    expiresAt,
 		onCancel:     onCancel,
 		ready:        ready,
 		handler:      handler,
@@ -160,7 +170,7 @@ func (broker *Broker) request(
 		ProxyType:       target.ProxyType,
 		BindingID:       target.BindingID,
 		Ticket:          ticket,
-		ExpiresAtUnixMS: time.Now().Add(pendingTimeout).UnixMilli(),
+		ExpiresAtUnixMS: expiresAt.UnixMilli(),
 		MaxDatagramSize: uint32(target.MaxDatagramSize),
 		WriteTimeoutMS:  uint32(target.WriteTimeout.Milliseconds()),
 	}); err != nil {
@@ -177,13 +187,26 @@ func (broker *Broker) Bind(
 	authenticationContext authentication.Context,
 ) error {
 	ticket, err := base64.RawURLEncoding.DecodeString(binding.Ticket)
-	if err != nil {
+	if err != nil || len(ticket) != 32 {
 		return broker.rejectBinding(connection, binding.LinkID, protocol.LinkErrorInvalidBinding)
 	}
 	digest := sha256.Sum256(ticket)
 
 	broker.mutex.Lock()
 	pending := broker.pending[binding.LinkID]
+	if pending != nil && !time.Now().Before(pending.expiresAt) {
+		delete(broker.pending, binding.LinkID)
+		broker.decrementPendingLocked(pending.target)
+		pending.timer.Stop()
+		broker.mutex.Unlock()
+		if pending.onCancel != nil {
+			pending.onCancel()
+		}
+		if pending.ready != nil {
+			pending.ready <- linkOpenResult{err: context.DeadlineExceeded}
+		}
+		return broker.rejectBinding(connection, binding.LinkID, protocol.LinkErrorInvalidBinding)
+	}
 	if pending == nil ||
 		pending.target.ClientID != binding.ClientID ||
 		pending.target.SessionID != binding.SessionID ||
@@ -395,7 +418,7 @@ func (broker *Broker) finish(linkID string) {
 
 func (broker *Broker) limitReachedLocked(target Target) bool {
 	if len(broker.pending) >= maxPending ||
-		len(broker.active) >= maxActive {
+		len(broker.pending)+len(broker.active) >= maxActive {
 		return true
 	}
 	proxyKey := brokerProxyKey(target)
@@ -407,8 +430,8 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 		pendingProxy >= maxPendingPerProxy ||
 		(target.MaxActiveLinks > 0 &&
 			pendingClient+activeClient >= target.MaxActiveLinks) ||
-		activeClient >= maxActivePerClient ||
-		activeProxy >= maxActivePerProxy
+		pendingClient+activeClient >= maxActivePerClient ||
+		pendingProxy+activeProxy >= maxActivePerProxy
 }
 
 func (broker *Broker) incrementPendingLocked(target Target) {

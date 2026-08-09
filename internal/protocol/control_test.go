@@ -63,6 +63,27 @@ func TestReadControlClassifiesInvalidFrame(t *testing.T) {
 	}
 }
 
+func TestRequestIDValidationBoundsReplayCacheKeys(t *testing.T) {
+	valid := strings.Repeat("a", maxRequestIDBytes)
+	if err := ValidateRequestID(valid); err != nil {
+		t.Fatalf("valid request ID rejected: %v", err)
+	}
+	for _, invalid := range []string{"", valid + "a", "has space", "padded="} {
+		if err := ValidateRequestID(invalid); err == nil {
+			t.Fatalf("invalid request ID %q was accepted", invalid)
+		}
+	}
+	var buffer bytes.Buffer
+	if err := WriteControlWithRequestID(
+		&buffer,
+		MessagePing,
+		strings.Repeat("x", maxRequestIDBytes+1),
+		Heartbeat{},
+	); err == nil {
+		t.Fatal("oversized request ID was written")
+	}
+}
+
 func TestCloseSessionFrameRoundTrip(t *testing.T) {
 	t.Parallel()
 

@@ -59,8 +59,8 @@ http:
   max_concurrent_requests: 4096              # 硬上限 16384
   max_concurrent_requests_per_client: 512    # 硬上限 2048
   max_concurrent_requests_per_domain: 256    # 硬上限 1024
-  max_idle_connections: 1024                 # 硬上限 4096
-  max_idle_connections_per_domain: 32        # 硬上限 128
+  max_idle_connections: 1024                 # 全域名活动+空闲后端 Link 上限；硬上限 4096
+  max_idle_connections_per_domain: 32        # 单域名空闲池上限；硬上限 128
   max_upgrade_connections: 1024              # 硬上限 4096
   max_upgrade_connections_per_client: 128    # 硬上限 512
   max_upgrade_connections_per_domain: 64     # 硬上限 256

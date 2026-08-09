@@ -11,6 +11,7 @@ import (
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -138,7 +139,7 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 			ClientID: "governed-authority",
 			Token:    governedToken,
 			Permissions: config.GovernedPermissions{
-				ProxyTypes: []string{"tcp"},
+				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
 				TCP: config.ProxyPermission{RemotePortRanges: []config.PortRange{{
 					Start: uint16(governedProxyAddress.Port),
 					End:   uint16(governedProxyAddress.Port),

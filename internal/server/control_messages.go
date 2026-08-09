@@ -20,7 +20,7 @@ func (s *Service) serveControlMessages(
 	sessionID string,
 	sessionLogger *logging.Logger,
 	writer *control.Writer,
-	negotiatedCapabilities []string,
+	negotiatedCapabilities []protocol.Capability,
 	authenticationMode authentication.Mode,
 	initialProxySynchronizationRequired bool,
 	onProxySynchronizationApplied func(),
@@ -100,7 +100,7 @@ func (s *Service) serveControlMessages(
 			for _, declaration := range request.Proxies {
 				if !coll.SliceContains(
 					negotiatedCapabilities,
-					string(declaration.Type),
+					protocol.Capability(declaration.Type),
 				) {
 					return false, fmt.Errorf("%s proxy registration requires a negotiated capability", declaration.Type)
 				}

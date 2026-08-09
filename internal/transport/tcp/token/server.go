@@ -32,6 +32,7 @@ type Server struct {
 	context        context.Context
 	cancel         context.CancelFunc
 	connectionSlot chan struct{}
+	sourceLimiter  *authentication.SourceFailureLimiter
 	results        chan acceptResult
 	nextGeneration atomic.Uint64
 	closeOnce      sync.Once
@@ -64,6 +65,7 @@ func NewServer(
 		context:        serverContext,
 		cancel:         cancel,
 		connectionSlot: make(chan struct{}, maxConcurrentConnections),
+		sourceLimiter:  authentication.NewSourceFailureLimiter(),
 		results:        make(chan acceptResult, maxConcurrentConnections),
 	}
 	server.waitGroup.Add(1)
@@ -99,6 +101,11 @@ func (server *Server) authenticate(rawConnection net.Conn) {
 	}()
 
 	remoteAddress := rawConnection.RemoteAddr().String()
+	sourceAddress, err := ipfilter.ParseRemoteAddress(rawConnection.RemoteAddr())
+	if err != nil || !server.sourceLimiter.Allow(sourceAddress) {
+		rawConnection.Close()
+		return
+	}
 	stream, role, authenticationContext, err := AcceptToken(
 		server.context,
 		rawConnection,
@@ -107,9 +114,11 @@ func (server *Server) authenticate(rawConnection net.Conn) {
 		protocol.RoleData,
 	)
 	if err != nil {
+		server.sourceLimiter.RecordFailure(sourceAddress)
 		rawConnection.Close()
 		return
 	}
+	server.sourceLimiter.RecordSuccess(sourceAddress)
 	generation := transport.Generation(server.nextGeneration.Add(1))
 	if !server.publish(acceptResult{inbound: transport.Inbound{
 		Stream:         stream,

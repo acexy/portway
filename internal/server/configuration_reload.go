@@ -13,6 +13,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/session"
 )
 
@@ -186,12 +187,15 @@ func (s *Service) applyConfigurationCandidateContext(
 		current.ManagedClients,
 		candidate.ManagedClients,
 	)
+	var reservationTransaction *proxyregistry.ManagedReservationTransaction
 	if s.proxyRegistry != nil {
-		if err := s.proxyRegistry.ConfigureManagedReservations(
+		reservationTransaction, err = s.proxyRegistry.BeginManagedReservationUpdate(
 			candidate.ManagedClients,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("validate managed reservations: %w", err)
 		}
+		defer reservationTransaction.Rollback()
 	}
 	// Change only the level of the initialized logger after every fallible
 	// candidate validation has succeeded. EnableConsole is startup-only and the
@@ -212,6 +216,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	}
 	s.configuration.publish(candidate)
 	s.authenticationStore.ReplaceRevoking(snapshot, revokedContexts)
+	reservationTransaction.Commit()
 
 	var revokedSessions []session.ExpiredClient
 	cleanupCallbacks := make([]func(), 0)
@@ -345,9 +350,6 @@ func reloadErrorCode(err error) string {
 		return "configuration_limit_exceeded"
 	case strings.Contains(message, "authentication directory"):
 		return "authentication_directory_invalid"
-	case strings.Contains(message, "HTTPS certificate") ||
-		strings.Contains(message, "HTTPS private key"):
-		return "https_certificate_invalid"
 	case strings.Contains(message, "HTTPS certificate") ||
 		strings.Contains(message, "HTTPS private key"):
 		return "https_certificate_invalid"
