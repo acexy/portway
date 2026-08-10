@@ -5,7 +5,7 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  A lightweight, production-oriented reverse tunneling system for TCP, UDP, HTTP, and HTTPS services.
+  A lightweight reverse tunneling system designed for reliable, stable long-term operation of TCP, UDP, HTTP, and HTTPS services.
 </p>
 
 Portway exposes services from private networks through a public server. It keeps
