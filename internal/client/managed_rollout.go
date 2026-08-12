@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
@@ -88,9 +90,8 @@ func validateManagedPreparation(
 			transport.ErrProtocol,
 		)
 	}
-	proxies := make([]config.ProxyConfig, 0, len(preparation.Proxies))
-	for _, managedProxy := range preparation.Proxies {
-		proxies = append(proxies, config.ProxyConfig{
+	proxies := coll.SliceCollect(preparation.Proxies, func(managedProxy protocol.ManagedProxy) config.ProxyConfig {
+		return config.ProxyConfig{
 			Name:       managedProxy.Name,
 			Type:       managedProxy.Type,
 			LocalIP:    managedProxy.LocalIP,
@@ -101,7 +102,10 @@ func validateManagedPreparation(
 				[]protocol.HTTPPublicScheme(nil),
 				managedProxy.PublicSchemes...,
 			),
-		})
+		}
+	})
+	if proxies == nil {
+		proxies = []config.ProxyConfig{}
 	}
 	if err := config.ValidateManagedProxies(proxies); err != nil {
 		return nil, protocol.ManagedConfigStatus{}, fmt.Errorf(

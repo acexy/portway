@@ -6,6 +6,8 @@ import (
 	"crypto/subtle"
 	"errors"
 	"sync/atomic"
+
+	"github.com/acexy/golang-toolkit/util/coll"
 )
 
 // Mode identifies the server-controlled client management mode.
@@ -160,9 +162,11 @@ func (snapshot *Snapshot) Contexts() []Context {
 	if snapshot == nil {
 		return nil
 	}
-	contexts := make([]Context, 0, len(snapshot.records))
-	for _, record := range snapshot.records {
-		contexts = append(contexts, record.Context)
+	contexts := coll.MapFilterToSlice(snapshot.records, func(_ [sha256.Size]byte, record Record) (Context, bool) {
+		return record.Context, true
+	})
+	if contexts == nil {
+		return []Context{}
 	}
 	return contexts
 }
@@ -171,10 +175,12 @@ func (snapshot *Snapshot) withGeneration(generation uint64) *Snapshot {
 	if snapshot == nil {
 		return nil
 	}
-	records := make(map[[sha256.Size]byte]Record, len(snapshot.records))
-	for selector, record := range snapshot.records {
+	records := coll.MapCollect(snapshot.records, func(selector [sha256.Size]byte, record Record) ([sha256.Size]byte, Record) {
 		record.Context.Generation = generation
-		records[selector] = record
+		return selector, record
+	})
+	if records == nil {
+		records = map[[sha256.Size]byte]Record{}
 	}
 	return &Snapshot{records: records}
 }

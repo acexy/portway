@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
 )
@@ -254,10 +256,5 @@ func (manager *httpsCertificateManager) reloadCurrent() {
 }
 
 func containsExtKeyUsage(usages []x509.ExtKeyUsage, expected x509.ExtKeyUsage) bool {
-	for _, usage := range usages {
-		if usage == expected {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContains(usages, expected)
 }

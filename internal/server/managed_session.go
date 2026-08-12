@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
@@ -87,18 +89,8 @@ func (s *Service) publishManagedStatus(
 func managedConfigurationPayload(
 	clientConfiguration config.ManagedClientConfig,
 ) (protocol.ManagedConfigPrepare, protocol.SyncProxies, error) {
-	managedProxies := make(
-		[]protocol.ManagedProxy,
-		0,
-		len(clientConfiguration.Configuration.Proxies),
-	)
-	declarations := make(
-		[]protocol.ProxyDeclaration,
-		0,
-		len(clientConfiguration.Configuration.Proxies),
-	)
-	for _, proxyConfiguration := range clientConfiguration.Configuration.Proxies {
-		managedProxies = append(managedProxies, protocol.ManagedProxy{
+	managedProxies := coll.SliceCollect(clientConfiguration.Configuration.Proxies, func(proxyConfiguration config.ProxyConfig) protocol.ManagedProxy {
+		return protocol.ManagedProxy{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
 			LocalIP:    proxyConfiguration.LocalIP,
@@ -109,8 +101,10 @@ func managedConfigurationPayload(
 				[]protocol.HTTPPublicScheme(nil),
 				proxyConfiguration.PublicSchemes...,
 			),
-		})
-		declarations = append(declarations, protocol.ProxyDeclaration{
+		}
+	})
+	declarations := coll.SliceCollect(clientConfiguration.Configuration.Proxies, func(proxyConfiguration config.ProxyConfig) protocol.ProxyDeclaration {
+		return protocol.ProxyDeclaration{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
 			RemotePort: proxyConfiguration.RemotePort,
@@ -119,7 +113,11 @@ func managedConfigurationPayload(
 				[]protocol.HTTPPublicScheme(nil),
 				proxyConfiguration.PublicSchemes...,
 			),
-		})
+		}
+	})
+	if managedProxies == nil {
+		managedProxies = []protocol.ManagedProxy{}
+		declarations = []protocol.ProxyDeclaration{}
 	}
 	digest, err := protocol.ManagedConfigurationDigest(managedProxies)
 	if err != nil {

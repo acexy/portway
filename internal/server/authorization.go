@@ -126,21 +126,13 @@ func publicSchemeAllowed(
 	if len(allowed) == 0 {
 		return requested == protocol.HTTPPublicSchemeHTTP
 	}
-	for _, scheme := range allowed {
-		if scheme == requested {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContains(allowed, requested)
 }
 
 func portAllowed(port uint16, ranges []config.PortRange) bool {
-	for _, portRange := range ranges {
-		if port >= portRange.Start && port <= portRange.End {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContainsBy(ranges, func(portRange config.PortRange) bool {
+		return port >= portRange.Start && port <= portRange.End
+	})
 }
 
 func domainAllowed(domain string, patterns []string) bool {

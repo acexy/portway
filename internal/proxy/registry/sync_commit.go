@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"net"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
@@ -144,27 +146,19 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 		}
 	}
 
-	removedProxyNames := make([]string, 0)
-	for name, existing := range existingProxies {
-		if nextProxies[name] != existing {
-			removedProxyNames = append(removedProxyNames, name)
+	removedProxyNames := coll.MapFilterToSlice(existingProxies, func(name string, existing *tcpProxyBinding) (string, bool) {
+		return name, nextProxies[name] != existing
+	})
+	removedUDPBindings := coll.MapFilterToSlice(existingUDPProxies, func(name string, existing *udpProxyBinding) (*udpProxyBinding, bool) {
+		return existing, nextUDPProxies[name] != existing
+	})
+	removedHTTPBindings := coll.MapFilterToSlice(existingHTTPProxies, func(name string, existing *httpProxyBinding) (*httpProxyBinding, bool) {
+		removed := nextHTTPProxies[name] != existing
+		if removed && manager.httpDomains[existing.declaration.Domain] == existing {
+			delete(manager.httpDomains, existing.declaration.Domain)
 		}
-	}
-	removedUDPBindings := make([]*udpProxyBinding, 0)
-	for name, existing := range existingUDPProxies {
-		if nextUDPProxies[name] != existing {
-			removedUDPBindings = append(removedUDPBindings, existing)
-		}
-	}
-	removedHTTPBindings := make([]*httpProxyBinding, 0)
-	for name, existing := range existingHTTPProxies {
-		if nextHTTPProxies[name] != existing {
-			removedHTTPBindings = append(removedHTTPBindings, existing)
-			if manager.httpDomains[existing.declaration.Domain] == existing {
-				delete(manager.httpDomains, existing.declaration.Domain)
-			}
-		}
-	}
+		return existing, removed
+	})
 	nextEndpoints := make(map[uint16]*proxytcp.Endpoint, len(request.Proxies))
 	for _, binding := range nextProxies {
 		binding.sessionID = sessionID

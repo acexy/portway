@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/acexy/portway/internal/authentication"
@@ -344,10 +345,7 @@ func (server *Server) Close() error {
 		server.cancel()
 		server.closeError = server.listener.Close()
 		server.mutex.Lock()
-		connections := make([]*quicgo.Conn, 0, len(server.connections))
-		for connection := range server.connections {
-			connections = append(connections, connection)
-		}
+		connections := coll.MapKeys(server.connections)
 		server.mutex.Unlock()
 		for _, connection := range connections {
 			connection.CloseWithError(applicationErrorShutdown, "server stopped")

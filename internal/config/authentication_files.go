@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 )
@@ -298,10 +300,7 @@ type managedBindingOwner struct {
 }
 
 func validateManagedClientConflicts(clients map[string]ManagedClientConfig) error {
-	clientIDs := make([]string, 0, len(clients))
-	for clientID := range clients {
-		clientIDs = append(clientIDs, clientID)
-	}
+	clientIDs := coll.MapKeys(clients)
 	sort.Strings(clientIDs)
 
 	tcpPorts := make(map[uint16]managedBindingOwner)

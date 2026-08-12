@@ -1,5 +1,7 @@
 package protocol
 
+import "github.com/acexy/golang-toolkit/util/coll"
+
 // ProxyType identifies end-to-end proxy semantics carried through Portway.
 type ProxyType string
 
@@ -74,12 +76,7 @@ func (declaration ProxyDeclaration) AllowsPublicScheme(scheme HTTPPublicScheme) 
 	if len(declaration.PublicSchemes) == 0 {
 		return scheme == HTTPPublicSchemeHTTP
 	}
-	for _, allowed := range declaration.PublicSchemes {
-		if allowed == scheme {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContains(declaration.PublicSchemes, scheme)
 }
 
 // SyncProxies atomically declares the complete proxy set for one session.

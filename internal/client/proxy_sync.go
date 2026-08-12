@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
@@ -20,9 +23,8 @@ func (s *Service) syncProxies(
 		return err
 	}
 	proxies := s.runtimeProxySnapshot()
-	declarations := make([]protocol.ProxyDeclaration, 0, len(proxies))
-	for _, proxyConfiguration := range proxies {
-		declarations = append(declarations, protocol.ProxyDeclaration{
+	declarations := coll.SliceCollect(proxies, func(proxyConfiguration config.ProxyConfig) protocol.ProxyDeclaration {
+		return protocol.ProxyDeclaration{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
 			RemotePort: proxyConfiguration.RemotePort,
@@ -31,7 +33,10 @@ func (s *Service) syncProxies(
 				[]protocol.HTTPPublicScheme(nil),
 				proxyConfiguration.PublicSchemes...,
 			),
-		})
+		}
+	})
+	if declarations == nil {
+		declarations = []protocol.ProxyDeclaration{}
 	}
 	if err := writer.WriteRequest(
 		protocol.MessageSyncProxies,
