@@ -31,6 +31,24 @@ type Limiter struct {
 	rateCleanupWindow time.Time
 }
 
+// Stats is a low-cardinality snapshot of UDP resource accounting.
+type Stats struct {
+	Associations        int
+	PendingAssociations int
+	QueuedBytes         int
+}
+
+// SnapshotStats returns aggregate UDP accounting values.
+func (limiter *Limiter) SnapshotStats() Stats {
+	limiter.mutex.Lock()
+	defer limiter.mutex.Unlock()
+	return Stats{
+		Associations:        limiter.total,
+		PendingAssociations: limiter.pending,
+		QueuedBytes:         limiter.queuedBytes,
+	}
+}
+
 // NewLimiter creates a process-scoped UDP limiter.
 func NewLimiter(configuration config.UDPConfig) *Limiter {
 	return &Limiter{

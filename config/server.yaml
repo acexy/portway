@@ -11,6 +11,13 @@
 # Use trace for detailed per-session protocol diagnostics, including heartbeats.
 log_level: info
 
+# Optional. Local operations HTTP listener for /healthz, /readyz, and /metrics.
+# Defaults to empty, which disables it. Bind this to loopback or a protected
+# management network; the endpoints do not implement application authentication.
+# Changing this value requires restarting portwayd.
+operations:
+  listen_address: ""
+
 # Optional. Underlying client-server transport settings.
 # The server starts only the selected transport.
 transport:

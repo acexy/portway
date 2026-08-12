@@ -53,6 +53,19 @@ type linkOpenResult struct {
 	err        error
 }
 
+// Stats is a low-cardinality snapshot of logical link state.
+type Stats struct {
+	Pending int
+	Active  int
+}
+
+// SnapshotStats returns aggregate link counts.
+func (broker *Broker) SnapshotStats() Stats {
+	broker.mutex.Lock()
+	defer broker.mutex.Unlock()
+	return Stats{Pending: len(broker.pending), Active: len(broker.active)}
+}
+
 // Broker owns pending and active logical data links.
 type Broker struct {
 	mutex          sync.Mutex

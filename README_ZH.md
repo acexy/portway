@@ -195,42 +195,10 @@ brew install acexy/tap/portway acexy/tap/portwayd
 Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要自行准备对应的
 `client.yaml` 或 `server.yaml`。
 
-## 从源码构建
-
-Portway 当前基于 Go 1.25.8。
-
-```bash
-make build
-```
-
-当前平台的二进制文件会输出到 `target/bin/`。
-
-交叉编译并打包所有支持的发布目标：
-
-```bash
-./release.sh
-```
-
-发布矩阵涵盖 Linux 和 macOS 的 `amd64` 与 `arm64` 平台，以及 Windows 的 `amd64` 平台。
-每个归档文件包含对应平台的 `portway` 和 `portwayd` 可执行文件，以及根目录下的 `LICENSE` 和 `NOTICE`：
-
-```text
-target/portway-linux-amd64.tar
-target/portway-linux-arm64.tar
-target/portway-darwin-amd64.tar
-target/portway-darwin-arm64.tar
-target/portway-win-amd64.tar
-```
-
-Windows 归档文件包含 `portway.exe` 和 `portwayd.exe`。需要时可通过以下方式覆盖发布元数据：
-
-```bash
-VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
-```
-
 ## 公开文档
 
 - [技术概览](assets/docs/technical/README_ZH.md)
+- [运维接口](assets/docs/operations/README_ZH.md)
 - [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
 - [服务端配置热加载](assets/docs/reload/README_ZH.md)
 - [安全性](assets/docs/security/README_ZH.md)

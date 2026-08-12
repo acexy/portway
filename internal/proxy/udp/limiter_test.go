@@ -96,3 +96,32 @@ func TestLimiterDoesNotConsumeGlobalRateWhenClientRateRejects(t *testing.T) {
 	}
 	second.Close()
 }
+
+func TestLimiterSoakReleasesAllAssociationAndQueueAccounting(t *testing.T) {
+	configuration := config.DefaultUDPConfig()
+	configuration.MaxNewAssociationsPerSecond = 10000
+	configuration.MaxNewAssociationsPerSecondPerClient = 2000
+	configuration.MaxNewAssociationsPerSecondPerProxy = 1000
+	limiter := NewLimiter(configuration)
+	now := time.Unix(100, 0)
+	for index := 0; index < 5000; index++ {
+		lease, accepted := limiter.Acquire(
+			"soak-client",
+			"soak-proxy",
+			netip.MustParseAddr("192.0.2.1"),
+			now.Add(time.Duration(index/500)*time.Second),
+		)
+		if !accepted {
+			t.Fatalf("association %d was unexpectedly rejected", index)
+		}
+		lease.Activate()
+		if !lease.ReserveQueue(1024) {
+			t.Fatalf("association %d could not reserve queue bytes", index)
+		}
+		lease.Close()
+	}
+	stats := limiter.SnapshotStats()
+	if stats.Associations != 0 || stats.PendingAssociations != 0 || stats.QueuedBytes != 0 {
+		t.Fatalf("UDP accounting leaked after soak: %+v", stats)
+	}
+}

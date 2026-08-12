@@ -4,6 +4,11 @@
 # 可选，默认 info。可选值：trace、debug、info、warn、error。
 log_level: info
 
+# 可选运维 HTTP Listener，提供 /healthz、/readyz 和 /metrics；默认空并禁用。
+# 端点不提供应用层认证，应绑定到回环地址或受保护的管理网络。修改后需要重启。
+operations:
+  listen_address: ""
+
 transport:
   # 可选，默认 tcp。可选值：tcp、quic；服务端只启动选中的 Transport。
   type: tcp

@@ -36,6 +36,31 @@ type Client struct {
 	SessionID string
 }
 
+// Stats is a low-cardinality snapshot of session lifecycle state.
+type Stats struct {
+	Initializing int
+	Active       int
+	Suspended    int
+}
+
+// SnapshotStats returns aggregate session counts without exposing client identities.
+func (registry *Registry) SnapshotStats() Stats {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	var stats Stats
+	for _, record := range registry.clients {
+		switch record.state {
+		case stateInitializing:
+			stats.Initializing++
+		case stateActive:
+			stats.Active++
+		case stateSuspended:
+			stats.Suspended++
+		}
+	}
+	return stats
+}
+
 // Registry owns the current session record for every ClientID.
 type Registry struct {
 	mutex      sync.Mutex

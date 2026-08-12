@@ -152,6 +152,11 @@ func (s *Service) applyConfigurationCandidateContext(
 			field: changedYAMLField("security", current.Security, candidate.Security),
 		}
 	}
+	if !reflect.DeepEqual(candidate.Operations, current.Operations) {
+		return restartRequiredError{
+			field: changedYAMLField("operations", current.Operations, candidate.Operations),
+		}
+	}
 	if err := validateManagedRevisionTransitions(current, candidate); err != nil {
 		return err
 	}

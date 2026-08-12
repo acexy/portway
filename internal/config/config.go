@@ -181,6 +181,11 @@ type SecurityConfig struct {
 	HTTPClientIPHeader string `yaml:"http_client_ip_header"`
 }
 
+// OperationsConfig configures the optional local operations HTTP listener.
+type OperationsConfig struct {
+	ListenAddress string `yaml:"listen_address"`
+}
+
 // ServerConfig contains the complete server configuration.
 type ServerConfig struct {
 	Transport      ServerTransportConfig      `yaml:"transport"`
@@ -189,6 +194,7 @@ type ServerConfig struct {
 	HTTPS          HTTPSConfig                `yaml:"https"`
 	UDP            UDPConfig                  `yaml:"udp"`
 	Security       SecurityConfig             `yaml:"security"`
+	Operations     OperationsConfig           `yaml:"operations"`
 	LogLevel       LogLevel                   `yaml:"log_level"`
 	Authentication ServerAuthenticationConfig `yaml:"authentication"`
 	// SourcePath is the main file used for server hot reload.

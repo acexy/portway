@@ -59,6 +59,7 @@ func validateServer(configuration ServerConfig) error {
 		{"transport.listen_address", configuration.Transport.ListenAddress},
 		{"tunnel.http_listen_address", configuration.Tunnel.HTTPListenAddress},
 		{"tunnel.https_listen_address", configuration.Tunnel.HTTPSListenAddress},
+		{"operations.listen_address", configuration.Operations.ListenAddress},
 	}
 	for index, listener := range listenerAddresses {
 		if listener.address == "" {

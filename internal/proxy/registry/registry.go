@@ -73,6 +73,30 @@ type cachedSyncRequest struct {
 	result      protocol.SyncResult
 }
 
+// Stats is a low-cardinality snapshot of registered proxy resources.
+type Stats struct {
+	TCPProxies         int
+	UDPProxies         int
+	HTTPProxies        int
+	HTTPActiveRequests int
+	HTTPActiveUpgrades int
+	UDP                proxyudp.Stats
+}
+
+// SnapshotStats returns aggregate proxy and UDP resource counts.
+func (manager *Registry) SnapshotStats() Stats {
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	return Stats{
+		TCPProxies:         len(manager.endpointBindings),
+		UDPProxies:         len(manager.udpEndpointBindings),
+		HTTPProxies:        len(manager.httpDomains),
+		HTTPActiveRequests: manager.httpActiveRequests,
+		HTTPActiveUpgrades: manager.httpActiveUpgrades,
+		UDP:                manager.udpLimiter.SnapshotStats(),
+	}
+}
+
 type tcpProxyBinding struct {
 	clientID    string
 	sessionID   string
