@@ -4,6 +4,11 @@
 # 可选，默认 info。可选值：trace、debug、info、warn、error。
 log_level: info
 
+# 可选运维 HTTP Listener，提供 /healthz、/readyz 和 /metrics；默认空并禁用。
+# 端点不提供应用层认证，应绑定到回环地址或受保护的管理网络。修改后需要重启。
+operations:
+  listen_address: ""
+
 transport:
   # 可选，默认 tcp。可选值：tcp、quic；服务端只启动选中的 Transport。
   type: tcp
@@ -59,8 +64,8 @@ http:
   max_concurrent_requests: 4096              # 硬上限 16384
   max_concurrent_requests_per_client: 512    # 硬上限 2048
   max_concurrent_requests_per_domain: 256    # 硬上限 1024
-  max_idle_connections: 1024                 # 硬上限 4096
-  max_idle_connections_per_domain: 32        # 硬上限 128
+  max_idle_connections: 1024                 # 全域名活动+空闲后端 Link 上限；硬上限 4096
+  max_idle_connections_per_domain: 32        # 单域名空闲池上限；硬上限 128
   max_upgrade_connections: 1024              # 硬上限 4096
   max_upgrade_connections_per_client: 128    # 硬上限 512
   max_upgrade_connections_per_domain: 64     # 硬上限 256

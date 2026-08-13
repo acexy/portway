@@ -5,7 +5,7 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  A lightweight, production-oriented reverse tunneling system for TCP, UDP, HTTP, and HTTPS services.
+  Lightweight reverse tunneling for reliable, long-running service exposure.
 </p>
 
 Portway exposes services from private networks through a public server. It keeps
@@ -120,8 +120,10 @@ selected listener must be enabled or the complete registration is rejected.
 When omitted or empty, `public_schemes` defaults to HTTP only.
 The public `Host` is matched to an authenticated client registration. Portwayd
 terminates public HTTPS and forwards HTTP through the authenticated tunnel, so
-the local application receives a normal HTTP request. HTTP and HTTPS share the
-same proxy limits. HTTPS selects certificates by SNI from an atomically
+the local application receives a normal HTTP request. Visitor-supplied
+`Forwarded` and `X-Forwarded-*` values are removed; Portwayd writes trusted
+`X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto` values. HTTP and
+HTTPS share the same proxy limits. HTTPS selects certificates by SNI from an atomically
 reloadable certificate set; invalid updates leave the previous set active. HTTPS supports
 HTTP/1.1 and HTTP/2 with a minimum TLS version of 1.2. HTTPS backend forwarding,
 SNI passthrough, ACME, and HTTP/3 are not currently supported.
@@ -205,44 +207,10 @@ brew install acexy/tap/portway acexy/tap/portwayd
 The formulae do not create or overwrite configuration files. Prepare the
 appropriate `client.yaml` or `server.yaml` before running the installed command.
 
-## Build from source
-
-Portway currently targets Go 1.25.8.
-
-```bash
-make build
-```
-
-The current-platform binaries are written to `target/bin/`.
-
-To cross-compile and package all supported release targets:
-
-```bash
-./release.sh
-```
-
-The release matrix includes Linux and macOS on `amd64` and `arm64`, plus
-Windows on `amd64`. Each archive contains the matching `portway` and `portwayd`
-executables together with `LICENSE` and `NOTICE` at its root:
-
-```text
-target/portway-linux-amd64.tar
-target/portway-linux-arm64.tar
-target/portway-darwin-amd64.tar
-target/portway-darwin-arm64.tar
-target/portway-win-amd64.tar
-```
-
-Windows archives contain `portway.exe` and `portwayd.exe`. Override release
-metadata when needed:
-
-```bash
-VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
-```
-
 ## Public documentation
 
 - [Technical overview](assets/docs/technical/README.md)
+- [Operations endpoints](assets/docs/operations/README.md)
 - [Authentication and configuration control](assets/docs/authentication/README.md)
 - [Server configuration reload](assets/docs/reload/README.md)
 - [Security](assets/docs/security/README.md)

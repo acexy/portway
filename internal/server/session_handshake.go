@@ -146,7 +146,7 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 	negotiatedCapabilities := negotiateCapabilities(clientHello.Capabilities)
 	if err := protocol.WriteControl(connection, protocol.MessageServerHello, protocol.ServerHello{
 		ClientID:       clientHello.ClientID,
-		ManagementMode: string(inbound.Authentication.Mode),
+		ManagementMode: protocol.ManagementMode(inbound.Authentication.Mode),
 		SessionID:      sessionID,
 		Resumed:        resumed,
 		Capabilities:   negotiatedCapabilities,

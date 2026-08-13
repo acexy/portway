@@ -12,22 +12,22 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
-func negotiateCapabilities(clientCapabilities []string) []string {
-	supported := map[string]struct{}{
-		"tcp":          {},
-		"udp":          {},
-		"http":         {},
-		"json-control": {},
+func negotiateCapabilities(clientCapabilities []protocol.Capability) []protocol.Capability {
+	supported := map[protocol.Capability]struct{}{
+		protocol.CapabilityTCP:         {},
+		protocol.CapabilityUDP:         {},
+		protocol.CapabilityHTTP:        {},
+		protocol.CapabilityJSONControl: {},
 	}
 	negotiated := coll.SliceFilter(
 		clientCapabilities,
-		func(capability string) bool {
+		func(capability protocol.Capability) bool {
 			_, supportedCapability := supported[capability]
 			return supportedCapability
 		},
 	)
 	if negotiated == nil {
-		return []string{}
+		return []protocol.Capability{}
 	}
 	return negotiated
 }
@@ -46,13 +46,13 @@ func (s *Service) validateGovernedProxies(
 		)
 	}
 	permissions := clientConfiguration.Permissions
-	allowedTypes := make(map[string]struct{}, len(permissions.ProxyTypes))
+	allowedTypes := make(map[protocol.ProxyType]struct{}, len(permissions.ProxyTypes))
 	for _, proxyType := range permissions.ProxyTypes {
 		allowedTypes[proxyType] = struct{}{}
 	}
 	typeCounts := make(map[protocol.ProxyType]int)
 	for _, declaration := range request.Proxies {
-		if _, allowed := allowedTypes[string(declaration.Type)]; !allowed {
+		if _, allowed := allowedTypes[declaration.Type]; !allowed {
 			return governedRejection(
 				request.Revision,
 				protocol.ProxyErrorProxyTypeNotAllowed,
@@ -126,21 +126,13 @@ func publicSchemeAllowed(
 	if len(allowed) == 0 {
 		return requested == protocol.HTTPPublicSchemeHTTP
 	}
-	for _, scheme := range allowed {
-		if scheme == requested {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContains(allowed, requested)
 }
 
 func portAllowed(port uint16, ranges []config.PortRange) bool {
-	for _, portRange := range ranges {
-		if port >= portRange.Start && port <= portRange.End {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContainsBy(ranges, func(portRange config.PortRange) bool {
+		return port >= portRange.Start && port <= portRange.End
+	})
 }
 
 func domainAllowed(domain string, patterns []string) bool {

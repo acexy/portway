@@ -5,7 +5,7 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  一款轻量级、面向生产的反向隧道系统，支持 TCP、UDP、HTTP 和 HTTPS 服务。
+  一款面向长期可靠服务暴露的轻量级反向隧道系统。
 </p>
 
 Portway 通过公共服务端将私有网络中的服务暴露到公网。它将控制平面与隧道流量分离，
@@ -112,8 +112,10 @@ proxies:
 公网 HTTP/HTTPS Listener；任一所选 Listener 未启用都会拒绝整批注册。
 省略或留空 `public_schemes` 时默认仅使用 HTTP 入口。
 公共 `Host` 会被匹配到已认证的客户端注册信息。`portwayd` 终止公网 HTTPS，
-随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。HTTP 与
-HTTPS 共用代理限制。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
+随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。Visitor
+提供的 `Forwarded` 和 `X-Forwarded-*` 会被删除，`portwayd` 写入可信的
+`X-Forwarded-For`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。HTTP 与 HTTPS
+共用代理限制。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
 无效更新会继续使用上一代集合。HTTPS 支持 HTTP/1.1、HTTP/2，最低使用 TLS 1.2。
 当前不支持 HTTPS 回源、SNI 透传、ACME 和 HTTP/3。
 
@@ -193,42 +195,10 @@ brew install acexy/tap/portway acexy/tap/portwayd
 Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要自行准备对应的
 `client.yaml` 或 `server.yaml`。
 
-## 从源码构建
-
-Portway 当前基于 Go 1.25.8。
-
-```bash
-make build
-```
-
-当前平台的二进制文件会输出到 `target/bin/`。
-
-交叉编译并打包所有支持的发布目标：
-
-```bash
-./release.sh
-```
-
-发布矩阵涵盖 Linux 和 macOS 的 `amd64` 与 `arm64` 平台，以及 Windows 的 `amd64` 平台。
-每个归档文件包含对应平台的 `portway` 和 `portwayd` 可执行文件，以及根目录下的 `LICENSE` 和 `NOTICE`：
-
-```text
-target/portway-linux-amd64.tar
-target/portway-linux-arm64.tar
-target/portway-darwin-amd64.tar
-target/portway-darwin-arm64.tar
-target/portway-win-amd64.tar
-```
-
-Windows 归档文件包含 `portway.exe` 和 `portwayd.exe`。需要时可通过以下方式覆盖发布元数据：
-
-```bash
-VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" ./release.sh
-```
-
 ## 公开文档
 
 - [技术概览](assets/docs/technical/README_ZH.md)
+- [运维接口](assets/docs/operations/README_ZH.md)
 - [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
 - [服务端配置热加载](assets/docs/reload/README_ZH.md)
 - [安全性](assets/docs/security/README_ZH.md)

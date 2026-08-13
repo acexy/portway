@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/acexy/portway/internal/link"
@@ -57,6 +58,16 @@ func (manager *Registry) openVisitor(
 		"event":  "tcp_visitor_accepted",
 		"result": "accepted",
 	})
+	var finishOnce sync.Once
+	finish := func(result string) {
+		finishOnce.Do(func() {
+			visitorLogger.DebugWithFields("TCP visitor closed", map[string]any{
+				"event":       "tcp_visitor_closed",
+				"result":      result,
+				"duration_ms": time.Since(startedAt).Milliseconds(),
+			})
+		})
+	}
 
 	err := manager.linkBroker.ServeStream(
 		link.Target{
@@ -66,21 +77,22 @@ func (manager *Registry) openVisitor(
 			Authentication: authenticationContext,
 			MaxActiveLinks: maxActiveLinks,
 		},
-		func() { visitor.Close() },
+		func() {
+			visitor.Close()
+			finish("cancelled")
+		},
 		func(ctx context.Context, stream net.Conn) error {
-			return proxytcp.Forward(ctx, visitor, stream)
+			forwardError := proxytcp.Forward(ctx, visitor, stream)
+			result := "completed"
+			if forwardError != nil {
+				result = "failed"
+			}
+			finish(result)
+			return forwardError
 		},
 	)
 	if err != nil {
 		visitor.Close()
+		finish("failed")
 	}
-	result := "completed"
-	if err != nil {
-		result = "failed"
-	}
-	visitorLogger.DebugWithFields("TCP visitor closed", map[string]any{
-		"event":       "tcp_visitor_closed",
-		"result":      result,
-		"duration_ms": time.Since(startedAt).Milliseconds(),
-	})
 }

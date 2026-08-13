@@ -10,9 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/session"
 )
 
@@ -151,6 +154,11 @@ func (s *Service) applyConfigurationCandidateContext(
 			field: changedYAMLField("security", current.Security, candidate.Security),
 		}
 	}
+	if !reflect.DeepEqual(candidate.Operations, current.Operations) {
+		return restartRequiredError{
+			field: changedYAMLField("operations", current.Operations, candidate.Operations),
+		}
+	}
 	if err := validateManagedRevisionTransitions(current, candidate); err != nil {
 		return err
 	}
@@ -186,12 +194,15 @@ func (s *Service) applyConfigurationCandidateContext(
 		current.ManagedClients,
 		candidate.ManagedClients,
 	)
+	var reservationTransaction *proxyregistry.ManagedReservationTransaction
 	if s.proxyRegistry != nil {
-		if err := s.proxyRegistry.ConfigureManagedReservations(
+		reservationTransaction, err = s.proxyRegistry.BeginManagedReservationUpdate(
 			candidate.ManagedClients,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("validate managed reservations: %w", err)
 		}
+		defer reservationTransaction.Rollback()
 	}
 	// Change only the level of the initialized logger after every fallible
 	// candidate validation has succeeded. EnableConsole is startup-only and the
@@ -212,6 +223,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	}
 	s.configuration.publish(candidate)
 	s.authenticationStore.ReplaceRevoking(snapshot, revokedContexts)
+	reservationTransaction.Commit()
 
 	var revokedSessions []session.ExpiredClient
 	cleanupCallbacks := make([]func(), 0)
@@ -348,9 +360,6 @@ func reloadErrorCode(err error) string {
 	case strings.Contains(message, "HTTPS certificate") ||
 		strings.Contains(message, "HTTPS private key"):
 		return "https_certificate_invalid"
-	case strings.Contains(message, "HTTPS certificate") ||
-		strings.Contains(message, "HTTPS private key"):
-		return "https_certificate_invalid"
 	default:
 		return "invalid_configuration"
 	}
@@ -392,11 +401,9 @@ func revokedAuthenticationContexts(
 	candidate config.ServerConfig,
 ) []authentication.Context {
 	contexts := currentSnapshot.Contexts()
-	revoked := make([]authentication.Context, 0, len(contexts))
-	for _, context := range contexts {
+	revoked := coll.SliceFilter(contexts, func(context authentication.Context) bool {
 		if !candidateSnapshot.ContainsRecord(context) {
-			revoked = append(revoked, context)
-			continue
+			return true
 		}
 		switch context.Mode {
 		case authentication.ModeGoverned:
@@ -404,13 +411,17 @@ func revokedAuthenticationContexts(
 				current.GovernedClients[context.ClientID],
 				candidate.GovernedClients[context.ClientID],
 			) {
-				revoked = append(revoked, context)
+				return true
 			}
 		case authentication.ModeManaged:
 			// Managed configuration changes use the online rollout state
 			// machine. Token, identity, or mode changes are handled above by
 			// ContainsRecord and still revoke the old authentication record.
 		}
+		return false
+	})
+	if revoked == nil {
+		return []authentication.Context{}
 	}
 	return revoked
 }
@@ -419,15 +430,15 @@ func changedManagedClients(
 	current config.ServerConfig,
 	candidate config.ServerConfig,
 ) []string {
-	changed := make([]string, 0)
-	for clientID, next := range candidate.ManagedClients {
+	changed := coll.MapFilterToSlice(candidate.ManagedClients, func(clientID string, next config.ManagedClientConfig) (string, bool) {
 		previous, exists := current.ManagedClients[clientID]
 		if !exists || previous.Token != next.Token {
-			continue
+			return "", false
 		}
-		if !reflect.DeepEqual(previous.Configuration, next.Configuration) {
-			changed = append(changed, clientID)
-		}
+		return clientID, !reflect.DeepEqual(previous.Configuration, next.Configuration)
+	})
+	if changed == nil {
+		return []string{}
 	}
 	sort.Strings(changed)
 	return changed

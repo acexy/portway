@@ -1,9 +1,13 @@
 package registry
 
-import "sync"
+import (
+	"sync"
 
-import proxytcp "github.com/acexy/portway/internal/proxy/tcp"
-import proxyudp "github.com/acexy/portway/internal/proxy/udp"
+	"github.com/acexy/golang-toolkit/util/coll"
+
+	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
+	proxyudp "github.com/acexy/portway/internal/proxy/udp"
+)
 
 // Activate makes a fully registered client available to public traffic.
 func (manager *Registry) Activate(clientID string, sessionID string) {
@@ -45,14 +49,8 @@ func (manager *Registry) Suspend(clientID string, sessionID string) {
 	}
 	state.active = false
 	state.writer = nil
-	httpBindings := make([]*httpProxyBinding, 0, len(state.httpProxies))
-	for _, binding := range state.httpProxies {
-		httpBindings = append(httpBindings, binding)
-	}
-	udpBindings := make([]*udpProxyBinding, 0, len(state.udpProxies))
-	for _, binding := range state.udpProxies {
-		udpBindings = append(udpBindings, binding)
-	}
+	httpBindings := coll.MapValues(state.httpProxies)
+	udpBindings := coll.MapValues(state.udpProxies)
 	manager.mutex.Unlock()
 
 	manager.linkBroker.CancelSession(clientID, sessionID)
@@ -137,7 +135,7 @@ func (manager *Registry) Close() {
 	endpoints := make(map[uint16]*proxytcp.Endpoint, len(manager.endpoints))
 	udpEndpoints := make(map[uint16]*proxyudp.Endpoint, len(manager.udpEndpoints))
 	udpBindings := make([]*udpProxyBinding, 0)
-	httpBindings := make([]*httpProxyBinding, 0, len(manager.httpDomains))
+	httpBindings := coll.MapValues(manager.httpDomains)
 	for port, endpoint := range manager.endpoints {
 		endpoints[port] = endpoint
 	}
@@ -148,9 +146,6 @@ func (manager *Registry) Close() {
 		for _, binding := range state.udpProxies {
 			udpBindings = append(udpBindings, binding)
 		}
-	}
-	for _, binding := range manager.httpDomains {
-		httpBindings = append(httpBindings, binding)
 	}
 	manager.clients = make(map[string]*clientState)
 	manager.endpoints = make(map[uint16]*proxytcp.Endpoint)

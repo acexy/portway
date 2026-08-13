@@ -71,9 +71,9 @@ func TestValidateServerRequiresHTTPSCertificatePair(t *testing.T) {
 		t.Fatal("HTTPS listener without certificate pair was accepted")
 	}
 	configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
-		Domains: []string{"app.example.com"},
+		Domains:  []string{"app.example.com"},
 		CertFile: "server.crt",
-		KeyFile: "server.key",
+		KeyFile:  "server.key",
 	}}
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("valid HTTPS configuration was rejected: %v", err)
@@ -131,9 +131,9 @@ func TestValidateServerRejectsPublicTCPListenerConflicts(t *testing.T) {
 	configuration := DefaultServer()
 	configuration.Tunnel.HTTPSListenAddress = configuration.Transport.ListenAddress
 	configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
-		Domains: []string{"app.example.com"},
+		Domains:  []string{"app.example.com"},
 		CertFile: "server.crt",
-		KeyFile: "server.key",
+		KeyFile:  "server.key",
 	}}
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTPS and transport listener conflict was accepted")

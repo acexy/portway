@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -144,6 +145,12 @@ func readCertificate(t *testing.T, path string) *x509.Certificate {
 
 func assertPermission(t *testing.T, path string, expected os.FileMode) {
 	t.Helper()
+	// Windows filesystems don't provide POSIX permission semantics used by this test.
+	// Skip permission assertions on Windows CI runners.
+	if runtime.GOOS == "windows" {
+		t.Logf("skipping permission assertion on Windows for %s", path)
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat(%q) error = %v", path, err)

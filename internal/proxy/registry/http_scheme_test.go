@@ -19,15 +19,15 @@ func TestValidateProxyDeclarationsRequiresAvailablePublicSchemes(t *testing.T) {
 	}{
 		{name: "missing defaults to HTTP", httpEnabled: true},
 		{
-			name: "HTTP unavailable",
-			schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+			name:     "HTTP unavailable",
+			schemes:  []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 			wantCode: protocol.ProxyErrorPublicSchemeUnavailable,
 		},
 		{
-			name: "HTTPS unavailable",
-			schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+			name:        "HTTPS unavailable",
+			schemes:     []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
 			httpEnabled: true,
-			wantCode: protocol.ProxyErrorPublicSchemeUnavailable,
+			wantCode:    protocol.ProxyErrorPublicSchemeUnavailable,
 		},
 		{
 			name: "partial availability rejects complete declaration",
@@ -36,7 +36,7 @@ func TestValidateProxyDeclarationsRequiresAvailablePublicSchemes(t *testing.T) {
 				protocol.HTTPPublicSchemeHTTPS,
 			},
 			httpEnabled: true,
-			wantCode: protocol.ProxyErrorPublicSchemeUnavailable,
+			wantCode:    protocol.ProxyErrorPublicSchemeUnavailable,
 		},
 		{
 			name: "both available",
@@ -44,7 +44,7 @@ func TestValidateProxyDeclarationsRequiresAvailablePublicSchemes(t *testing.T) {
 				protocol.HTTPPublicSchemeHTTP,
 				protocol.HTTPPublicSchemeHTTPS,
 			},
-			httpEnabled: true,
+			httpEnabled:  true,
 			httpsEnabled: true,
 		},
 	}
@@ -79,7 +79,7 @@ func TestServeHTTPRejectsListenerOutsideBindingPublicSchemes(t *testing.T) {
 			"app.example.com": {
 				declaration: protocol.ProxyDeclaration{
 					Name: "web", Type: protocol.ProxyTypeHTTP,
-					Domain: "app.example.com",
+					Domain:        "app.example.com",
 					PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
 				},
 			},

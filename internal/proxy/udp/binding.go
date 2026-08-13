@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/security/ipfilter"
@@ -135,12 +137,9 @@ func (binding *Binding) sweep() {
 		case now := <-ticker.C:
 			cutoff := now.Add(-binding.configuration.AssociationIdleTimeout).UnixNano()
 			binding.mutex.Lock()
-			expired := make([]*association, 0)
-			for _, candidate := range binding.associations {
-				if candidate.lastActivity.Load() <= cutoff {
-					expired = append(expired, candidate)
-				}
-			}
+			expired := coll.MapFilterToSlice(binding.associations, func(_ netip.AddrPort, candidate *association) (*association, bool) {
+				return candidate, candidate.lastActivity.Load() <= cutoff
+			})
 			binding.mutex.Unlock()
 			for _, candidate := range expired {
 				candidate.Close()
@@ -154,10 +153,7 @@ func (binding *Binding) Close() {
 	binding.closeOnce.Do(func() {
 		binding.cancel()
 		binding.mutex.Lock()
-		associations := make([]*association, 0, len(binding.associations))
-		for _, candidate := range binding.associations {
-			associations = append(associations, candidate)
-		}
+		associations := coll.MapValues(binding.associations)
 		binding.mutex.Unlock()
 		for _, candidate := range associations {
 			candidate.Close()

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/acexy/portway/internal/authentication"
@@ -39,6 +41,7 @@ type Server struct {
 	context        context.Context
 	cancel         context.CancelFunc
 	connectionSlot chan struct{}
+	sourceLimiter  *authentication.SourceFailureLimiter
 	results        chan acceptResult
 	nextGeneration atomic.Uint64
 	mutex          sync.Mutex
@@ -93,6 +96,7 @@ func NewServer(
 		context:        serverContext,
 		cancel:         cancel,
 		connectionSlot: make(chan struct{}, maxConcurrentConnections),
+		sourceLimiter:  authentication.NewSourceFailureLimiter(),
 		results:        make(chan acceptResult, resultCapacity),
 		connections:    make(map[*quicgo.Conn]authentication.Context),
 		sourceFilter:   sourceFilter,
@@ -114,21 +118,16 @@ func (server *Server) acceptConnections() {
 			}
 			return
 		}
+		sourceAddress, parseError := ipfilter.ParseRemoteAddress(connection.RemoteAddr())
+		if parseError != nil || !server.sourceLimiter.Allow(sourceAddress) {
+			connection.CloseWithError(applicationErrorAuth, "authentication rate limited")
+			continue
+		}
 		var releaseSource func()
 		if server.sourceFilter.Enabled() {
-			address, parseError := ipfilter.ParseRemoteAddress(
-				connection.RemoteAddr(),
-			)
-			if parseError != nil {
-				connection.CloseWithError(
-					applicationErrorShutdown,
-					"source address rejected",
-				)
-				continue
-			}
 			var allowed bool
 			releaseSource, allowed = server.sourceFilter.RegisterFor(
-				address,
+				sourceAddress,
 				"transport_quic",
 				func() {
 					connection.CloseWithError(
@@ -159,12 +158,13 @@ func (server *Server) acceptConnections() {
 		}
 		server.addConnection(connection)
 		server.waitGroup.Add(1)
-		go server.handleConnection(connection, releaseSource)
+		go server.handleConnection(connection, sourceAddress, releaseSource)
 	}
 }
 
 func (server *Server) handleConnection(
 	connection *quicgo.Conn,
+	sourceAddress netip.Addr,
 	releaseSource func(),
 ) {
 	defer server.waitGroup.Done()
@@ -176,16 +176,59 @@ func (server *Server) handleConnection(
 		<-server.connectionSlot
 	}()
 
-	controlStream, err := connection.AcceptStream(server.context)
+	firstStreamContext, cancelFirstStream := context.WithTimeout(
+		server.context,
+		authenticationTimeout,
+	)
+	controlStream, err := connection.AcceptStream(firstStreamContext)
+	cancelFirstStream()
 	if err != nil {
+		server.sourceLimiter.RecordFailure(sourceAddress)
+		connection.CloseWithError(applicationErrorAuth, "authentication stream timeout")
 		return
 	}
+	streamContext, cancelStreams := context.WithCancel(server.context)
+	var streamWaitGroup sync.WaitGroup
+	dataStreams := make(chan *quicgo.Stream)
+	streamErrors := make(chan error, 1)
+	var authenticated atomic.Bool
+	streamWaitGroup.Add(1)
+	go func() {
+		defer streamWaitGroup.Done()
+		for {
+			dataStream, acceptError := connection.AcceptStream(streamContext)
+			if acceptError != nil {
+				select {
+				case streamErrors <- acceptError:
+				default:
+				}
+				return
+			}
+			if !authenticated.Load() {
+				dataStream.CancelRead(streamErrorClosed)
+				dataStream.CancelWrite(streamErrorClosed)
+				continue
+			}
+			select {
+			case dataStreams <- dataStream:
+			case <-streamContext.Done():
+				dataStream.CancelRead(streamErrorClosed)
+				dataStream.CancelWrite(streamErrorClosed)
+				return
+			}
+		}
+	}()
+	defer func() {
+		cancelStreams()
+		streamWaitGroup.Wait()
+	}()
 	authenticationContext, err := authenticateServer(
 		server.context,
 		controlStream,
 		server.credentials,
 	)
 	if err != nil {
+		server.sourceLimiter.RecordFailure(sourceAddress)
 		errorCode := applicationErrorProtocol
 		if errors.Is(err, transport.ErrAuthentication) {
 			errorCode = applicationErrorAuth
@@ -193,6 +236,8 @@ func (server *Server) handleConnection(
 		connection.CloseWithError(errorCode, "QUIC authentication failed")
 		return
 	}
+	server.sourceLimiter.RecordSuccess(sourceAddress)
+	authenticated.Store(true)
 	server.setConnectionAuthentication(connection, authenticationContext)
 	if !server.credentials.IsCurrent(authenticationContext) {
 		connection.CloseWithError(applicationErrorAuth, "authentication revoked")
@@ -215,8 +260,12 @@ func (server *Server) handleConnection(
 	}
 
 	for {
-		dataStream, err := connection.AcceptStream(server.context)
-		if err != nil {
+		var dataStream *quicgo.Stream
+		select {
+		case dataStream = <-dataStreams:
+		case <-streamErrors:
+			return
+		case <-server.context.Done():
 			return
 		}
 		if !server.credentials.IsCurrent(authenticationContext) {
@@ -296,10 +345,7 @@ func (server *Server) Close() error {
 		server.cancel()
 		server.closeError = server.listener.Close()
 		server.mutex.Lock()
-		connections := make([]*quicgo.Conn, 0, len(server.connections))
-		for connection := range server.connections {
-			connections = append(connections, connection)
-		}
+		connections := coll.MapKeys(server.connections)
 		server.mutex.Unlock()
 		for _, connection := range connections {
 			connection.CloseWithError(applicationErrorShutdown, "server stopped")

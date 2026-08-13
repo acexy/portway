@@ -19,18 +19,19 @@ type TargetResolver func() (link.Target, error)
 
 // Binding owns one HTTP reverse proxy, its connection pool, and local limits.
 type Binding struct {
-	bindingID      string
-	domain         string
-	context        context.Context
-	cancel         context.CancelFunc
-	broker         *link.Broker
-	resolve        TargetResolver
-	transport      *stdhttp.Transport
-	proxy          *httputil.ReverseProxy
-	mutex          sync.Mutex
-	activeRequests int
-	activeUpgrades int
-	activeHTTP2    int
+	bindingID         string
+	domain            string
+	context           context.Context
+	cancel            context.CancelFunc
+	broker            *link.Broker
+	connectionLimiter *ConnectionLimiter
+	resolve           TargetResolver
+	transport         *stdhttp.Transport
+	proxy             *httputil.ReverseProxy
+	mutex             sync.Mutex
+	activeRequests    int
+	activeUpgrades    int
+	activeHTTP2       int
 }
 
 // NewBinding creates an HTTP runtime binding.
@@ -40,16 +41,18 @@ func NewBinding(
 	bindingID string,
 	domain string,
 	broker *link.Broker,
+	connectionLimiter *ConnectionLimiter,
 	resolve TargetResolver,
 ) *Binding {
 	ctx, cancel := context.WithCancel(parent)
 	binding := &Binding{
-		bindingID: bindingID,
-		domain:    domain,
-		context:   ctx,
-		cancel:    cancel,
-		broker:    broker,
-		resolve:   resolve,
+		bindingID:         bindingID,
+		domain:            domain,
+		context:           ctx,
+		cancel:            cancel,
+		broker:            broker,
+		connectionLimiter: connectionLimiter,
+		resolve:           resolve,
 	}
 	protocols := new(stdhttp.Protocols)
 	protocols.SetHTTP1(true)
@@ -87,7 +90,16 @@ func (binding *Binding) dialContext(ctx context.Context, _, _ string) (net.Conn,
 	if err != nil {
 		return nil, err
 	}
-	return binding.broker.OpenStream(ctx, target)
+	release, err := binding.connectionLimiter.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	connection, err := binding.broker.OpenStream(ctx, target)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return &limitedConnection{Conn: connection, release: release}, nil
 }
 
 // ID returns the immutable binding identifier.

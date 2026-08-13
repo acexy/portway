@@ -71,11 +71,11 @@ func TestHTTPProxyOverQUICEndToEnd(t *testing.T) {
 	clientConfiguration.Transport.QUIC.CAFile = certificateFile
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Proxies = []config.ProxyConfig{{
-		Name:      "web",
-		Type:      "http",
-		Domain:    "app.example.com",
-		LocalIP:   "127.0.0.1",
-		LocalPort: uint16(backendAddress.Port),
+		Name:          "web",
+		Type:          "http",
+		Domain:        "app.example.com",
+		LocalIP:       "127.0.0.1",
+		LocalPort:     uint16(backendAddress.Port),
 		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 	}}
 	clientContext, cancelClient := context.WithCancel(context.Background())

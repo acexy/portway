@@ -7,41 +7,41 @@ import (
 )
 
 const (
-	udpDefaultAssociationIdleTimeout                = 60 * time.Second
-	udpDefaultLinkWriteTimeout                      = 3 * time.Second
-	udpDefaultMaxDatagramSize                       = 65507
-	udpDefaultMaxAssociations                       = 4096
-	udpDefaultMaxAssociationsPerClient              = 512
-	udpDefaultMaxAssociationsPerProxy               = 256
-	udpDefaultMaxAssociationsPerSourceIP            = 64
-	udpDefaultMaxPendingAssociations                = 1024
-	udpDefaultMaxPendingAssociationsPerClient       = 128
-	udpDefaultMaxPendingAssociationsPerProxy        = 64
-	udpDefaultMaxNewAssociationsPerSecond           = 1000
-	udpDefaultMaxNewAssociationsPerSecondPerClient  = 200
-	udpDefaultMaxNewAssociationsPerSecondPerProxy   = 100
-	udpDefaultMaxQueuedDatagramsPerAssociation      = 32
-	udpDefaultMaxQueuedBytesPerAssociation          = 256 * 1024
-	udpDefaultMaxQueuedBytes                        = 64 * 1024 * 1024
+	udpDefaultAssociationIdleTimeout               = 60 * time.Second
+	udpDefaultLinkWriteTimeout                     = 3 * time.Second
+	udpDefaultMaxDatagramSize                      = 65507
+	udpDefaultMaxAssociations                      = 4096
+	udpDefaultMaxAssociationsPerClient             = 512
+	udpDefaultMaxAssociationsPerProxy              = 256
+	udpDefaultMaxAssociationsPerSourceIP           = 64
+	udpDefaultMaxPendingAssociations               = 1024
+	udpDefaultMaxPendingAssociationsPerClient      = 128
+	udpDefaultMaxPendingAssociationsPerProxy       = 64
+	udpDefaultMaxNewAssociationsPerSecond          = 1000
+	udpDefaultMaxNewAssociationsPerSecondPerClient = 200
+	udpDefaultMaxNewAssociationsPerSecondPerProxy  = 100
+	udpDefaultMaxQueuedDatagramsPerAssociation     = 32
+	udpDefaultMaxQueuedBytesPerAssociation         = 256 * 1024
+	udpDefaultMaxQueuedBytes                       = 64 * 1024 * 1024
 
-	udpMinAssociationIdleTimeout = 5 * time.Second
-	udpMaxAssociationIdleTimeout = 10 * time.Minute
-	udpMinLinkWriteTimeout       = 100 * time.Millisecond
-	udpMaxLinkWriteTimeout       = 30 * time.Second
-	udpHardMaxDatagramSize       = 65507
-	udpHardMaxAssociations       = 4096
-	udpHardMaxAssociationsPerClient = 512
-	udpHardMaxAssociationsPerProxy  = 256
-	udpHardMaxAssociationsPerSourceIP = 1024
-	udpHardMaxPendingAssociations = 1024
-	udpHardMaxPendingAssociationsPerClient = 128
-	udpHardMaxPendingAssociationsPerProxy  = 64
-	udpHardMaxNewAssociationsPerSecond = 10000
+	udpMinAssociationIdleTimeout                = 5 * time.Second
+	udpMaxAssociationIdleTimeout                = 10 * time.Minute
+	udpMinLinkWriteTimeout                      = 100 * time.Millisecond
+	udpMaxLinkWriteTimeout                      = 30 * time.Second
+	udpHardMaxDatagramSize                      = 65507
+	udpHardMaxAssociations                      = 4096
+	udpHardMaxAssociationsPerClient             = 512
+	udpHardMaxAssociationsPerProxy              = 256
+	udpHardMaxAssociationsPerSourceIP           = 1024
+	udpHardMaxPendingAssociations               = 1024
+	udpHardMaxPendingAssociationsPerClient      = 128
+	udpHardMaxPendingAssociationsPerProxy       = 64
+	udpHardMaxNewAssociationsPerSecond          = 10000
 	udpHardMaxNewAssociationsPerSecondPerClient = 2000
 	udpHardMaxNewAssociationsPerSecondPerProxy  = 1000
-	udpHardMaxQueuedDatagramsPerAssociation = 256
-	udpHardMaxQueuedBytesPerAssociation = 4 * 1024 * 1024
-	udpHardMaxQueuedBytes = 512 * 1024 * 1024
+	udpHardMaxQueuedDatagramsPerAssociation     = 256
+	udpHardMaxQueuedBytesPerAssociation         = 4 * 1024 * 1024
+	udpHardMaxQueuedBytes                       = 512 * 1024 * 1024
 )
 
 // UDPConfig configures bounded server-side UDP proxy resources.

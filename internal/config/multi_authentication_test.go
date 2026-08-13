@@ -48,7 +48,7 @@ configuration:
       remote_port: 22022
 `)
 	serverPath := filepath.Join(configurationDirectory, "server.yaml")
-writeTestConfiguration(t, serverPath, `
+	writeTestConfiguration(t, serverPath, `
 tunnel:
   http_listen_address: 127.0.0.1:8080
 authentication:
@@ -434,21 +434,21 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 		{
 			name: "TCP without ranges",
 			permissions: GovernedPermissions{
-				ProxyTypes: []string{"tcp"},
+				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
 				Limits:     DefaultPermissionLimits(),
 			},
 		},
 		{
 			name: "UDP without ranges",
 			permissions: GovernedPermissions{
-				ProxyTypes: []string{"udp"},
+				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeUDP},
 				Limits:     DefaultPermissionLimits(),
 			},
 		},
 		{
 			name: "HTTP without domains",
 			permissions: GovernedPermissions{
-				ProxyTypes: []string{"http"},
+				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeHTTP},
 				Limits:     DefaultPermissionLimits(),
 			},
 		},
@@ -471,8 +471,12 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 	}
 
 	valid := GovernedPermissions{
-		ProxyTypes: []string{"tcp", "udp", "http"},
-		Limits:     DefaultPermissionLimits(),
+		ProxyTypes: []protocol.ProxyType{
+			protocol.ProxyTypeTCP,
+			protocol.ProxyTypeUDP,
+			protocol.ProxyTypeHTTP,
+		},
+		Limits: DefaultPermissionLimits(),
 		TCP: ProxyPermission{
 			RemotePortRanges: []PortRange{{Start: 20000, End: 20999}},
 		},

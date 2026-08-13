@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -416,7 +418,7 @@ func (manager *linkManager) findProxy(
 	defer manager.mutex.Unlock()
 	proxyConfiguration, exists := manager.proxies[name]
 	return proxyConfiguration, exists &&
-		proxyConfiguration.Type == string(proxyType)
+		proxyConfiguration.Type == proxyType
 }
 
 func (manager *linkManager) updateProxies(proxies []config.ProxyConfig) {
@@ -426,9 +428,11 @@ func (manager *linkManager) updateProxies(proxies []config.ProxyConfig) {
 }
 
 func indexProxyConfigurations(proxies []config.ProxyConfig) map[string]config.ProxyConfig {
-	indexed := make(map[string]config.ProxyConfig, len(proxies))
-	for _, proxyConfiguration := range proxies {
-		indexed[proxyConfiguration.Name] = proxyConfiguration
+	indexed := coll.SliceGroupBySingle(proxies, func(proxyConfiguration config.ProxyConfig) string {
+		return proxyConfiguration.Name
+	})
+	if indexed == nil {
+		return map[string]config.ProxyConfig{}
 	}
 	return indexed
 }

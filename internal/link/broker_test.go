@@ -48,6 +48,7 @@ func TestBrokerRejectsTicketFromDifferentAuthenticationGeneration(t *testing.T) 
 		},
 		linkID:       "link-a",
 		ticketDigest: sha256.Sum256(ticketBytes),
+		expiresAt:    time.Now().Add(time.Hour),
 		timer:        time.NewTimer(time.Hour),
 	}
 	serverConnection, clientConnection := net.Pipe()
@@ -79,6 +80,60 @@ func TestBrokerRejectsTicketFromDifferentAuthenticationGeneration(t *testing.T) 
 	}
 	if err := <-result; err == nil {
 		t.Fatal("stale authentication generation was accepted")
+	}
+}
+
+func TestBrokerRejectsExpiredTicketAndReleasesReservation(t *testing.T) {
+	broker := NewBroker(context.Background())
+	defer broker.Close()
+	ticketBytes := make([]byte, 32)
+	ticket := base64.RawURLEncoding.EncodeToString(ticketBytes)
+	target := Target{ClientID: "client-a", ProxyName: "proxy-a"}
+	broker.pending["link-a"] = &brokerPendingLink{
+		target:       target,
+		linkID:       "link-a",
+		ticketDigest: sha256.Sum256(ticketBytes),
+		expiresAt:    time.Now().Add(-time.Second),
+		timer:        time.NewTimer(time.Hour),
+	}
+	broker.incrementPendingLocked(target)
+
+	serverConnection, clientConnection := net.Pipe()
+	defer serverConnection.Close()
+	defer clientConnection.Close()
+	result := make(chan error, 1)
+	go func() {
+		result <- broker.Bind(context.Background(), serverConnection, protocol.BindLink{
+			ClientID: "client-a", LinkID: "link-a", Ticket: ticket,
+		}, authentication.Context{})
+	}()
+	if _, err := protocol.ReadControl(clientConnection); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err == nil {
+		t.Fatal("expired ticket was accepted")
+	}
+	broker.mutex.Lock()
+	defer broker.mutex.Unlock()
+	if len(broker.pending) != 0 || len(broker.pendingClients) != 0 {
+		t.Fatal("expired ticket retained its capacity reservation")
+	}
+}
+
+func TestBrokerPendingLinksReserveActiveCapacity(t *testing.T) {
+	broker := NewBroker(context.Background())
+	target := Target{ClientID: "client-a", ProxyName: "proxy-a"}
+	broker.activeClients[target.ClientID] = maxActivePerClient - 1
+	broker.pendingClients[target.ClientID] = 1
+	if !broker.limitReachedLocked(target) {
+		t.Fatal("pending Link did not reserve per-client active capacity")
+	}
+	broker.activeClients[target.ClientID] = 0
+	broker.pendingClients[target.ClientID] = 0
+	broker.activeProxies[brokerProxyKey(target)] = maxActivePerProxy - 1
+	broker.pendingProxies[brokerProxyKey(target)] = 1
+	if !broker.limitReachedLocked(target) {
+		t.Fatal("pending Link did not reserve per-proxy active capacity")
 	}
 }
 

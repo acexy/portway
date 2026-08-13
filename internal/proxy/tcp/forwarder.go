@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"time"
-
 )
 
 // Stream is the reliable byte-stream boundary required by the TCP proxy.

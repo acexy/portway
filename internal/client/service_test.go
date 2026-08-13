@@ -143,7 +143,7 @@ func TestManagedLocalProxyConfigurationIsPermanent(t *testing.T) {
 func TestLocalProxyRequirementsFollowAuthenticatedManagementMode(t *testing.T) {
 	testCases := []struct {
 		name       string
-		mode       string
+		mode       protocol.ManagementMode
 		proxyCount int
 		wantError  error
 	}{

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
@@ -47,6 +48,7 @@ type Service struct {
 	authenticationBarrier sync.RWMutex
 	managed               *managedCoordinator
 	httpsCertificates     *httpsCertificateManager
+	ready                 atomic.Bool
 }
 
 // NewService creates a server service.
@@ -125,7 +127,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
-	httpErrors := make(chan error, 2)
+	listenerErrors := make(chan error, 3)
 	if configuration.Tunnel.HTTPListenAddress != "" {
 		httpListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
@@ -169,7 +171,7 @@ func (s *Service) Run(ctx context.Context) error {
 			defer sessions.Done()
 			serveError := httpServer.Serve(httpListener)
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
-				httpErrors <- serveError
+				listenerErrors <- serveError
 				transportServer.Close()
 			}
 		}()
@@ -242,7 +244,7 @@ func (s *Service) Run(ctx context.Context) error {
 			defer sessions.Done()
 			serveError := httpsServer.Serve(tls.NewListener(httpsListener, tlsConfiguration))
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
-				httpErrors <- serveError
+				listenerErrors <- serveError
 				transportServer.Close()
 			}
 		}()
@@ -270,13 +272,51 @@ func (s *Service) Run(ctx context.Context) error {
 		defer sessions.Done()
 		s.watchConfiguration(sessionContext)
 	}()
+	if configuration.Operations.ListenAddress != "" {
+		operationsListener, listenError := (&net.ListenConfig{}).Listen(
+			ctx,
+			"tcp",
+			configuration.Operations.ListenAddress,
+		)
+		if listenError != nil {
+			return fmt.Errorf(
+				"listen for operations requests on %q: %w",
+				configuration.Operations.ListenAddress,
+				listenError,
+			)
+		}
+		operationsServer := &http.Server{
+			Handler:           s.operationsHandler(),
+			ReadHeaderTimeout: operationsReadHeaderTimeout,
+			MaxHeaderBytes:    operationsMaxHeaderBytes,
+		}
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			serveError := operationsServer.Serve(operationsListener)
+			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
+				listenerErrors <- serveError
+				transportServer.Close()
+			}
+		}()
+		defer func() {
+			shutdownContext, cancel := context.WithTimeout(
+				context.Background(),
+				operationsShutdownTimeout,
+			)
+			defer cancel()
+			_ = operationsServer.Shutdown(shutdownContext)
+		}()
+	}
+	s.ready.Store(true)
+	defer s.ready.Store(false)
 
 	for {
 		inbound, err := transportServer.Accept(ctx)
 		if err != nil {
 			select {
-			case httpError := <-httpErrors:
-				return fmt.Errorf("serve HTTP proxy requests: %w", httpError)
+			case listenerError := <-listenerErrors:
+				return fmt.Errorf("serve auxiliary listener: %w", listenerError)
 			default:
 			}
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
