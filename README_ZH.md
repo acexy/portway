@@ -5,7 +5,7 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  一款轻量级、面向长期可靠稳定运行的反向隧道系统，支持 TCP、UDP、HTTP 和 HTTPS 服务。
+  一款面向长期可靠服务暴露的轻量级反向隧道系统。
 </p>
 
 Portway 通过公共服务端将私有网络中的服务暴露到公网。它将控制平面与隧道流量分离，
