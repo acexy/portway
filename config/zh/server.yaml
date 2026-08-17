@@ -14,10 +14,6 @@ transport:
   type: tcp
   # 可选，默认 0.0.0.0:7000；TCP 与 QUIC 共用。
   listen_address: 0.0.0.0:7000
-  # 可选，默认 false。开启后压缩所有 RoleData 绑定完成后的业务流；
-  # 固定使用 zstd，客户端自动跟随，不支持时停止。修改后需要重启。
-  compression:
-    enabled: false
   quic:
     # transport.type=quic 时必填。
     cert_file: /path/to/server.crt

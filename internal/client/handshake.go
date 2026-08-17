@@ -11,7 +11,6 @@ import (
 	"github.com/acexy/golang-toolkit/util/coll"
 
 	"github.com/acexy/portway/internal/buildinfo"
-	"github.com/acexy/portway/internal/compression"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
@@ -143,9 +142,6 @@ func (s *Service) runControlSession(
 			transport.ErrProtocol,
 		)
 	}
-	if err := validateCompressionRequirement(serverHello.Compression); err != nil {
-		return "", false, transport.Permanent(err)
-	}
 	writer := control.NewWriter(connection)
 	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 		return "", false, fmt.Errorf("set proxy registration deadline: %w", err)
@@ -200,29 +196,7 @@ func (s *Service) runControlSession(
 		writer,
 		transportSession,
 		serverHello.ManagementMode,
-		serverHello.Compression.Algorithm,
 	)
-}
-
-func validateCompressionRequirement(requirement protocol.CompressionRequirement) error {
-	if !requirement.Enabled {
-		if requirement.Algorithm != "" {
-			return fmt.Errorf(
-				"%w: disabled server compression declared algorithm %q",
-				transport.ErrProtocol,
-				requirement.Algorithm,
-			)
-		}
-		return nil
-	}
-	if !compression.Supported(requirement.Algorithm) {
-		return fmt.Errorf(
-			"%w: unsupported server compression algorithm %q",
-			transport.ErrProtocol,
-			requirement.Algorithm,
-		)
-	}
-	return nil
 }
 
 func validateLocalProxiesForManagementMode(mode protocol.ManagementMode, proxyCount int) error {

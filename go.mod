@@ -5,7 +5,6 @@ go 1.25.8
 require (
 	github.com/acexy/golang-toolkit v1.25.3
 	github.com/gaissmai/bart v0.29.0
-	github.com/klauspost/compress v1.19.2
 	github.com/quic-go/quic-go v0.61.0
 	github.com/sirupsen/logrus v1.9.4
 	gopkg.in/yaml.v3 v3.0.1

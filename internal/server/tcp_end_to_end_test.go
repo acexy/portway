@@ -37,9 +37,6 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 		Transport: config.ServerTransportConfig{
 			Type:          transport.TypeTCP,
 			ListenAddress: serverAddress.String(),
-			Compression: config.ServerCompressionConfig{
-				Enabled: true,
-			},
 		},
 		Tunnel: config.TunnelConfig{
 			BindIP: "127.0.0.1",

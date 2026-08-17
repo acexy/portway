@@ -11,7 +11,6 @@ import (
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
-	"github.com/acexy/portway/internal/compression"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -22,18 +21,17 @@ import (
 )
 
 type linkManager struct {
-	context     context.Context
-	cancel      context.CancelFunc
-	logger      *logging.Logger
-	clientID    string
-	proxies     map[string]config.ProxyConfig
-	sessionID   string
-	writer      *control.Writer
-	transport   transport.ClientSession
-	compression compression.Algorithm
-	mutex       sync.Mutex
-	links       map[string]context.CancelFunc
-	waitGroup   sync.WaitGroup
+	context   context.Context
+	cancel    context.CancelFunc
+	logger    *logging.Logger
+	clientID  string
+	proxies   map[string]config.ProxyConfig
+	sessionID string
+	writer    *control.Writer
+	transport transport.ClientSession
+	mutex     sync.Mutex
+	links     map[string]context.CancelFunc
+	waitGroup sync.WaitGroup
 }
 
 func newLinkManager(
@@ -44,20 +42,18 @@ func newLinkManager(
 	sessionID string,
 	writer *control.Writer,
 	transportSession transport.ClientSession,
-	compressionAlgorithm compression.Algorithm,
 ) *linkManager {
 	ctx, cancel := context.WithCancel(parent)
 	return &linkManager{
-		context:     ctx,
-		cancel:      cancel,
-		logger:      logger,
-		clientID:    clientID,
-		proxies:     indexProxyConfigurations(proxies),
-		sessionID:   sessionID,
-		writer:      writer,
-		transport:   transportSession,
-		compression: compressionAlgorithm,
-		links:       make(map[string]context.CancelFunc),
+		context:   ctx,
+		cancel:    cancel,
+		logger:    logger,
+		clientID:  clientID,
+		proxies:   indexProxyConfigurations(proxies),
+		sessionID: sessionID,
+		writer:    writer,
+		transport: transportSession,
+		links:     make(map[string]context.CancelFunc),
 	}
 }
 
@@ -215,20 +211,11 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		manager.reportFailure(request.LinkID, failure)
 		return
 	}
-	stream := proxytcp.Stream(dataConnection)
-	if manager.compression != "" {
-		compressed, compressionError := compression.NewStream(dataConnection, manager.compression)
-		if compressionError != nil {
-			logger.Error("initialize proxy link compression", compressionError)
-			return
-		}
-		stream = compressed
-	}
 
 	logger.DebugWithFields("proxy link streaming started", map[string]any{
 		"event": "proxy_link_started",
 	})
-	err := proxytcp.Forward(ctx, stream, localConnection)
+	err := proxytcp.Forward(ctx, dataConnection, localConnection)
 	if err != nil && ctx.Err() == nil {
 		logger.WarnWithFields(
 			"proxy link streaming ended",
@@ -379,19 +366,10 @@ func (manager *linkManager) runUDP(
 		manager.reportFailure(request.LinkID, failure)
 		return
 	}
-	stream := net.Conn(dataConnection)
-	if manager.compression != "" {
-		compressed, compressionError := compression.NewStream(dataConnection, manager.compression)
-		if compressionError != nil {
-			logger.Error("initialize UDP proxy link compression", compressionError)
-			return
-		}
-		stream = compressed
-	}
 	logger.Trace("UDP proxy association streaming started")
 	err := proxyudp.Forward(
 		ctx,
-		stream,
+		dataConnection,
 		localConnection,
 		int(request.MaxDatagramSize),
 		time.Duration(request.WriteTimeoutMS)*time.Millisecond,

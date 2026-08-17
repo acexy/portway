@@ -70,7 +70,7 @@ func TestRunVersionPrintsClientVersion(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("run() exit code = %d", exitCode)
 	}
-	expected := "version: development\ncore-protocol: 1\ncompression-protocols: zstd\n"
+	expected := "version: development\ncore-protocol: 1\n"
 	if stdout.String() != expected {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
 	}

@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 
 	"github.com/acexy/portway/internal/authentication"
-	"github.com/acexy/portway/internal/compression"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/logging"
@@ -108,11 +107,7 @@ func (s *Service) Run(ctx context.Context) error {
 	var sessions sync.WaitGroup
 	defer sessions.Wait()
 	sessionContext, cancelSessions := context.WithCancel(ctx)
-	var compressionAlgorithm compression.Algorithm
-	if configuration.Transport.Compression.Enabled {
-		compressionAlgorithm = compression.AlgorithmZstd
-	}
-	s.linkBroker = link.NewBroker(sessionContext, compressionAlgorithm)
+	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,

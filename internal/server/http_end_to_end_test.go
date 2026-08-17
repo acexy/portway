@@ -49,7 +49,6 @@ func TestHTTPProxyEndToEnd(t *testing.T) {
 	serverErrors := make(chan error, 1)
 	serverConfiguration := config.DefaultServer()
 	serverConfiguration.Transport.ListenAddress = serverAddress.String()
-	serverConfiguration.Transport.Compression.Enabled = true
 	serverConfiguration.Tunnel.HTTPListenAddress = httpAddress.String()
 	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
 	serverConfiguration.Authentication.SharedToken = &token

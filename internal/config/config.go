@@ -129,17 +129,11 @@ type QUICServerTransportConfig struct {
 	KeyFile  string `yaml:"key_file"`
 }
 
-// ServerCompressionConfig controls compression of bound RoleData business streams.
-type ServerCompressionConfig struct {
-	Enabled bool `yaml:"enabled"`
-}
-
 // ServerTransportConfig selects and configures one server transport.
 type ServerTransportConfig struct {
 	Type          transport.Type            `yaml:"type"`
 	ListenAddress string                    `yaml:"listen_address"`
 	QUIC          QUICServerTransportConfig `yaml:"quic"`
-	Compression   ServerCompressionConfig   `yaml:"compression"`
 }
 
 // ProxyConfig describes one client-side proxy.

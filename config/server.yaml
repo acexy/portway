@@ -29,13 +29,6 @@ transport:
   # Defaults to 0.0.0.0:7000. The effective value must not be empty.
   listen_address: 0.0.0.0:7000
 
-  # Optional. Compresses all RoleData business streams after binding.
-  # Defaults to false. The fixed protocol is zstd; clients follow the server
-  # setting and stop when they do not support the required protocol.
-  # Changing this value requires restarting portwayd.
-  compression:
-    enabled: false
-
   # Optional when type=tcp. QUIC-specific TLS transport settings.
   quic:
     # * Required when transport.type=quic.
