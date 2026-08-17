@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/compression"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
@@ -76,11 +77,12 @@ type Broker struct {
 	activeClients  map[string]int
 	activeProxies  map[string]int
 	closed         bool
+	compression    compression.Algorithm
 	closeOnce      sync.Once
 }
 
 // NewBroker creates a link broker.
-func NewBroker(ctx context.Context) *Broker {
+func NewBroker(ctx context.Context, algorithms ...compression.Algorithm) *Broker {
 	broker := &Broker{
 		pending:        make(map[string]*brokerPendingLink),
 		active:         make(map[string]*brokerActiveLink),
@@ -88,6 +90,9 @@ func NewBroker(ctx context.Context) *Broker {
 		pendingProxies: make(map[string]int),
 		activeClients:  make(map[string]int),
 		activeProxies:  make(map[string]int),
+	}
+	if len(algorithms) > 0 {
+		broker.compression = algorithms[0]
 	}
 	context.AfterFunc(ctx, broker.Close)
 	return broker
@@ -254,12 +259,22 @@ func (broker *Broker) Bind(
 		broker.finish(binding.LinkID)
 		return err
 	}
+	dataConnection := net.Conn(managed)
+	if broker.compression != "" {
+		compressed, compressionError := compression.NewStream(managed, broker.compression)
+		if compressionError != nil {
+			managed.Close()
+			broker.finish(binding.LinkID)
+			return compressionError
+		}
+		dataConnection = compressed
+	}
 
 	if pending.handler != nil {
-		err = pending.handler(ctx, managed)
-		managed.Close()
+		err = pending.handler(ctx, dataConnection)
+		dataConnection.Close()
 	} else {
-		pending.ready <- linkOpenResult{connection: managed}
+		pending.ready <- linkOpenResult{connection: dataConnection}
 		select {
 		case <-managed.done:
 		case <-ctx.Done():

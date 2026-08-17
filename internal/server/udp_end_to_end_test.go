@@ -53,6 +53,7 @@ func runUDPProxyEndToEnd(t *testing.T, transportType transport.Type) {
 	proxyAddress := reserveUDPAddress(t)
 	token := "test-token-with-at-least-32-random-bytes"
 	serverConfiguration.Transport.ListenAddress = serverAddress
+	serverConfiguration.Transport.Compression.Enabled = true
 	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
 	serverConfiguration.Authentication.SharedToken = &token
 

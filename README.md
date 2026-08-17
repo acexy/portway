@@ -20,6 +20,7 @@ bounded resources, and secure defaults.
 - TCP, UDP, and domain-based HTTP/HTTPS reverse proxying
 - Selectable TCP or QUIC client-server transport
 - Authenticated and encrypted client-server connections
+- Optional server-controlled zstd compression for all tunneled data
 - Atomic proxy registration and bounded session recovery
 - HTTP/HTTPS streaming and Upgrade support with connection reuse
 - Server-side HTTPS TLS termination with atomic certificate reload
@@ -46,6 +47,8 @@ Create `server.yaml`:
 transport:
   type: tcp
   listen_address: 127.0.0.1:7000
+  compression:
+    enabled: true
 
 authentication:
   shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
@@ -82,6 +85,27 @@ The local SSH service is now available at:
 ```text
 127.0.0.1:22022
 ```
+
+## Data-link compression
+
+The server can enable zstd compression globally for tunneled TCP, HTTP, and UDP
+data. Compression starts only after a RoleData link has been authenticated and
+bound; handshakes, control messages, and link-binding frames are never
+compressed.
+
+```yaml
+transport:
+  compression:
+    enabled: true
+```
+
+Compression is disabled by default and changing it requires restarting
+`portwayd`. Clients do not configure compression: the server announces the
+required protocol over the authenticated control session, and clients follow
+it automatically. A client that does not support the required protocol stops
+instead of silently falling back to an uncompressed connection. `portway
+version` and `portwayd version` list binary support as
+`compression-protocols: zstd`.
 
 ## HTTP and HTTPS proxy
 

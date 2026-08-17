@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/acexy/portway/internal/compression"
 )
 
 const (
@@ -119,13 +121,20 @@ type ClientHello struct {
 	Capabilities    []Capability `json:"capabilities"`
 }
 
+// CompressionRequirement declares the server-selected RoleData compression protocol.
+type CompressionRequirement struct {
+	Enabled   bool                  `json:"enabled"`
+	Algorithm compression.Algorithm `json:"algorithm,omitempty"`
+}
+
 // ServerHello confirms the session and negotiated capabilities.
 type ServerHello struct {
-	ClientID       string         `json:"client_id"`
-	ManagementMode ManagementMode `json:"management_mode"`
-	SessionID      string         `json:"session_id"`
-	Resumed        bool           `json:"resumed"`
-	Capabilities   []Capability   `json:"capabilities"`
+	ClientID       string                 `json:"client_id"`
+	ManagementMode ManagementMode         `json:"management_mode"`
+	SessionID      string                 `json:"session_id"`
+	Resumed        bool                   `json:"resumed"`
+	Capabilities   []Capability           `json:"capabilities"`
+	Compression    CompressionRequirement `json:"compression"`
 }
 
 // Heartbeat carries a monotonically increasing session sequence.

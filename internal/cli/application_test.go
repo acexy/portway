@@ -133,7 +133,7 @@ func TestApplicationVersionPrintsOnlyVersion(t *testing.T) {
 
 	application.WriteVersion(&stdout)
 
-	expected := "version: v1.2.3\ncore-protocol: 1\n"
+	expected := "version: v1.2.3\ncore-protocol: 1\ncompression-protocols: zstd\n"
 	if stdout.String() != expected {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
 	}

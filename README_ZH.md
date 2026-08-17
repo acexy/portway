@@ -16,6 +16,7 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
 - TCP、UDP 和基于域名的 HTTP/HTTPS 反向代理
 - 可选 TCP 或 QUIC 作为客户端-服务端传输协议
 - 认证加密的客户端-服务端连接
+- 可选的服务端全局 zstd 隧道数据压缩
 - 原子化代理注册与有界会话恢复
 - HTTP/HTTPS 流式传输和 Upgrade 支持，具备连接复用能力
 - 服务端 HTTPS TLS 终止与证书原子热更新
@@ -41,6 +42,8 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
 transport:
   type: tcp
   listen_address: 127.0.0.1:7000
+  compression:
+    enabled: true
 
 authentication:
   shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
@@ -76,6 +79,22 @@ portway run --config client.yaml
 ```text
 127.0.0.1:22022
 ```
+
+## 数据链路压缩
+
+服务端可以为 TCP、HTTP 和 UDP 的隧道业务数据全局启用 zstd 压缩。压缩只在
+RoleData 完成认证和绑定后开始；握手、控制消息和 Link 绑定帧始终不压缩。
+
+```yaml
+transport:
+  compression:
+    enabled: true
+```
+
+压缩默认关闭，修改后需要重启 `portwayd`。客户端不配置压缩：服务端通过已认证
+的控制 Session 声明所需协议，客户端自动跟随。不支持该协议的客户端会停止，
+不会静默降级为未压缩连接。`portway version` 和 `portwayd version` 会通过
+`compression-protocols: zstd` 显示当前二进制支持的压缩协议。
 
 ## HTTP 与 HTTPS 代理
 

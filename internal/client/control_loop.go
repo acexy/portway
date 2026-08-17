@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/acexy/portway/internal/compression"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
@@ -23,6 +24,7 @@ func (s *Service) runControlLoop(
 	writer *control.Writer,
 	transportSession transport.ClientSession,
 	managementMode protocol.ManagementMode,
+	compressionAlgorithm compression.Algorithm,
 ) error {
 	sessionContext, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
@@ -44,6 +46,7 @@ func (s *Service) runControlLoop(
 		sessionID,
 		writer,
 		transportSession,
+		compressionAlgorithm,
 	)
 	defer linkManager.close()
 

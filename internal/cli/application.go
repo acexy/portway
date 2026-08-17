@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/acexy/portway/internal/buildinfo"
+	"github.com/acexy/portway/internal/compression"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -218,6 +219,12 @@ func (application Application) writeCommandHelp(
 func (application Application) WriteVersion(writer io.Writer) {
 	_, _ = fmt.Fprintf(writer, "version: %s\n", application.Version.Version)
 	_, _ = fmt.Fprintf(writer, "core-protocol: %d\n", protocol.CoreVersion)
+	algorithms := compression.SupportedAlgorithms()
+	values := make([]string, 0, len(algorithms))
+	for _, algorithm := range algorithms {
+		values = append(values, string(algorithm))
+	}
+	_, _ = fmt.Fprintf(writer, "compression-protocols: %s\n", strings.Join(values, ","))
 }
 
 func (application Application) resolveCommand(

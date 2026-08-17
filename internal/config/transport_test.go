@@ -24,6 +24,9 @@ func TestDefaultTransportUsesTCP(t *testing.T) {
 	if serverConfiguration.Transport.ListenAddress == "" {
 		t.Fatal("default server TCP listen address is empty")
 	}
+	if serverConfiguration.Transport.Compression.Enabled {
+		t.Fatal("server transport compression is enabled by default")
+	}
 }
 
 func TestTransportTypeDefaultsToTCPWhenOmitted(t *testing.T) {

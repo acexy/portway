@@ -12,6 +12,7 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/buildinfo"
+	"github.com/acexy/portway/internal/compression"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
@@ -144,12 +145,20 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		return nil
 	}
 	negotiatedCapabilities := negotiateCapabilities(clientHello.Capabilities)
+	configuration := s.configuration.snapshot()
+	compressionRequirement := protocol.CompressionRequirement{
+		Enabled: configuration.Transport.Compression.Enabled,
+	}
+	if compressionRequirement.Enabled {
+		compressionRequirement.Algorithm = compression.AlgorithmZstd
+	}
 	if err := protocol.WriteControl(connection, protocol.MessageServerHello, protocol.ServerHello{
 		ClientID:       clientHello.ClientID,
 		ManagementMode: protocol.ManagementMode(inbound.Authentication.Mode),
 		SessionID:      sessionID,
 		Resumed:        resumed,
 		Capabilities:   negotiatedCapabilities,
+		Compression:    compressionRequirement,
 	}); err != nil {
 		if created {
 			s.clientRegistry.Remove(clientHello.ClientID, sessionID)
