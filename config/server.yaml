@@ -144,8 +144,9 @@ udp:
   # Valid range: 100ms to 30s. A timeout closes only that association.
   link_write_timeout: 3s
 
-  # Optional. Maximum UDP payload. Hard maximum: 65507 bytes.
-  max_datagram_size: 65507
+  # Optional. Maximum UDP payload. Defaults to 8192 bytes; protocol hard maximum: 65507.
+  # Startup rejects values above a detected platform UDP Socket limit.
+  max_datagram_size: 8192
 
   # Optional association capacity. Hard maxima: 4096, 512, 256, 1024.
   max_associations: 4096

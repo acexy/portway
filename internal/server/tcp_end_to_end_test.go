@@ -264,7 +264,7 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 	}
 }
 
-func reserveTCPAddress(t *testing.T) *net.TCPAddr {
+func reserveTCPAddress(t testing.TB) *net.TCPAddr {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -278,7 +278,7 @@ func reserveTCPAddress(t *testing.T) *net.TCPAddr {
 	return address
 }
 
-func dialWithRetry(t *testing.T, address string, timeout time.Duration) net.Conn {
+func dialWithRetry(t testing.TB, address string, timeout time.Duration) net.Conn {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)

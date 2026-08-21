@@ -77,8 +77,9 @@ udp:
   association_idle_timeout: 60s
   # Data Link 帧写入超时，默认 3s，范围 100ms-30s。
   link_write_timeout: 3s
-  # UDP Payload 最大值，硬上限 65507 字节。
-  max_datagram_size: 65507
+  # UDP Payload 最大值，默认 8192 字节，协议硬上限 65507 字节。
+  # 启动时会拒绝超过已探测平台 UDP Socket 上限的值。
+  max_datagram_size: 8192
 
   # Association 容量；硬上限依次为 4096、512、256、1024。
   max_associations: 4096

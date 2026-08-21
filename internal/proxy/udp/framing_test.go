@@ -33,3 +33,32 @@ func TestDatagramFrameRejectsOversizedPayload(t *testing.T) {
 		t.Fatalf("expected invalid frame error, got %v", err)
 	}
 }
+
+func TestReadDatagramIntoReusesCallerBuffer(t *testing.T) {
+	payload := []byte("portway udp")
+	var framed bytes.Buffer
+	if err := WriteDatagram(&framed, payload, 64); err != nil {
+		t.Fatal(err)
+	}
+	storage := make([]byte, 64)
+	actual, err := ReadDatagramInto(&framed, storage, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(actual, payload) {
+		t.Fatalf("unexpected payload: %q", actual)
+	}
+	if len(actual) > 0 && &actual[0] != &storage[0] {
+		t.Fatal("datagram did not reuse caller-owned storage")
+	}
+}
+
+func TestReadDatagramIntoRejectsInsufficientBuffer(t *testing.T) {
+	var framed bytes.Buffer
+	if err := WriteDatagram(&framed, []byte("large"), 64); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDatagramInto(&framed, make([]byte, 4), 64); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("expected invalid frame error, got %v", err)
+	}
+}

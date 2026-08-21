@@ -570,7 +570,7 @@ func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
 	}
 }
 
-func newTestTCPProxyManager(t *testing.T) *Registry {
+func newTestTCPProxyManager(t testing.TB) *Registry {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())

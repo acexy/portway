@@ -215,7 +215,7 @@ func TestTCPProxyOverQUICEndToEnd(t *testing.T) {
 	}
 }
 
-func reserveUDPAddress(t *testing.T) *net.UDPAddr {
+func reserveUDPAddress(t testing.TB) *net.UDPAddr {
 	t.Helper()
 	connection, err := net.ListenUDP("udp", &net.UDPAddr{
 		IP: net.ParseIP("127.0.0.1"),
@@ -230,11 +230,11 @@ func reserveUDPAddress(t *testing.T) *net.UDPAddr {
 	return address
 }
 
-func writeQUICServerCertificate(t *testing.T) (string, string) {
+func writeQUICServerCertificate(t testing.TB) (string, string) {
 	return writeServerCertificateForDNSNames(t, "localhost")
 }
 
-func writeServerCertificateForDNSNames(t *testing.T, dnsNames ...string) (string, string) {
+func writeServerCertificateForDNSNames(t testing.TB, dnsNames ...string) (string, string) {
 	t.Helper()
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
