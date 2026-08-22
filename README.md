@@ -32,7 +32,8 @@ bounded resources, and secure defaults.
   - fully server-managed configuration
 - **Fail-closed server main-configuration reload:**
   - atomic validation and publication of complete configuration generations
-  - selective credential revocation and online Managed configuration rollout
+  - deployment-wide disconnect on Token changes, selective policy revocation,
+    and online Managed configuration rollout
   - retention of the previous effective snapshot on validation failure
 
 ## Quick start

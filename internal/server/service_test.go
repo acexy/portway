@@ -117,6 +117,43 @@ func TestApplyConfigurationCandidateReplacesAuthenticationSnapshot(t *testing.T)
 	}
 }
 
+func TestApplyConfigurationCandidateReusesGeneratedTokenWhenSourceOmitsIt(t *testing.T) {
+	generatedToken := "generated-shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &generatedToken
+	current.SharedTokenGenerated = true
+	candidate := config.DefaultServer()
+	candidate.SourceDigest = "next-source-generation"
+
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := authentication.NewStore(snapshot)
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: store,
+	}
+	selector := authentication.Selector(generatedToken)
+	previous, exists := store.Resolve(selector[:])
+	if !exists {
+		t.Fatal("generated authentication record is unavailable")
+	}
+
+	if err := service.applyConfigurationCandidate(candidate); err != nil {
+		t.Fatal(err)
+	}
+	updated, exists := store.Resolve(selector[:])
+	if !exists {
+		t.Fatal("generated Token was replaced during an unchanged reload")
+	}
+	if updated.Context != previous.Context {
+		t.Fatal("generated Token authentication generation changed during reload")
+	}
+}
+
 func TestRevokedAuthenticationContextsSelectsChangedClient(t *testing.T) {
 	governedToken := "governed-token-with-at-least-32-random-bytes"
 	managedToken := "managed-token-with-at-least-32-random-bytes"
@@ -207,6 +244,149 @@ func TestRevokedAuthenticationContextsRejectsModeMigration(t *testing.T) {
 		revoked[0].Mode != authentication.ModeGoverned ||
 		revoked[0].ClientID != "client-one" {
 		t.Fatalf("mode migration did not revoke the old context: %+v", revoked)
+	}
+}
+
+func TestAuthenticationTokensChangedIncludesRecordOwnership(t *testing.T) {
+	token := "client-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.GovernedClients = map[string]config.GovernedClientConfig{
+		"client-one": {ClientID: "client-one", Token: token},
+	}
+
+	unchanged := current
+	unchanged.GovernedClients = map[string]config.GovernedClientConfig{
+		"client-one": {ClientID: "client-one", Token: token},
+	}
+	if authenticationTokensChanged(current, unchanged) {
+		t.Fatal("equivalent authentication records were reported as changed")
+	}
+
+	migrated := config.DefaultServer()
+	migrated.ManagedClients = map[string]config.ManagedClientConfig{
+		"client-one": {ClientID: "client-one", Token: token},
+	}
+	if !authenticationTokensChanged(current, migrated) {
+		t.Fatal("authentication record mode migration was not reported as changed")
+	}
+}
+
+func TestApplyConfigurationCandidateTokenChangeRevokesEverySession(t *testing.T) {
+	sharedToken := "shared-token-with-at-least-32-random-bytes"
+	governedToken := "governed-token-with-at-least-32-random-bytes"
+	replacementGovernedToken := "replacement-governed-token-with-at-least-32-random-bytes"
+	managedToken := "managed-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &sharedToken
+	current.GovernedClients = map[string]config.GovernedClientConfig{
+		"governed-client": {
+			ClientID: "governed-client",
+			Token:    governedToken,
+		},
+	}
+	current.ManagedClients = map[string]config.ManagedClientConfig{
+		"managed-client": {
+			ClientID: "managed-client",
+			Token:    managedToken,
+			Configuration: config.ManagedConfiguration{
+				Revision: 1,
+			},
+		},
+	}
+	candidate := current
+	candidate.GovernedClients = map[string]config.GovernedClientConfig{
+		"governed-client": {
+			ClientID: "governed-client",
+			Token:    replacementGovernedToken,
+		},
+	}
+
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := authentication.NewStore(snapshot)
+	registry := session.NewRegistry()
+	service := &Service{
+		logger:              logging.New("test"),
+		configuration:       newConfigurationManager(current),
+		clientRegistry:      registry,
+		authenticationStore: store,
+		managed:             newManagedCoordinator(),
+	}
+
+	type registeredSession struct {
+		clientID  string
+		token     string
+		sessionID string
+		server    net.Conn
+		client    net.Conn
+		context   authentication.Context
+	}
+	sessions := []registeredSession{
+		{clientID: "shared-instance", token: sharedToken, sessionID: "shared-session"},
+		{clientID: "governed-client", token: governedToken, sessionID: "governed-session"},
+		{clientID: "managed-client", token: managedToken, sessionID: "managed-session"},
+	}
+	for index := range sessions {
+		selector := authentication.Selector(sessions[index].token)
+		record, exists := store.Resolve(selector[:])
+		if !exists {
+			t.Fatalf("authentication record for %s is unavailable", sessions[index].clientID)
+		}
+		sessions[index].context = record.Context
+		sessions[index].server, sessions[index].client = net.Pipe()
+		_, _, _, registrationError := registry.RegisterAuthenticated(
+			sessions[index].clientID,
+			"",
+			sessions[index].sessionID,
+			sessions[index].server,
+			time.Now(),
+			record.Context,
+		)
+		if registrationError != nil {
+			t.Fatalf("register %s: %v", sessions[index].clientID, registrationError)
+		}
+		if !registry.Activate(
+			sessions[index].clientID,
+			sessions[index].sessionID,
+			time.Now(),
+		) {
+			t.Fatalf("activate %s", sessions[index].clientID)
+		}
+		defer sessions[index].server.Close()
+		defer sessions[index].client.Close()
+	}
+	registry.Disconnect("managed-client", "managed-session", time.Now())
+
+	if err := service.applyConfigurationCandidate(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if stats := registry.SnapshotStats(); stats != (session.Stats{}) {
+		t.Fatalf("sessions remained after Token reload: %+v", stats)
+	}
+	for _, registered := range sessions {
+		if store.IsCurrent(registered.context) {
+			t.Fatalf("old authentication context for %s remained current", registered.clientID)
+		}
+		if accepted := serverTestHeartbeatAccepted(
+			registry,
+			registered.clientID,
+			registered.sessionID,
+			1,
+			time.Now(),
+		); accepted {
+			t.Fatalf("session for %s remained registered", registered.clientID)
+		}
+		if err := registered.client.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
+			if _, err := registered.client.Read(make([]byte, 1)); err == nil {
+				t.Fatalf("control connection for %s remained open", registered.clientID)
+			}
+		}
+	}
+	replacementSelector := authentication.Selector(replacementGovernedToken)
+	if _, exists := store.Resolve(replacementSelector[:]); !exists {
+		t.Fatal("replacement Token was not published")
 	}
 }
 

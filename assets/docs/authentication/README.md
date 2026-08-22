@@ -240,17 +240,21 @@ active.
 
 Credential and policy changes are fail-closed:
 
-- changing or removing the Shared Token revokes Shared sessions;
-- changing an independent Token or deleting its record revokes that client;
+- adding, removing, replacing, or reassigning any Shared, Governed, or Managed
+  Token publishes the new authentication snapshot and disconnects every client,
+  including recoverable sessions;
+- clients with unchanged credentials may reconnect using the same Token, while
+  a changed credential requires the newly published Token;
 - changing Governed permissions closes that client's sessions, bindings,
   pending tickets, and active links;
 - changing Managed proxy configuration performs an online prepare/activate
   rollout; an incomplete switch leaves the session inactive and reconnects to
   the latest desired configuration.
 
-Unrelated clients remain active. Fields that cannot be safely reloaded, such as
-the selected transport or listener addresses, are rejected with a
-restart-required error instead of being partially applied.
+For policy-only and Managed configuration-only changes, unrelated clients remain
+active. Fields that cannot be safely reloaded, such as the selected transport or
+listener addresses, are rejected with a restart-required error instead of being
+partially applied.
 
 ## Operational guidance
 

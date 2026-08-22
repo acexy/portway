@@ -101,8 +101,7 @@ func (s *Service) applyConfigurationCandidateContext(
 
 	current := s.configuration.snapshot()
 
-	if candidate.Authentication.SharedToken != nil &&
-		*candidate.Authentication.SharedToken == "" &&
+	if serverTokenRequiresGeneration(candidate) &&
 		current.Authentication.SharedToken != nil {
 		if !current.SharedTokenGenerated {
 			return restartRequiredError{field: "authentication.shared_token"}
@@ -178,14 +177,29 @@ func (s *Service) applyConfigurationCandidateContext(
 		!reflect.DeepEqual(candidate.Authentication, current.Authentication) ||
 			!reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) ||
 			!reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients)
+	tokensChanged := authenticationTokensChanged(current, candidate)
 
-	revokedContexts := revokedAuthenticationContexts(
-		s.authenticationStore.Load(),
-		snapshot,
-		current,
-		candidate,
-	)
+	currentAuthenticationSnapshot := s.authenticationStore.Load()
+	var revokedContexts []authentication.Context
+	if tokensChanged {
+		// A Token generation is a deployment-wide authentication boundary. Rotate
+		// every existing context so active and recoverable clients must all prove
+		// their credentials again against the newly published snapshot.
+		revokedContexts = currentAuthenticationSnapshot.Contexts()
+	} else {
+		revokedContexts = revokedAuthenticationContexts(
+			currentAuthenticationSnapshot,
+			snapshot,
+			current,
+			candidate,
+		)
+	}
 	managedChanges := changedManagedClients(current, candidate)
+	if tokensChanged {
+		// Disconnected Managed clients receive the latest desired configuration
+		// during their next authenticated session instead of an online rollout.
+		managedChanges = []string{}
+	}
 	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
 		current.GovernedClients,
 		candidate.GovernedClients,
@@ -275,11 +289,47 @@ func (s *Service) applyConfigurationCandidateContext(
 			"managed_changed":         managedChanged,
 			"managed_removed":         managedRemoved,
 			"managed_rollouts":        len(managedChanges),
+			"tokens_changed":           tokensChanged,
+			"all_clients_disconnected": tokensChanged,
 			"revoked_authentications": len(revokedContexts),
 			"revoked_sessions":        len(revokedSessions),
 		},
 	)
 	return nil
+}
+
+func authenticationTokensChanged(
+	current config.ServerConfig,
+	candidate config.ServerConfig,
+) bool {
+	return !reflect.DeepEqual(
+		authenticationTokenRecords(current),
+		authenticationTokenRecords(candidate),
+	)
+}
+
+func serverTokenRequiresGeneration(configuration config.ServerConfig) bool {
+	if configuration.Authentication.SharedToken != nil {
+		return *configuration.Authentication.SharedToken == ""
+	}
+	return configuration.Authentication.GovernedClientsPath == "" &&
+		configuration.Authentication.ManagedClientsPath == ""
+}
+
+func authenticationTokenRecords(configuration config.ServerConfig) map[string]string {
+	records := make(map[string]string,
+		1+len(configuration.GovernedClients)+len(configuration.ManagedClients),
+	)
+	if configuration.Authentication.SharedToken != nil {
+		records[string(authentication.ModeShared)] = *configuration.Authentication.SharedToken
+	}
+	for _, client := range configuration.GovernedClients {
+		records[string(authentication.ModeGoverned)+":"+client.ClientID] = client.Token
+	}
+	for _, client := range configuration.ManagedClients {
+		records[string(authentication.ModeManaged)+":"+client.ClientID] = client.Token
+	}
+	return records
 }
 
 func (s *Service) rolloutManagedConfigurations(

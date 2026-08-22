@@ -216,15 +216,17 @@ ClientID 与记录完全匹配；身份校验完成后，服务端通过受保�
 
 凭据和策略变化采用 fail-closed 行为：
 
-- 修改或删除 Shared Token 会吊销 Shared Session；
-- 修改独立 Token 或删除客户端记录会吊销对应客户端；
+- 新增、删除、替换或重新归属任意 Shared、Governed、Managed Token 时，会先发布新
+  认证快照，再强制下线全部客户端，包括处于恢复窗口的 Session；
+- 凭据未变化的客户端可继续使用原 Token 重连，凭据已变化的客户端必须使用新发布
+  的 Token；
 - 修改 Governed 权限会关闭该客户端的 Session、Binding、Pending Ticket 和
   Active Link；
 - 修改 Managed 代理配置会执行在线 Prepare/Activate 切换；切换未完整完成时
   Session 保持不可用，并通过重连向最新期望配置收敛。
 
-无关客户端保持在线。Transport 类型、监听地址等不能安全热加载的字段会返回
-需要重启的错误，不会与其他字段一起部分应用。
+仅发生策略变化或 Managed 配置变化时，无关客户端保持在线。Transport 类型、
+监听地址等不能安全热加载的字段会返回需要重启的错误，不会与其他字段一起部分应用。
 
 ## 运维建议
 

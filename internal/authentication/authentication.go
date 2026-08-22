@@ -133,7 +133,7 @@ func (store *Store) Replace(snapshot *Snapshot) {
 }
 
 // ReplaceRevoking publishes a snapshot while assigning a new generation to
-// records whose policy or managed configuration changed.
+// every retained authentication record whose current context is revoked.
 func (store *Store) ReplaceRevoking(snapshot *Snapshot, revoked []Context) {
 	current := store.Load()
 	rotated := make(map[[sha256.Size]byte]struct{}, len(revoked))
