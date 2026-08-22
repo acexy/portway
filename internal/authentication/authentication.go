@@ -38,8 +38,9 @@ type Record struct {
 
 // Selector derives the public credential selector used before Token proof.
 //
-// Tokens are required to contain at least 32 bytes of cryptographically random
-// data. The selector is not a credential and must never replace Token proof.
+// Tokens contain more than 32 UTF-8 characters and should be generated from a
+// cryptographically secure random source. The selector is not a credential and
+// must never replace proof.
 func Selector(token string) [sha256.Size]byte {
 	return sha256.Sum256([]byte(token))
 }

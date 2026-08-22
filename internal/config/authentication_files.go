@@ -284,12 +284,8 @@ func validateAuthenticationClientFile(path string, clientID string, token string
 	if err := ValidateClientID(clientID); err != nil {
 		return fmt.Errorf("validate authentication file %q: %w", path, err)
 	}
-	if len(token) < generatedTokenBytes {
-		return fmt.Errorf(
-			"authentication file %q token must contain at least %d bytes",
-			path,
-			generatedTokenBytes,
-		)
+	if err := validateToken(token); err != nil {
+		return fmt.Errorf("authentication file %q token: %w", path, err)
 	}
 	return nil
 }

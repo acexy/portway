@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,20 +212,28 @@ func TestHTTPHandlerUsesConfiguredSingleIPHeader(t *testing.T) {
 	testCases := []struct {
 		name    string
 		values  []string
+		sources []string
 		handled bool
 	}{
-		{name: "allowed", values: []string{"198.51.100.10"}, handled: true},
+		{
+			name:    "allowed",
+			values:  []string{"198.51.100.10"},
+			sources: []string{"198.51.100.10"},
+			handled: true,
+		},
 		{name: "denied", values: []string{"192.0.2.10"}},
 		{name: "missing"},
 		{name: "list", values: []string{"198.51.100.10, 192.0.2.10"}},
 		{
 			name:    "allowed list",
 			values:  []string{"198.51.100.10, 203.0.113.20"},
+			sources: []string{"198.51.100.10", "203.0.113.20"},
 			handled: true,
 		},
 		{
 			name:    "repeated allowed values",
 			values:  []string{"198.51.100.10", "203.0.113.20"},
+			sources: []string{"198.51.100.10", "203.0.113.20"},
 			handled: true,
 		},
 		{name: "empty list item", values: []string{"198.51.100.10, "}},
@@ -241,7 +250,15 @@ func TestHTTPHandlerUsesConfiguredSingleIPHeader(t *testing.T) {
 			handler := HTTPHandler(
 				filter,
 				"X-Real-Ip",
-				http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+					addresses := HTTPSourceAddresses(request)
+					actual := make([]string, len(addresses))
+					for index, address := range addresses {
+						actual[index] = address.String()
+					}
+					if !slices.Equal(actual, testCase.sources) {
+						t.Errorf("validated source addresses = %v, want %v", actual, testCase.sources)
+					}
 					handled.Store(true)
 				}),
 			)

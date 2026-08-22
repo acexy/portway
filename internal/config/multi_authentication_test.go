@@ -23,7 +23,7 @@ func TestLoadServerBuildsMultiModeAuthenticationSnapshot(t *testing.T) {
 	}
 	writeTestConfiguration(t, filepath.Join(governedDirectory, "customer-a.yaml"), `
 client_id: customer-a
-token: governed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
 permissions:
   proxy_types: [tcp, http]
   tcp:
@@ -37,7 +37,7 @@ permissions:
 `)
 	writeTestConfiguration(t, filepath.Join(managedDirectory, "internal-a.yaml"), `
 client_id: internal-a
-token: managed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies:
@@ -52,7 +52,7 @@ configuration:
 tunnel:
   http_listen_address: 127.0.0.1:8080
 authentication:
-  shared_token: shared-token-with-at-least-32-random-bytes
+  shared_token: cG9ydHdheS10ZXN0LXNoYXJlZC10b2tlbi0wMDAwMDE
   governed_clients_path: governed
   managed_clients_path: managed
 `)
@@ -66,7 +66,7 @@ authentication:
 		t.Fatal(err)
 	}
 	governedSelector := authentication.Selector(
-		"governed-token-with-at-least-32-random-bytes",
+		"cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE",
 	)
 	record, exists := snapshot.Resolve(governedSelector[:])
 	if !exists {
@@ -82,11 +82,11 @@ authentication:
 		clientID string
 	}{
 		{
-			token: "shared-token-with-at-least-32-random-bytes",
+			token: "cG9ydHdheS10ZXN0LXNoYXJlZC10b2tlbi0wMDAwMDE",
 			mode:  authentication.ModeShared,
 		},
 		{
-			token:    "managed-token-with-at-least-32-random-bytes",
+			token:    "cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE",
 			mode:     authentication.ModeManaged,
 			clientID: "internal-a",
 		},
@@ -111,7 +111,7 @@ func TestLoadServerRejectsManagedUnavailablePublicScheme(t *testing.T) {
 	}
 	writeTestConfiguration(t, filepath.Join(managedDirectory, "web.yaml"), `
 client_id: managed-web
-token: managed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies:
@@ -144,7 +144,7 @@ func TestLoadServerRejectsDuplicateTokensAcrossModes(t *testing.T) {
 	if err := os.Mkdir(managedDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	duplicateToken := "duplicate-token-with-at-least-32-random-bytes"
+	duplicateToken := "cG9ydHdheS10ZXN0LWR1cGxpY2F0ZS10b2tlbi0wMDA"
 	writeTestConfiguration(t, filepath.Join(governedDirectory, "customer-a.yaml"), `
 client_id: customer-a
 token: `+duplicateToken+`
@@ -187,13 +187,13 @@ func TestLoadServerRejectsDuplicateClientIDsAcrossManagedModes(t *testing.T) {
 	}
 	writeTestConfiguration(t, filepath.Join(governedDirectory, "duplicate.yaml"), `
 client_id: duplicate
-token: governed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
 permissions:
   proxy_types: []
 `)
 	writeTestConfiguration(t, filepath.Join(managedDirectory, "duplicate.yaml"), `
 client_id: duplicate
-token: managed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies: []
@@ -261,7 +261,7 @@ func TestValidateManagedProxiesRejectsPublicBindingConflicts(t *testing.T) {
 
 func TestProxyLocalIPDefaultsConsistently(t *testing.T) {
 	clientConfiguration := DefaultClient()
-	clientConfiguration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	clientConfiguration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	clientConfiguration.Proxies = []ProxyConfig{{
 		Name: "client-proxy", Type: "tcp", LocalPort: 22, RemotePort: 22022,
 	}}
@@ -287,7 +287,7 @@ func TestLoadManagedClientAppliesProxyDefaults(t *testing.T) {
 	directory := t.TempDir()
 	writeTestConfiguration(t, filepath.Join(directory, "managed-client.yaml"), `
 client_id: managed-client
-token: managed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies:
@@ -311,7 +311,7 @@ func TestLoadManagedClientAllowsFileNameIndependentOfClientID(t *testing.T) {
 	directory := t.TempDir()
 	writeTestConfiguration(t, filepath.Join(directory, "customer-node.yaml"), `
 client_id: managed-client
-token: managed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies: []
@@ -402,7 +402,7 @@ func TestLoadServerRejectsManagedGlobalBindingConflict(t *testing.T) {
 			filepath.Join(managedDirectory, fmt.Sprintf("record-%d.yaml", index)),
 			fmt.Sprintf(`
 client_id: %s
-token: managed-token-%d-with-at-least-32-random-bytes
+token: %s
 configuration:
   revision: 1
   proxies:
@@ -411,7 +411,10 @@ configuration:
       local_ip: 127.0.0.1
       local_port: 22
       remote_port: 22022
-`, clientID, index),
+`, clientID, []string{
+				"cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE",
+				"cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE",
+			}[index]),
 		)
 	}
 	serverPath := filepath.Join(configurationDirectory, "server.yaml")
@@ -500,7 +503,7 @@ func TestLoadGovernedClientAppliesDefaultPermissionLimits(t *testing.T) {
 	directory := t.TempDir()
 	writeTestConfiguration(t, filepath.Join(directory, "customer-a.yaml"), `
 client_id: customer-a
-token: governed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
 permissions:
   proxy_types: []
 `)
@@ -537,7 +540,7 @@ func TestLoadGovernedClientRejectsPermissionLimitOutsideHardBoundary(t *testing.
 			directory := t.TempDir()
 			writeTestConfiguration(t, filepath.Join(directory, "customer-a.yaml"), fmt.Sprintf(`
 client_id: customer-a
-token: governed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
 permissions:
   proxy_types: []
   limits:
@@ -578,7 +581,7 @@ func TestLoadServerRejectsManagedProxyHardLimitOverflow(t *testing.T) {
 	var managed strings.Builder
 	managed.WriteString(`
 client_id: managed-client
-token: managed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies:
@@ -623,7 +626,7 @@ authentication:
 	clientPath := filepath.Join(governedDirectory, "customer-a.yaml")
 	writeTestConfiguration(t, clientPath, `
 client_id: customer-a
-token: governed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
 permissions:
   proxy_types: []
 `)
@@ -637,7 +640,7 @@ permissions:
 	}
 	writeTestConfiguration(t, clientPath, `
 client_id: customer-a
-token: changed-governed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LWNoYW5nZWQtdG9rZW4tMDAwMDA
 permissions:
   proxy_types: []
 `)

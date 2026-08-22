@@ -12,6 +12,7 @@ import (
 
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/link"
+	"github.com/acexy/portway/internal/security/ipfilter"
 )
 
 // TargetResolver returns the current authenticated link target.
@@ -74,12 +75,27 @@ func NewBinding(
 			request.Out.Header.Del("X-Forwarded-Host")
 			request.Out.Header.Del("X-Forwarded-Proto")
 			request.SetXForwarded()
+			if addresses := ipfilter.HTTPSourceAddresses(request.In); len(addresses) > 0 {
+				parts := make([]string, len(addresses))
+				for index, address := range addresses {
+					parts[index] = address.String()
+				}
+				request.Out.Header.Set("X-Forwarded-For", strings.Join(parts, ", "))
+			}
 			request.Out.URL.Scheme = "http"
 			request.Out.URL.Host = domain
 			request.Out.Host = request.In.Host
 		},
-		ErrorHandler: func(writer stdhttp.ResponseWriter, _ *stdhttp.Request, _ error) {
-			stdhttp.Error(writer, "Bad Gateway", stdhttp.StatusBadGateway)
+		ErrorHandler: func(writer stdhttp.ResponseWriter, _ *stdhttp.Request, err error) {
+			status := stdhttp.StatusBadGateway
+			message := "Bad Gateway"
+			var networkError net.Error
+			if errors.Is(err, context.DeadlineExceeded) ||
+				(errors.As(err, &networkError) && networkError.Timeout()) {
+				status = stdhttp.StatusGatewayTimeout
+				message = "Gateway Timeout"
+			}
+			stdhttp.Error(writer, message, status)
 		},
 	}
 	return binding

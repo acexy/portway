@@ -2,11 +2,13 @@
 package gen
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 
 	configtemplate "github.com/acexy/portway/config"
+	portwayconfig "github.com/acexy/portway/internal/config"
 )
 
 // Target identifies the generated process configuration.
@@ -38,7 +40,7 @@ transport:
   server_address: 127.0.0.1:7000
 
 authentication:
-  token: CHANGE_ME_TO_A_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: PORTWAY_TOKEN_REQUIRED
 
 proxies:
   - name: ssh
@@ -47,6 +49,8 @@ proxies:
     local_port: 22
     remote_port: 22022
 `
+
+const clientTokenPlaceholder = "PORTWAY_TOKEN_REQUIRED"
 
 const serverMinimal = `# Minimal Portway server configuration.
 # Full reference: https://github.com/acexy/portway/tree/main/config
@@ -95,10 +99,19 @@ func Generate(target Target, full bool) (string, error) {
 func generatedContent(target Target, full bool) (string, []byte, error) {
 	switch target {
 	case TargetClient:
-		if full {
-			return "client.yaml", configtemplate.Client(), nil
+		token, err := portwayconfig.GenerateToken()
+		if err != nil {
+			return "", nil, err
 		}
-		return "client.yaml", []byte(clientMinimal), nil
+		content := []byte(clientMinimal)
+		if full {
+			content = configtemplate.Client()
+		}
+		if !bytes.Contains(content, []byte(clientTokenPlaceholder)) {
+			return "", nil, errors.New("client configuration Token placeholder is missing")
+		}
+		content = bytes.ReplaceAll(content, []byte(clientTokenPlaceholder), []byte(token))
+		return "client.yaml", content, nil
 	case TargetServer:
 		if full {
 			return "server.yaml", configtemplate.Server(), nil

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/acexy/portway/internal/transport"
@@ -32,7 +33,7 @@ func TestTransportTypeDefaultsToTCPWhenOmitted(t *testing.T) {
 transport:
   server_address: gateway.example.com:7000
 authentication:
-  token: test-token-with-at-least-32-random-bytes
+  token: cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
@@ -48,7 +49,7 @@ authentication:
 
 func TestQUICTransportConfigurationIsAccepted(t *testing.T) {
 	clientConfiguration := DefaultClient()
-	clientConfiguration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	clientConfiguration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	clientConfiguration.Transport.Type = transport.TypeQUIC
 	clientConfiguration.Transport.QUIC = QUICClientTransportConfig{
 		ServerName: "gateway.example.com",
@@ -65,5 +66,45 @@ func TestQUICTransportConfigurationIsAccepted(t *testing.T) {
 	}
 	if err := validateServer(serverConfiguration); err != nil {
 		t.Fatalf("valid server QUIC configuration was rejected: %v", err)
+	}
+}
+
+func TestAuthenticationTokenRequiresMoreThan32UTF8Characters(t *testing.T) {
+	testCases := []struct {
+		name    string
+		token   string
+		wantErr bool
+	}{
+		{
+			name:  "generated Base64URL token",
+			token: "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA",
+		},
+		{
+			name:  "custom ASCII token",
+			token: "dsajadf464ga8g13e8gs4gda131ad85ga3a31g4asa1444824",
+		},
+		{
+			name:    "exactly 32 ASCII characters",
+			token:   "12345678901234567890123456789012",
+			wantErr: true,
+		},
+		{
+			name:  "33 multibyte characters",
+			token: strings.Repeat("密", 33),
+		},
+		{
+			name:    "32 multibyte characters",
+			token:   strings.Repeat("密", 32),
+			wantErr: true,
+		},
+		{name: "invalid UTF-8", token: string([]byte{0xff, 0xfe}), wantErr: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateToken(testCase.token)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("validateToken() error = %v, wantErr %t", err, testCase.wantErr)
+			}
+		})
 	}
 }

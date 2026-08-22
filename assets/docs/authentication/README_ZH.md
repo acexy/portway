@@ -31,14 +31,14 @@ Token。Token 唯一选择认证记录和配置控制模式，ClientID 匹配后
 
 ```yaml
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
 ```
 
 客户端：
 
 ```yaml
 authentication:
-  token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: ssh
@@ -69,7 +69,7 @@ authentication:
 
 ```yaml
 client_id: customer-a
-token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+token: REPLACE_TOKEN
 
 permissions:
   proxy_types: [tcp, http]
@@ -100,7 +100,7 @@ ClientID、该记录的 Token 和期望代理：
 client_id: customer-a
 
 authentication:
-  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: app
@@ -146,7 +146,7 @@ authentication:
 
 ```yaml
 client_id: internal-node
-token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+token: REPLACE_TOKEN
 
 configuration:
   revision: 1
@@ -164,7 +164,7 @@ Managed 客户端配置匹配的 ClientID 和 Token，不能在本地定义 `pro
 client_id: internal-node
 
 authentication:
-  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: REPLACE_TOKEN
 ```
 
 认证后，服务端通过 Prepare/Activate 交互下发完整配置。客户端完成校验和暂存后，
@@ -193,7 +193,7 @@ Managed 模式约束的是 Portway 协议和官方客户端行为。它不是远
 
 ```yaml
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
   governed_clients_path: ./governed
   managed_clients_path: ./managed
 ```
@@ -230,7 +230,8 @@ ClientID 与记录完全匹配；身份校验完成后，服务端通过受保�
 
 ## 运维建议
 
-- 使用密码学安全随机源生成至少包含 32 字节熵的 Token。
+- 自定义 Token 必须包含大于 32 个 UTF-8 字符；推荐使用自动生成的 256-bit
+  Base64URL 随机值，不要使用人工构造字符串。
 - 不要在客户端、模式、服务端或其他系统之间复用 Token。
 - 不要把 Token 提交到版本控制，也不要放入命令行或日志。
 - 为 Governed 客户端配置满足业务需求的最小端口、域名和配额范围。

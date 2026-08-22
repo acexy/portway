@@ -37,7 +37,7 @@ func TestUDPConfigRejectsUnsafeLimits(t *testing.T) {
 
 func TestClientUDPProxyConfigurationIsAccepted(t *testing.T) {
 	configuration := DefaultClient()
-	configuration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	configuration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	configuration.Proxies = []ProxyConfig{{
 		Name:       "dns",
 		Type:       "udp",

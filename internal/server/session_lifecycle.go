@@ -60,7 +60,11 @@ func (s *Service) suspendClient(client session.Client) bool {
 	return true
 }
 
-func (s *Service) handleDataConnection(ctx context.Context, inbound transport.Inbound) error {
+func (s *Service) handleDataConnection(
+	ctx context.Context,
+	inbound transport.Inbound,
+	releaseAdmission func(),
+) error {
 	connection := inbound.Stream
 	if err := connection.SetDeadline(time.Now().Add(dataBindTimeout)); err != nil {
 		return fmt.Errorf("set TCP data bind deadline: %w", err)
@@ -86,7 +90,13 @@ func (s *Service) handleDataConnection(ctx context.Context, inbound transport.In
 		return transport.ErrAuthentication
 	}
 	s.authenticationBarrier.RUnlock()
-	return s.linkBroker.Bind(ctx, connection, binding, inbound.Authentication)
+	return s.linkBroker.BindWithActivation(
+		ctx,
+		connection,
+		binding,
+		inbound.Authentication,
+		releaseAdmission,
+	)
 }
 
 func writeSessionError(connection net.Conn, sessionError protocol.SessionError) error {

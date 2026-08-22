@@ -29,6 +29,20 @@ import (
 
 const testToken = "test-token-with-at-least-32-random-bytes"
 
+func TestClientTLSConfigUsesExplicitCAAsExclusiveTrustStore(t *testing.T) {
+	certificateFile, _ := writeTestCertificate(t)
+	tlsConfig, err := newClientTLSConfig("localhost", certificateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tlsConfig.RootCAs == nil {
+		t.Fatal("explicit CA file did not create a root certificate pool")
+	}
+	if subjects := tlsConfig.RootCAs.Subjects(); len(subjects) != 1 {
+		t.Fatalf("explicit CA root subject count = %d, want 1", len(subjects))
+	}
+}
+
 func testCredentials(t testing.TB, token string) *authentication.Store {
 	t.Helper()
 	snapshot, err := authentication.NewSnapshot([]authentication.Record{{

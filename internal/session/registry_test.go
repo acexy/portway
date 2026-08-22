@@ -263,6 +263,61 @@ func TestClientRegistryResumesSuspendedClient(t *testing.T) {
 	}
 }
 
+func TestClientRegistryRejectsResumeWithDifferentAuthenticationContext(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Now()
+	oldConnection, oldPeer := net.Pipe()
+	defer oldConnection.Close()
+	defer oldPeer.Close()
+	newConnection, newPeer := net.Pipe()
+	defer newConnection.Close()
+	defer newPeer.Close()
+	originalAuthentication := authentication.Context{
+		Mode:         authentication.ModeGoverned,
+		ClientID:     "client-one",
+		CredentialID: authentication.Selector("original-authentication-token"),
+		Generation:   1,
+	}
+	differentAuthentication := originalAuthentication
+	differentAuthentication.Generation = 2
+
+	registry.RegisterAuthenticated(
+		"client-one", "", "session-one", oldConnection, now, originalAuthentication,
+	)
+	registry.Activate("client-one", "session-one", now)
+	registry.Disconnect("client-one", "session-one", now.Add(time.Second))
+
+	resumed, created, _, sessionError := registry.RegisterAuthenticated(
+		"client-one",
+		"session-one",
+		"session-two",
+		newConnection,
+		now.Add(2*time.Second),
+		differentAuthentication,
+	)
+	if resumed || created || sessionError == nil ||
+		sessionError.Code != protocol.SessionErrorAuthenticationFailed {
+		t.Fatalf(
+			"authentication-changing resume result: resumed=%t created=%t error=%v",
+			resumed,
+			created,
+			sessionError,
+		)
+	}
+
+	resumed, created, _, sessionError = registry.RegisterAuthenticated(
+		"client-one",
+		"session-one",
+		"session-three",
+		newConnection,
+		now.Add(3*time.Second),
+		originalAuthentication,
+	)
+	if !resumed || created || sessionError != nil {
+		t.Fatalf("original authentication could not resume: %v", sessionError)
+	}
+}
+
 func TestClientRegistryRejectsPreviousSessionIDAfterSuccessfulResume(t *testing.T) {
 	registry := NewRegistry()
 	now := time.Now()
