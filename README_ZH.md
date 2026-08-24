@@ -28,7 +28,7 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
   - 完全由服务端管理的客户端配置
 - **故障关闭的服务端主配置热加载：**
   - 完整配置代际的原子校验与发布
-  - 选择性凭证吊销和 Managed 配置在线切换
+  - Token 变化时全量下线、策略变化时选择性吊销，以及 Managed 配置在线切换
   - 校验失败时自动保留上一份有效快照
 
 ## 快速开始
@@ -43,7 +43,7 @@ transport:
   listen_address: 127.0.0.1:7000
 
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
 ```
 
 创建 `client.yaml`：
@@ -54,7 +54,7 @@ transport:
   server_address: 127.0.0.1:7000
 
 authentication:
-  token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: ssh
@@ -64,7 +64,8 @@ proxies:
     remote_port: 22022
 ```
 
-在两端使用相同的加密随机 Token，然后启动服务端和客户端：
+在两端使用相同的 Token。Token 必须包含大于 32 个 UTF-8 字符，并强烈建议使用
+密码学安全随机值。然后启动服务端和客户端：
 
 ```bash
 portwayd run --config server.yaml
@@ -165,9 +166,10 @@ portwayd gen cert [options]
 portwayd version
 ```
 
-`gen config` 会在当前目录创建最小可运行的 `client.yaml` 或 `server.yaml`；
-追加 `full` 可生成带完整注释的全量模板。命令不会覆盖已有文件。直接运行任一
-二进制文件（不带参数）会列出包括嵌套生成命令在内的全部可用命令。
+`gen config` 会在当前目录创建最小可运行的 `client.yaml` 或 `server.yaml`；客户端
+配置生成会把新的规范 256-bit Token 写入仅属主可读写的文件。追加 `full` 可生成
+带完整注释的全量模板。命令不会覆盖已有文件。直接运行任一二进制文件（不带参数）
+会列出包括嵌套生成命令在内的全部可用命令。
 
 ## 使用 Homebrew 安装
 

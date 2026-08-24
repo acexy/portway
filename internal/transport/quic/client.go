@@ -167,10 +167,9 @@ func newClientTLSConfig(serverName string, caFile string) (*tls.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read QUIC CA file: %w", err)
 		}
-		rootCertificates, err = x509.SystemCertPool()
-		if err != nil {
-			rootCertificates = x509.NewCertPool()
-		}
+		// An explicit CA file defines an isolated trust domain. Operators can
+		// leave it empty when the operating-system trust store is intended.
+		rootCertificates = x509.NewCertPool()
 		if !rootCertificates.AppendCertsFromPEM(certificateData) {
 			return nil, errors.New("QUIC CA file contains no valid certificates")
 		}

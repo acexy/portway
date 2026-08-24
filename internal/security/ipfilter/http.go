@@ -10,6 +10,7 @@ import (
 )
 
 type httpConnectionContextKey struct{}
+type httpSourceAddressesContextKey struct{}
 
 // HTTPConnectionContext attaches the accepted socket to request contexts.
 func HTTPConnectionContext(ctx context.Context, connection net.Conn) context.Context {
@@ -63,8 +64,23 @@ func HTTPHandler(
 				releaseSource()
 			}
 		}()
+		request = request.WithContext(context.WithValue(
+			request.Context(),
+			httpSourceAddressesContextKey{},
+			addresses,
+		))
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// HTTPSourceAddresses returns the normalized client IP chain validated by
+// HTTPHandler. The returned slice is a copy and is safe for the caller to retain.
+func HTTPSourceAddresses(request *http.Request) []netip.Addr {
+	if request == nil {
+		return nil
+	}
+	addresses, _ := request.Context().Value(httpSourceAddressesContextKey{}).([]netip.Addr)
+	return append([]netip.Addr(nil), addresses...)
 }
 
 func parseHTTPSourceHeader(values []string) ([]netip.Addr, error) {

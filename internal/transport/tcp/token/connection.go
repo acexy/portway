@@ -27,9 +27,12 @@ type secureConnection struct {
 	writeAEAD     cipher.AEAD
 	readMutex     sync.Mutex
 	writeMutex    sync.Mutex
-	readSequence  uint64
-	writeSequence uint64
-	readBuffer    []byte
+	readSequence         uint64
+	writeSequence        uint64
+	readBuffer           []byte
+	readCiphertextBuffer []byte
+	readPlaintextBuffer  []byte
+	writeBuffer          []byte
 }
 
 func newSecureConnection(
@@ -105,8 +108,8 @@ func (connection *secureConnection) Write(source []byte) (int, error) {
 }
 
 func (connection *secureConnection) readRecord() error {
-	header := make([]byte, recordHeaderSize)
-	if _, err := io.ReadFull(connection.Conn, header); err != nil {
+	var header [recordHeaderSize]byte
+	if _, err := io.ReadFull(connection.Conn, header[:]); err != nil {
 		return err
 	}
 	ciphertextLength := binary.BigEndian.Uint32(header[:4])
@@ -119,12 +122,17 @@ func (connection *secureConnection) readRecord() error {
 		ciphertextLength > maxCiphertextLength {
 		return fmt.Errorf("%w: invalid record length %d", ErrProtocol, ciphertextLength)
 	}
-	ciphertext := make([]byte, ciphertextLength)
+	connection.readCiphertextBuffer = resizeRecordBuffer(
+		connection.readCiphertextBuffer,
+		int(ciphertextLength),
+	)
+	ciphertext := connection.readCiphertextBuffer
 	if _, err := io.ReadFull(connection.Conn, ciphertext); err != nil {
 		return err
 	}
+	nonce := recordNonce(connection.readSequence)
 	plaintext, err := connection.readAEAD.Open(
-		nil, recordNonce(connection.readSequence), ciphertext, header,
+		connection.readPlaintextBuffer[:0], nonce[:], ciphertext, header[:],
 	)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRecordAuthentication, err)
@@ -133,6 +141,7 @@ func (connection *secureConnection) readRecord() error {
 		return fmt.Errorf("%w: read sequence exhausted", ErrProtocol)
 	}
 	connection.readSequence++
+	connection.readPlaintextBuffer = plaintext
 	connection.readBuffer = plaintext
 	return nil
 }
@@ -142,21 +151,33 @@ func (connection *secureConnection) writeRecord(plaintext []byte) error {
 		return fmt.Errorf("%w: write sequence exhausted", ErrProtocol)
 	}
 	ciphertextLength := len(plaintext) + connection.writeAEAD.Overhead()
-	header := make([]byte, recordHeaderSize)
+	connection.writeBuffer = resizeRecordBuffer(
+		connection.writeBuffer,
+		recordHeaderSize+ciphertextLength,
+	)
+	header := connection.writeBuffer[:recordHeaderSize]
 	binary.BigEndian.PutUint32(header[:4], uint32(ciphertextLength))
 	binary.BigEndian.PutUint64(header[4:], connection.writeSequence)
-	ciphertext := connection.writeAEAD.Seal(
-		nil, recordNonce(connection.writeSequence), plaintext, header,
+	nonce := recordNonce(connection.writeSequence)
+	connection.writeBuffer = connection.writeAEAD.Seal(
+		header, nonce[:], plaintext, header,
 	)
-	if err := writeFull(connection.Conn, joinBytes(header, ciphertext)); err != nil {
+	if err := writeFull(connection.Conn, connection.writeBuffer); err != nil {
 		return err
 	}
 	connection.writeSequence++
 	return nil
 }
 
-func recordNonce(sequence uint64) []byte {
-	nonce := make([]byte, 12)
+func recordNonce(sequence uint64) [12]byte {
+	var nonce [12]byte
 	binary.BigEndian.PutUint64(nonce[4:], sequence)
 	return nonce
+}
+
+func resizeRecordBuffer(buffer []byte, length int) []byte {
+	if cap(buffer) < length {
+		return make([]byte, length)
+	}
+	return buffer[:length]
 }

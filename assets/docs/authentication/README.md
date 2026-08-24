@@ -35,14 +35,14 @@ Server:
 
 ```yaml
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
 ```
 
 Client:
 
 ```yaml
 authentication:
-  token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: ssh
@@ -77,7 +77,7 @@ Create `governed/customer-a.yaml`:
 
 ```yaml
 client_id: customer-a
-token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+token: REPLACE_TOKEN
 
 permissions:
   proxy_types: [tcp, http]
@@ -109,7 +109,7 @@ desired proxies:
 client_id: customer-a
 
 authentication:
-  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: app
@@ -161,7 +161,7 @@ Create `managed/internal-node.yaml`:
 
 ```yaml
 client_id: internal-node
-token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+token: REPLACE_TOKEN
 
 configuration:
   revision: 1
@@ -180,7 +180,7 @@ define local `proxies`:
 client_id: internal-node
 
 authentication:
-  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: REPLACE_TOKEN
 ```
 
 After authentication, the server delivers the complete configuration through a
@@ -213,7 +213,7 @@ The entries can be combined:
 
 ```yaml
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
   governed_clients_path: ./governed
   managed_clients_path: ./managed
 ```
@@ -240,22 +240,26 @@ active.
 
 Credential and policy changes are fail-closed:
 
-- changing or removing the Shared Token revokes Shared sessions;
-- changing an independent Token or deleting its record revokes that client;
+- adding, removing, replacing, or reassigning any Shared, Governed, or Managed
+  Token publishes the new authentication snapshot and disconnects every client,
+  including recoverable sessions;
+- clients with unchanged credentials may reconnect using the same Token, while
+  a changed credential requires the newly published Token;
 - changing Governed permissions closes that client's sessions, bindings,
   pending tickets, and active links;
 - changing Managed proxy configuration performs an online prepare/activate
   rollout; an incomplete switch leaves the session inactive and reconnects to
   the latest desired configuration.
 
-Unrelated clients remain active. Fields that cannot be safely reloaded, such as
-the selected transport or listener addresses, are rejected with a
-restart-required error instead of being partially applied.
+For policy-only and Managed configuration-only changes, unrelated clients remain
+active. Fields that cannot be safely reloaded, such as the selected transport or
+listener addresses, are rejected with a restart-required error instead of being
+partially applied.
 
 ## Operational guidance
 
-- Generate Tokens from a cryptographically secure random source with at least
-  32 bytes of entropy.
+- A custom Token must contain more than 32 UTF-8 characters. Prefer the
+  automatically generated 256-bit Base64URL value over a human-created string.
 - Never reuse a Token across clients, modes, servers, or unrelated systems.
 - Do not commit Tokens to version control or include them in command lines and
   logs.

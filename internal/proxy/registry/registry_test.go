@@ -1,8 +1,10 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"net"
+	"net/netip"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
@@ -570,7 +573,46 @@ func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
 	}
 }
 
-func newTestTCPProxyManager(t *testing.T) *Registry {
+func TestUDPSuspensionPreservesBindingForOriginalSessionRecovery(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveUDPAddress(t).Port)
+	manager.Attach(
+		"client-one",
+		"session-one",
+		control.NewWriter(&bytes.Buffer{}),
+	)
+	result := manager.Sync(
+		"client-one",
+		"session-one",
+		"request-one",
+		protocol.SyncProxies{
+			Revision: 1,
+			Proxies: []protocol.ProxyDeclaration{
+				udpProxyDeclaration("udp-service", port),
+			},
+		},
+	)
+	if result.Status != protocol.ProxySyncStatusApplied {
+		t.Fatalf("UDP synchronization failed: %+v", result.Error)
+	}
+	manager.Activate("client-one", "session-one")
+	binding := manager.clients["client-one"].udpProxies["udp-service"]
+
+	manager.Suspend("client-one", "session-one")
+	manager.Activate("client-one", "session-one")
+	if _, err := binding.resolveTarget(); err != nil {
+		t.Fatalf("reactivated UDP Binding did not resolve its original Session: %v", err)
+	}
+	binding.runtime.HandleDatagram(
+		netip.MustParseAddrPort("192.0.2.1:40000"),
+		[]byte("datagram"),
+	)
+	if associations := manager.SnapshotStats().UDP.Associations; associations != 1 {
+		t.Fatalf("reactivated UDP Binding created %d associations, want 1", associations)
+	}
+}
+
+func newTestTCPProxyManager(t testing.TB) *Registry {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())

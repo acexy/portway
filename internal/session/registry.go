@@ -137,6 +137,13 @@ func (registry *Registry) RegisterAuthenticated(
 		}
 		return false, true, nil, nil
 	}
+	if record.authentication != authenticationContext {
+		return false, false, nil, &protocol.SessionError{
+			Code:      protocol.SessionErrorAuthenticationFailed,
+			Message:   "authentication failed",
+			Retryable: false,
+		}
+	}
 
 	if record.state == stateInitializing {
 		if resumeSessionID == "" ||

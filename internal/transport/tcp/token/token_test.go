@@ -17,7 +17,7 @@ import (
 	"github.com/acexy/portway/internal/security/ipfilter"
 )
 
-func testAuthenticationStore(t *testing.T, token string) *authentication.Store {
+func testAuthenticationStore(t testing.TB, token string) *authentication.Store {
 	t.Helper()
 	snapshot, err := authentication.NewSnapshot([]authentication.Record{{
 		Context: authentication.Context{Mode: authentication.ModeShared},

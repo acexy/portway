@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
@@ -180,20 +181,28 @@ func validateClientAuthentication(authentication ClientAuthenticationConfig) err
 	if authentication.Token == "" {
 		return errors.New("authentication.token is required")
 	}
-	if len(authentication.Token) < generatedTokenBytes {
-		return fmt.Errorf("authentication.token must contain at least %d bytes", generatedTokenBytes)
+	if err := validateToken(authentication.Token); err != nil {
+		return fmt.Errorf("authentication.token: %w", err)
 	}
 	return nil
 }
 
 func validateServerAuthentication(authentication ServerAuthenticationConfig) error {
 	if authentication.SharedToken != nil &&
-		*authentication.SharedToken != "" &&
-		len(*authentication.SharedToken) < generatedTokenBytes {
-		return fmt.Errorf(
-			"authentication.shared_token must contain at least %d bytes",
-			generatedTokenBytes,
-		)
+		*authentication.SharedToken != "" {
+		if err := validateToken(*authentication.SharedToken); err != nil {
+			return fmt.Errorf("authentication.shared_token: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateToken(token string) error {
+	if !utf8.ValidString(token) {
+		return errors.New("must be valid UTF-8")
+	}
+	if utf8.RuneCountInString(token) <= generatedTokenBytes {
+		return fmt.Errorf("must contain more than %d UTF-8 characters", generatedTokenBytes)
 	}
 	return nil
 }

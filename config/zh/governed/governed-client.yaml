@@ -2,8 +2,9 @@
 # 文件名只是操作者标签，无需匹配 client_id。所有独立 ClientID 和 Token 必须唯一。
 
 client_id: governed-client
-# 至少 32 字节的唯一随机 Token，禁止提交生产 Token。
-token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+# 必须包含大于 32 个 UTF-8 字符且保持唯一；推荐使用自动生成的 256-bit 随机值。
+# 禁止提交生产 Token。
+token: PORTWAY_TOKEN_REQUIRED
 
 permissions:
   # 必填，至少一项。表示 portwayd 与 portway 之间的代理语义，而非公网入口

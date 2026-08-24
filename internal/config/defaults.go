@@ -70,7 +70,7 @@ func EnsureServerToken(configuration *ServerConfig) (string, bool, error) {
 		if *configuration.Authentication.SharedToken != "" {
 			return *configuration.Authentication.SharedToken, false, nil
 		}
-		token, err := generateToken()
+		token, err := GenerateToken()
 		if err != nil {
 			return "", false, err
 		}
@@ -83,7 +83,7 @@ func EnsureServerToken(configuration *ServerConfig) (string, bool, error) {
 		return "", false, nil
 	}
 
-	token, err := generateToken()
+	token, err := GenerateToken()
 	if err != nil {
 		return "", false, err
 	}
@@ -92,10 +92,11 @@ func EnsureServerToken(configuration *ServerConfig) (string, bool, error) {
 	return token, true, nil
 }
 
-func generateToken() (string, error) {
+// GenerateToken returns the canonical encoding of 256 bits from crypto/rand.
+func GenerateToken() (string, error) {
 	randomBytes := make([]byte, generatedTokenBytes)
 	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("generate server token: %w", err)
+		return "", fmt.Errorf("generate token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }

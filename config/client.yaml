@@ -36,8 +36,8 @@ transport:
     server_name: gateway.example.com
 
     # Optional when transport.type=quic.
-    # CA bundle used to verify the server certificate.
-    # Leave empty to use the operating system trust store.
+    # CA bundle used exclusively to verify the server certificate.
+    # Leave empty to use the operating system trust store instead.
     # For "portwayd gen cert", configure ./certs/root-ca.crt here.
     ca_file: ""
 
@@ -46,9 +46,10 @@ authentication:
   # * Required. Shared by TCP and QUIC. The server associates a globally unique
   # Token with shared, governed, or managed behavior automatically; the client
   # does not declare a management mode.
-  # Use a cryptographically random value containing at least 32 bytes.
+  # Must contain more than 32 UTF-8 characters. Prefer an automatically
+  # generated 256-bit value rather than a human-created string.
   # Never commit a real Token to version control.
-  token: CHANGE_ME_TO_A_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: PORTWAY_TOKEN_REQUIRED
 
 # Required and non-empty for Shared and Governed clients. Managed clients must
 # leave this empty because the server supplies and locks the complete proxy

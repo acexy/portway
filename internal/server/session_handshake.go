@@ -19,6 +19,14 @@ import (
 )
 
 func (s *Service) handleConnection(ctx context.Context, inbound transport.Inbound) error {
+	return s.handleAdmittedConnection(ctx, inbound, func() {})
+}
+
+func (s *Service) handleAdmittedConnection(
+	ctx context.Context,
+	inbound transport.Inbound,
+	releaseAdmission func(),
+) error {
 	connection := inbound.Stream
 	defer connection.Close()
 
@@ -28,7 +36,7 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 	defer stopContextClose()
 
 	if inbound.Role == protocol.RoleData {
-		return s.handleDataConnection(ctx, inbound)
+		return s.handleDataConnection(ctx, inbound, releaseAdmission)
 	}
 	if inbound.Role != protocol.RoleControl {
 		return fmt.Errorf("unsupported connection role %d", inbound.Role)
@@ -143,6 +151,9 @@ func (s *Service) handleConnection(ctx context.Context, inbound transport.Inboun
 		)
 		return nil
 	}
+	// The Session Registry now owns a bounded Initializing record, so this
+	// connection no longer consumes the unaffiliated admission budget.
+	releaseAdmission()
 	negotiatedCapabilities := negotiateCapabilities(clientHello.Capabilities)
 	if err := protocol.WriteControl(connection, protocol.MessageServerHello, protocol.ServerHello{
 		ClientID:       clientHello.ClientID,

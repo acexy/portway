@@ -14,9 +14,9 @@
 client_id: managed-client
 
 # * Required. Independent Token configured as authentication.token on this
-# client. Use a cryptographically random value containing at least 32 bytes.
-# Never commit or log a real Token.
-token: CHANGE_ME_TO_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+# client. It must contain more than 32 UTF-8 characters; prefer an automatically
+# generated 256-bit value. Never commit or log a real Token.
+token: PORTWAY_TOKEN_REQUIRED
 
 # * Required. Complete server-owned client configuration.
 # A managed client must not define local proxies in client.yaml; it receives

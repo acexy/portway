@@ -38,7 +38,7 @@ func TestLoadClientStrictHTTPPublicSchemes(t *testing.T) {
 			}
 			writeTestConfiguration(t, path, fmt.Sprintf(`
 authentication:
-  token: test-token-with-at-least-32-random-bytes
+  token: cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA
 proxies:
   - name: web
     type: %s
@@ -90,7 +90,7 @@ func TestLoadGovernedStrictHTTPPublicSchemes(t *testing.T) {
 			}
 			writeTestConfiguration(t, filepath.Join(governedDirectory, "client.yaml"), fmt.Sprintf(`
 client_id: governed-client
-token: governed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
 permissions:
   proxy_types: %s
   http:
@@ -162,7 +162,7 @@ func TestLoadManagedStrictHTTPPublicSchemes(t *testing.T) {
 			}
 			writeTestConfiguration(t, filepath.Join(managedDirectory, "client.yaml"), fmt.Sprintf(`
 client_id: managed-client
-token: managed-token-with-at-least-32-random-bytes
+token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies:

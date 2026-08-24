@@ -48,6 +48,7 @@ type Service struct {
 	authenticationBarrier sync.RWMutex
 	managed               *managedCoordinator
 	httpsCertificates     *httpsCertificateManager
+	inboundAdmission      chan struct{}
 	ready                 atomic.Bool
 }
 
@@ -57,10 +58,14 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 		configuration.Generation = 1
 	}
 	return &Service{
-		logger:         logger,
-		configuration:  newConfigurationManager(configuration),
-		clientRegistry: session.NewRegistryWithLimit(maxClientSessions),
-		managed:        newManagedCoordinator(),
+		logger:             logger,
+		configuration:      newConfigurationManager(configuration),
+		clientRegistry:     session.NewRegistryWithLimit(maxClientSessions),
+		managed:            newManagedCoordinator(),
+		inboundAdmission: make(
+			chan struct{},
+			maxUnaffiliatedInboundConnections,
+		),
 	}
 }
 
@@ -329,16 +334,38 @@ func (s *Service) Run(ctx context.Context) error {
 			"remote_address",
 			inbound.RemoteAddress,
 		)
+		releaseAdmission, admitted := s.acquireInboundAdmission()
+		if !admitted {
+			_ = inbound.Stream.Close()
+			continue
+		}
 
 		sessions.Add(1)
 		go func(accepted transport.Inbound) {
 			defer sessions.Done()
-			if err := s.handleConnection(sessionContext, accepted); err != nil &&
+			defer releaseAdmission()
+			if err := s.handleAdmittedConnection(
+				sessionContext,
+				accepted,
+				releaseAdmission,
+			); err != nil &&
 				!errors.Is(err, io.EOF) &&
 				!errors.Is(err, net.ErrClosed) &&
 				sessionContext.Err() == nil {
 				s.logger.Warn("client connection ended", err)
 			}
 		}(inbound)
+	}
+}
+
+func (s *Service) acquireInboundAdmission() (func(), bool) {
+	select {
+	case s.inboundAdmission <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-s.inboundAdmission })
+		}, true
+	default:
+		return func() {}, false
 	}
 }

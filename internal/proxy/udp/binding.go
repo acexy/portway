@@ -148,19 +148,26 @@ func (binding *Binding) sweep() {
 	}
 }
 
-// Close releases every association owned by this binding.
+// Suspend closes the current association generation while preserving the
+// Binding runtime for an original control connection to reactivate.
+func (binding *Binding) Suspend() {
+	binding.mutex.Lock()
+	associations := coll.MapValues(binding.associations)
+	binding.mutex.Unlock()
+	for _, candidate := range associations {
+		candidate.Close()
+	}
+	for _, candidate := range associations {
+		<-candidate.done
+	}
+}
+
+// Close permanently releases every association and background task owned by
+// this binding.
 func (binding *Binding) Close() {
 	binding.closeOnce.Do(func() {
 		binding.cancel()
-		binding.mutex.Lock()
-		associations := coll.MapValues(binding.associations)
-		binding.mutex.Unlock()
-		for _, candidate := range associations {
-			candidate.Close()
-		}
-		for _, candidate := range associations {
-			<-candidate.done
-		}
+		binding.Suspend()
 	})
 	binding.waitGroup.Wait()
 }

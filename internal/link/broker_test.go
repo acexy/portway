@@ -184,15 +184,27 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 	defer serverData.Close()
 	defer clientData.Close()
 	bindResult := make(chan error, 1)
+	activated := make(chan struct{}, 1)
 	go func() {
-		bindResult <- broker.Bind(context.Background(), serverData, protocol.BindLink{
-			ClientID: target.ClientID, SessionID: target.SessionID,
-			ProxyType: target.ProxyType, BindingID: target.BindingID,
-			LinkID: open.LinkID, Ticket: open.Ticket,
-		}, authentication.Context{})
+		bindResult <- broker.BindWithActivation(
+			context.Background(),
+			serverData,
+			protocol.BindLink{
+				ClientID: target.ClientID, SessionID: target.SessionID,
+				ProxyType: target.ProxyType, BindingID: target.BindingID,
+				LinkID: open.LinkID, Ticket: open.Ticket,
+			},
+			authentication.Context{},
+			func() { activated <- struct{}{} },
+		)
 	}()
 	if _, err := protocol.ReadControl(clientData); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-activated:
+	default:
+		t.Fatal("Link activation callback was not invoked before binding completed")
 	}
 	if !<-handlerObserved {
 		t.Fatal("pending and active Link counters did not transition atomically")

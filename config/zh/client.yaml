@@ -18,13 +18,15 @@ transport:
   quic:
     # transport.type=quic 时必填，必须匹配服务端证书中的 DNS 名称。
     server_name: gateway.example.com
-    # 可选。留空使用操作系统信任库；内部 CA 可填写 ./certs/root-ca.crt。
+    # 可选。留空使用操作系统信任库；配置后仅信任该 CA 文件。
+    # 使用内部 CA 时可填写 ./certs/root-ca.crt。
     ca_file: ""
 
 authentication:
   # 必填。服务端根据全局唯一 Token 自动选择 Shared、Governed 或 Managed。
-  # 使用至少 32 字节的加密随机值，禁止提交真实 Token。
-  token: CHANGE_ME_TO_A_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  # 必须包含大于 32 个 UTF-8 字符；推荐使用自动生成的 256-bit 随机值，
+  # 不要使用人工构造字符串。禁止提交真实 Token。
+  token: PORTWAY_TOKEN_REQUIRED
 
 # Shared/Governed 必须至少配置一项；Managed 必须留空，由服务端下发并锁定。
 # 同一 ClientID 下所有代理名称必须唯一。

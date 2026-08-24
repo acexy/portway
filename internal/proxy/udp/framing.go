@@ -15,24 +15,53 @@ var ErrInvalidFrame = errors.New("invalid UDP datagram frame")
 
 // ReadDatagram reads one length-prefixed UDP datagram.
 func ReadDatagram(reader io.Reader, maxSize int) ([]byte, error) {
+	length, err := readDatagramLength(reader, maxSize)
+	if err != nil {
+		return nil, err
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// ReadDatagramInto reads one length-prefixed UDP datagram into caller-owned storage.
+func ReadDatagramInto(reader io.Reader, buffer []byte, maxSize int) ([]byte, error) {
+	length, err := readDatagramLength(reader, maxSize)
+	if err != nil {
+		return nil, err
+	}
+	if length > cap(buffer) {
+		return nil, fmt.Errorf(
+			"%w: payload length %d exceeds buffer capacity %d",
+			ErrInvalidFrame,
+			length,
+			cap(buffer),
+		)
+	}
+	payload := buffer[:length]
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func readDatagramLength(reader io.Reader, maxSize int) (int, error) {
 	var header [frameHeaderSize]byte
 	if _, err := io.ReadFull(reader, header[:]); err != nil {
-		return nil, err
+		return 0, err
 	}
 	length := binary.BigEndian.Uint32(header[:])
 	if uint64(length) > uint64(maxSize) {
-		return nil, fmt.Errorf(
+		return 0, fmt.Errorf(
 			"%w: payload length %d exceeds %d",
 			ErrInvalidFrame,
 			length,
 			maxSize,
 		)
 	}
-	payload := make([]byte, int(length))
-	if _, err := io.ReadFull(reader, payload); err != nil {
-		return nil, err
-	}
-	return payload, nil
+	return int(length), nil
 }
 
 // WriteDatagram writes one length-prefixed UDP datagram.

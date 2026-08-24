@@ -27,8 +27,9 @@ func Forward(
 
 	results := make(chan error, 2)
 	go func() {
+		buffer := make([]byte, maxDatagramSize)
 		for {
-			payload, err := ReadDatagram(stream, maxDatagramSize)
+			payload, err := ReadDatagramInto(stream, buffer, maxDatagramSize)
 			if err != nil {
 				results <- err
 				return

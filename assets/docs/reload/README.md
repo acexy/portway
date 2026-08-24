@@ -37,6 +37,10 @@ The candidate is all-or-nothing. If one newly added client file is valid and a
 second file is invalid, neither file is published. The previous generation,
 sessions, listeners, bindings, and proxy behavior remain active.
 
+If startup generated the Shared Token because `shared_token` was empty or was
+omitted without independent authentication directories, later scans reuse that
+same effective Token. They do not silently generate a new credential.
+
 This prevents partially published credentials, ambiguous Token or ClientID
 ownership, and inconsistent Managed port/domain reservations.
 
@@ -52,11 +56,15 @@ The current implementation reloads:
 
 Changing authentication state has immediate runtime effects:
 
-- changing or removing the Shared Token revokes Shared sessions;
-- changing an independent Token or deleting its record revokes that client;
+- adding, removing, replacing, or reassigning any Shared, Governed, or Managed
+  Token disconnects every client, including sessions waiting in the recovery
+  window;
+- clients whose credentials did not change may reconnect with the same Token;
+  clients whose credentials changed must use the newly published Token;
 - changing Governed permissions closes that client's session and resources so
   it reconnects under the new policy;
-- unrelated clients remain active.
+- a Managed configuration-only change still uses online rollout and does not
+  disconnect unrelated clients.
 
 ## Settings that require restart
 

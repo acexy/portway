@@ -19,8 +19,8 @@ credential handling, and the applications exposed through a tunnel.
 
 The server can combine one Shared Token with independently owned Governed and
 Managed client records. Every configured Token must be globally unique within
-that server and contain at least 32 bytes of cryptographically random data.
-Treat each Token as a long-term credential.
+that server and contain more than 32 UTF-8 characters. Automatically generated
+256-bit values are strongly recommended. Treat each Token as a long-term credential.
 
 Authentication failures are rate-limited per normalized source IP with bounded
 server memory. This is an application safety boundary, not a replacement for
@@ -43,7 +43,8 @@ configured Tokens are not logged.
 ## QUIC certificates
 
 Clients verify the server certificate against either the operating-system trust
-store or a configured CA bundle. The configured server name must match a
+store or, when configured, exclusively against the supplied CA bundle. The
+configured server name must match a
 certificate SAN.
 
 `portwayd gen cert` is intended for private deployments that need a small

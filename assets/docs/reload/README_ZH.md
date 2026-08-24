@@ -33,6 +33,9 @@ Portway 可以在不重启 `portwayd` 的情况下更新认证、授权和服务
 错误，两份都不会发布。服务端继续使用上一代配置，现有 Session、Listener、
 Binding 和代理行为均保持不变。
 
+如果服务端因为 `shared_token` 为空，或未配置独立认证目录且省略该字段，而在启动时
+自动生成了 Shared Token，后续扫描会复用同一个有效 Token，不会静默生成新凭据。
+
 该规则避免只发布部分凭证、Token/ClientID 所有权不明确，以及 Managed
 端口和域名预留落在不同代际。
 
@@ -48,10 +51,12 @@ Binding 和代理行为均保持不变。
 
 认证变化会立即影响运行时：
 
-- 修改或删除 Shared Token 会吊销 Shared Session；
-- 修改独立 Token 或删除记录会吊销对应客户端；
+- 新增、删除、替换或重新归属任意 Shared、Governed、Managed Token 时，全部客户端
+  都会被强制下线，包括处于恢复窗口的 Session；
+- 凭据未变化的客户端可使用原 Token 重连，凭据已变化的客户端必须使用新发布的
+  Token；
 - 修改 Governed 权限会关闭该客户端的 Session 和资源，使其按新策略重连；
-- 无关客户端保持在线。
+- 仅修改 Managed 配置仍使用在线切换，不会下线无关客户端。
 
 ## 必须重启的配置
 

@@ -31,14 +31,14 @@ Token。Token 唯一选择认证记录和配置控制模式，ClientID 匹配后
 
 ```yaml
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
 ```
 
 客户端：
 
 ```yaml
 authentication:
-  token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: ssh
@@ -69,7 +69,7 @@ authentication:
 
 ```yaml
 client_id: customer-a
-token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+token: REPLACE_TOKEN
 
 permissions:
   proxy_types: [tcp, http]
@@ -100,7 +100,7 @@ ClientID、该记录的 Token 和期望代理：
 client_id: customer-a
 
 authentication:
-  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: app
@@ -146,7 +146,7 @@ authentication:
 
 ```yaml
 client_id: internal-node
-token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+token: REPLACE_TOKEN
 
 configuration:
   revision: 1
@@ -164,7 +164,7 @@ Managed 客户端配置匹配的 ClientID 和 Token，不能在本地定义 `pro
 client_id: internal-node
 
 authentication:
-  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_BYTES
+  token: REPLACE_TOKEN
 ```
 
 认证后，服务端通过 Prepare/Activate 交互下发完整配置。客户端完成校验和暂存后，
@@ -193,7 +193,7 @@ Managed 模式约束的是 Portway 协议和官方客户端行为。它不是远
 
 ```yaml
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
   governed_clients_path: ./governed
   managed_clients_path: ./managed
 ```
@@ -216,19 +216,22 @@ ClientID 与记录完全匹配；身份校验完成后，服务端通过受保�
 
 凭据和策略变化采用 fail-closed 行为：
 
-- 修改或删除 Shared Token 会吊销 Shared Session；
-- 修改独立 Token 或删除客户端记录会吊销对应客户端；
+- 新增、删除、替换或重新归属任意 Shared、Governed、Managed Token 时，会先发布新
+  认证快照，再强制下线全部客户端，包括处于恢复窗口的 Session；
+- 凭据未变化的客户端可继续使用原 Token 重连，凭据已变化的客户端必须使用新发布
+  的 Token；
 - 修改 Governed 权限会关闭该客户端的 Session、Binding、Pending Ticket 和
   Active Link；
 - 修改 Managed 代理配置会执行在线 Prepare/Activate 切换；切换未完整完成时
   Session 保持不可用，并通过重连向最新期望配置收敛。
 
-无关客户端保持在线。Transport 类型、监听地址等不能安全热加载的字段会返回
-需要重启的错误，不会与其他字段一起部分应用。
+仅发生策略变化或 Managed 配置变化时，无关客户端保持在线。Transport 类型、
+监听地址等不能安全热加载的字段会返回需要重启的错误，不会与其他字段一起部分应用。
 
 ## 运维建议
 
-- 使用密码学安全随机源生成至少包含 32 字节熵的 Token。
+- 自定义 Token 必须包含大于 32 个 UTF-8 字符；推荐使用自动生成的 256-bit
+  Base64URL 随机值，不要使用人工构造字符串。
 - 不要在客户端、模式、服务端或其他系统之间复用 Token。
 - 不要把 Token 提交到版本控制，也不要放入命令行或日志。
 - 为 Governed 客户端配置满足业务需求的最小端口、域名和配额范围。

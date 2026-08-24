@@ -9,7 +9,7 @@ import (
 const (
 	udpDefaultAssociationIdleTimeout               = 60 * time.Second
 	udpDefaultLinkWriteTimeout                     = 3 * time.Second
-	udpDefaultMaxDatagramSize                      = 65507
+	udpDefaultMaxDatagramSize                      = 8 * 1024
 	udpDefaultMaxAssociations                      = 4096
 	udpDefaultMaxAssociationsPerClient             = 512
 	udpDefaultMaxAssociationsPerProxy              = 256
@@ -133,6 +133,17 @@ func validateUDPConfig(configuration UDPConfig) error {
 				limit.max,
 			)
 		}
+	}
+	platformMaximum, err := platformUDPMaxDatagramSize()
+	if err != nil {
+		return fmt.Errorf("determine platform UDP datagram limit: %w", err)
+	}
+	if configuration.MaxDatagramSize > platformMaximum {
+		return fmt.Errorf(
+			"udp.max_datagram_size %d exceeds platform UDP datagram limit %d",
+			configuration.MaxDatagramSize,
+			platformMaximum,
+		)
 	}
 	if configuration.MaxAssociationsPerClient > configuration.MaxAssociations ||
 		configuration.MaxAssociationsPerProxy > configuration.MaxAssociations ||

@@ -32,7 +32,8 @@ bounded resources, and secure defaults.
   - fully server-managed configuration
 - **Fail-closed server main-configuration reload:**
   - atomic validation and publication of complete configuration generations
-  - selective credential revocation and online Managed configuration rollout
+  - deployment-wide disconnect on Token changes, selective policy revocation,
+    and online Managed configuration rollout
   - retention of the previous effective snapshot on validation failure
 
 ## Quick start
@@ -48,7 +49,7 @@ transport:
   listen_address: 127.0.0.1:7000
 
 authentication:
-  shared_token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  shared_token: REPLACE_TOKEN
 ```
 
 Create `client.yaml`:
@@ -59,7 +60,7 @@ transport:
   server_address: 127.0.0.1:7000
 
 authentication:
-  token: REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
+  token: REPLACE_TOKEN
 
 proxies:
   - name: ssh
@@ -69,7 +70,8 @@ proxies:
     remote_port: 22022
 ```
 
-Use the same cryptographically random Token on both sides, then start the
+Use the same Token on both sides. It must contain more than 32 UTF-8 characters;
+cryptographically generated values are strongly recommended. Then start the
 server and client:
 
 ```bash
@@ -177,9 +179,10 @@ portwayd version
 ```
 
 `gen config` creates a minimal `client.yaml` or `server.yaml` in the current
-directory. Add `full` to use the complete annotated template. Existing files
-are never overwritten. Run either binary without arguments to display every
-available command, including nested generation commands.
+directory. Client generation writes a fresh canonical 256-bit Token into the
+owner-only file. Add `full` to use the complete annotated template. Existing
+files are never overwritten. Run either binary without arguments to display
+every available command, including nested generation commands.
 
 ## Install with Homebrew
 

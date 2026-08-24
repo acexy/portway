@@ -41,7 +41,7 @@ http:
   max_upgrade_connections_per_domain: 20
   max_concurrent_http2_streams: 64
 authentication:
-  shared_token: test-token-with-at-least-32-random-bytes
+  shared_token: cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestValidateClientDefaultsHTTPPublicSchemes(t *testing.T) {
 func TestValidateClientRejectsPublicSchemesForTCP(t *testing.T) {
 	configuration := DefaultClient()
 	configuration.ClientID = "tcp-client"
-	configuration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	configuration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	configuration.Proxies = []ProxyConfig{{
 		Name: "ssh", Type: "tcp", LocalIP: "127.0.0.1",
 		LocalPort: 22, RemotePort: 22022,
@@ -279,7 +279,7 @@ func TestValidateServerRejectsDisabledSafetyTimeout(t *testing.T) {
 func validHTTPClientConfiguration() ClientConfig {
 	configuration := DefaultClient()
 	configuration.ClientID = "http-client"
-	configuration.Authentication.Token = "test-token-with-at-least-32-random-bytes"
+	configuration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	configuration.Proxies = []ProxyConfig{{
 		Name: "web", Type: "http", Domain: "app.example.com",
 		LocalIP: "127.0.0.1", LocalPort: 8080,

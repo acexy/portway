@@ -48,7 +48,6 @@ func (manager *Registry) Suspend(clientID string, sessionID string) {
 		return
 	}
 	state.active = false
-	state.writer = nil
 	httpBindings := coll.MapValues(state.httpProxies)
 	udpBindings := coll.MapValues(state.udpProxies)
 	manager.mutex.Unlock()
@@ -58,7 +57,7 @@ func (manager *Registry) Suspend(clientID string, sessionID string) {
 		binding.runtime.CloseIdleConnections()
 	}
 	for _, binding := range udpBindings {
-		binding.close()
+		binding.runtime.Suspend()
 	}
 }
 

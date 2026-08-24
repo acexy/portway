@@ -199,6 +199,24 @@ func (broker *Broker) Bind(
 	binding protocol.BindLink,
 	authenticationContext authentication.Context,
 ) error {
+	return broker.BindWithActivation(
+		ctx,
+		connection,
+		binding,
+		authenticationContext,
+		nil,
+	)
+}
+
+// BindWithActivation binds a data stream and reports when the stream has
+// atomically consumed its Pending Link and entered the Active set.
+func (broker *Broker) BindWithActivation(
+	ctx context.Context,
+	connection net.Conn,
+	binding protocol.BindLink,
+	authenticationContext authentication.Context,
+	onActivated func(),
+) error {
 	ticket, err := base64.RawURLEncoding.DecodeString(binding.Ticket)
 	if err != nil || len(ticket) != 32 {
 		return broker.rejectBinding(connection, binding.LinkID, protocol.LinkErrorInvalidBinding)
@@ -240,6 +258,9 @@ func (broker *Broker) Bind(
 	}
 	broker.incrementActiveLocked(pending.target)
 	broker.mutex.Unlock()
+	if onActivated != nil {
+		onActivated()
+	}
 
 	if err := protocol.WriteControl(connection, protocol.MessageBindResult, protocol.BindResult{
 		LinkID: binding.LinkID,
