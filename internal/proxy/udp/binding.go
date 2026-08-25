@@ -227,11 +227,13 @@ func (association *association) start() {
 	err := association.binding.broker.ServeStreamContext(
 		association.context,
 		association.target,
-		func() {
+		func(string) {
 			association.Close()
 			association.finish()
 		},
-		association.forward,
+		func(ctx context.Context, _ string, stream net.Conn) error {
+			return association.forward(ctx, stream)
+		},
 	)
 	if err != nil {
 		association.Close()

@@ -32,7 +32,7 @@ func BenchmarkBrokerPendingLifecycle(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		controlFrames.Reset()
-		linkID, err := broker.request(target, nil, nil, func(context.Context, net.Conn) error {
+		linkID, err := broker.request(target, nil, nil, func(context.Context, string, net.Conn) error {
 			return nil
 		})
 		if err != nil {
@@ -61,7 +61,7 @@ func BenchmarkBrokerPendingLifecycleParallel(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(parallel *testing.PB) {
 		for parallel.Next() {
-			linkID, err := broker.request(target, nil, nil, func(context.Context, net.Conn) error {
+			linkID, err := broker.request(target, nil, nil, func(context.Context, string, net.Conn) error {
 				return nil
 			})
 			if err != nil {
@@ -95,7 +95,7 @@ func BenchmarkBrokerBindLifecycle(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		controlFrames.Reset()
-		linkID, err := broker.request(target, nil, nil, func(context.Context, net.Conn) error {
+		linkID, err := broker.request(target, nil, nil, func(context.Context, string, net.Conn) error {
 			handlerReady <- struct{}{}
 			<-releaseHandler
 			return nil

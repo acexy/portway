@@ -58,10 +58,10 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 		configuration.Generation = 1
 	}
 	return &Service{
-		logger:             logger,
-		configuration:      newConfigurationManager(configuration),
-		clientRegistry:     session.NewRegistryWithLimit(maxClientSessions),
-		managed:            newManagedCoordinator(),
+		logger:         logger,
+		configuration:  newConfigurationManager(configuration),
+		clientRegistry: session.NewRegistryWithLimit(maxClientSessions),
+		managed:        newManagedCoordinator(),
 		inboundAdmission: make(
 			chan struct{},
 			maxUnaffiliatedInboundConnections,

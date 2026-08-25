@@ -119,6 +119,13 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 	}
 	if request.ExpiresAtUnixMS <= time.Now().UnixMilli() {
 		manager.reportFailure(request.LinkID, protocol.LinkErrorExpired)
+		logger.DebugWithFields("proxy link expired", map[string]any{
+			"event":       "proxy_link_failed",
+			"result":      "failed",
+			"reason":      "link_expired",
+			"error_code":  protocol.LinkErrorExpired,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		})
 		return
 	}
 	if request.ProxyType == protocol.ProxyTypeUDP {
@@ -193,13 +200,15 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		}
 		failureCode := classifyLinkDialFailure(ctx, transportDialError, localDialError)
 		manager.reportFailure(request.LinkID, failureCode)
-		logger.WarnWithFields(
+		logger.DebugWithFields(
 			"proxy link dial failed",
-			errors.Join(transportDialError, localDialError),
 			map[string]any{
 				"event":       "proxy_link_failed",
+				"result":      "failed",
+				"reason":      "dial_failed",
 				"error_code":  failureCode,
 				"duration_ms": time.Since(startedAt).Milliseconds(),
+				"error":       errors.Join(transportDialError, localDialError),
 			},
 		)
 		return
@@ -209,29 +218,40 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 
 	if failure := manager.bindDataStream(dataConnection, request); failure != "" {
 		manager.reportFailure(request.LinkID, failure)
+		logger.DebugWithFields("proxy link bind failed", map[string]any{
+			"event":       "proxy_link_failed",
+			"result":      "failed",
+			"reason":      "bind_failed",
+			"error_code":  failure,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		})
 		return
 	}
 
 	logger.DebugWithFields("proxy link streaming started", map[string]any{
 		"event": "proxy_link_started",
 	})
-	err := proxytcp.Forward(ctx, dataConnection, localConnection)
+	forwardResult, err := proxytcp.Forward(ctx, dataConnection, localConnection)
+	fields := map[string]any{
+		"event":                    "proxy_link_closed",
+		"transport_to_local_bytes": forwardResult.LeftToRightBytes,
+		"local_to_transport_bytes": forwardResult.RightToLeftBytes,
+		"duration_ms":              time.Since(startedAt).Milliseconds(),
+	}
 	if err != nil && ctx.Err() == nil {
-		logger.WarnWithFields(
-			"proxy link streaming ended",
-			err,
-			map[string]any{
-				"event":       "proxy_link_closed",
-				"result":      "failed",
-				"duration_ms": time.Since(startedAt).Milliseconds(),
-			},
-		)
+		fields["result"] = "failed"
+		fields["reason"] = proxytcp.CloseReason(ctx, err)
+		fields["error_code"] = fields["reason"]
+		fields["error"] = err
+		logger.DebugWithFields("proxy link closed", fields)
 	} else {
-		logger.DebugWithFields("proxy link streaming stopped", map[string]any{
-			"event":       "proxy_link_closed",
-			"result":      "completed",
-			"duration_ms": time.Since(startedAt).Milliseconds(),
-		})
+		fields["result"] = "completed"
+		fields["reason"] = "stream_closed"
+		if ctx.Err() != nil {
+			fields["result"] = "cancelled"
+			fields["reason"] = "link_cancelled"
+		}
+		logger.DebugWithFields("proxy link closed", fields)
 	}
 }
 
