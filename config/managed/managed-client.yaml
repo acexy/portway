@@ -15,7 +15,10 @@ client_id: managed-client
 
 # * Required. Independent Token configured as authentication.token on this
 # client. It must contain more than 32 UTF-8 characters; prefer an automatically
-# generated 256-bit value. Never commit or log a real Token.
+# generated 256-bit value. Never commit or log a real Token. Hot-reloading any
+# Token addition, removal, replacement, or reassignment disconnects every active
+# and recoverable client; clients with unchanged credentials may reconnect with
+# their existing Token. Proxy configuration-only changes retain online rollout.
 token: PORTWAY_TOKEN_REQUIRED
 
 # * Required. Complete server-owned client configuration.

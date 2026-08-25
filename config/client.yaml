@@ -21,7 +21,8 @@ client_id: ""
 
 # Optional. Underlying client-server transport settings.
 transport:
-  # Optional. Server endpoint used by both TCP and QUIC.
+  # Optional. Server network endpoint used by both TCP and QUIC. It may contain
+  # a DNS name or IP address and is independent from QUIC certificate identity.
   # Defaults to 127.0.0.1:7000. The effective value must not be empty.
   server_address: gateway.example.com:7000
 
@@ -32,7 +33,11 @@ transport:
   # Optional when type=tcp. QUIC-specific TLS transport settings.
   quic:
     # * Required when transport.type=quic.
-    # DNS name expected in the server certificate.
+    # Certificate identity verified by TLS. It must exactly match a DNS SAN or
+    # IP SAN in the server certificate. When using "portwayd gen cert", use
+    # --server-name for a DNS identity or --ip for an IP identity. This value
+    # may differ from the host in server_address when connecting to an IP while
+    # verifying a DNS identity.
     server_name: gateway.example.com
 
     # Optional when transport.type=quic.

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,46 @@ import (
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 )
+
+func TestServeHTTPSRejectsMismatchedSNIAndHost(t *testing.T) {
+	manager := &Registry{logger: logging.New("test")}
+	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+	request.Host = "app.example.com"
+	request.TLS = &tls.ConnectionState{ServerName: "other.example.com"}
+	response := httptest.NewRecorder()
+
+	manager.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMisdirectedRequest)
+	}
+}
+
+func TestServeHTTPSAcceptsNormalizedSNIAndHost(t *testing.T) {
+	manager := &Registry{
+		logger: logging.New("test"),
+		httpDomains: map[string]*httpProxyBinding{
+			"app.example.com": {
+				declaration: protocol.ProxyDeclaration{
+					Name: "web", Type: protocol.ProxyTypeHTTP,
+					Domain:        "app.example.com",
+					PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+				},
+			},
+		},
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+	request.Host = "APP.EXAMPLE.COM:443"
+	request.TLS = &tls.ConnectionState{ServerName: "app.example.com."}
+	response := httptest.NewRecorder()
+
+	manager.ServeHTTP(response, request)
+
+	// Matching reaches the inactive-proxy check instead of the SNI guard.
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
 
 func TestValidateProxyDeclarationsRequiresAvailablePublicSchemes(t *testing.T) {
 	testCases := []struct {

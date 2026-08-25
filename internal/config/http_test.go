@@ -27,9 +27,13 @@ https:
       key_file: server.key
 http:
   read_header_timeout: 12s
+  request_body_timeout: 2m
+  public_idle_timeout: 90s
   graceful_shutdown_timeout: 40s
   idle_connection_timeout: 0s
   response_header_timeout: 45s
+  upgrade_idle_timeout: 15m
+  max_request_body_bytes: 1048576
   max_header_bytes: 32768
   max_concurrent_requests: 1000
   max_concurrent_requests_per_client: 200
@@ -51,7 +55,11 @@ authentication:
 		t.Fatalf("load HTTP server settings: %v", err)
 	}
 	if configuration.HTTP.ReadHeaderTimeout != 12*time.Second ||
+		configuration.HTTP.RequestBodyTimeout != 2*time.Minute ||
+		configuration.HTTP.PublicIdleTimeout != 90*time.Second ||
 		configuration.HTTP.ResponseHeaderTimeout != 45*time.Second ||
+		configuration.HTTP.UpgradeIdleTimeout != 15*time.Minute ||
+		configuration.HTTP.MaxRequestBodyBytes != 1048576 ||
 		configuration.HTTP.MaxConcurrentHTTP2Streams != 64 ||
 		configuration.Tunnel.BindIP != "127.0.0.1" ||
 		configuration.Tunnel.HTTPListenAddress != "127.0.0.1:8080" ||
@@ -244,6 +252,15 @@ func TestValidateServerAcceptsDefaultHTTPSettings(t *testing.T) {
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("default HTTP settings were rejected: %v", err)
 	}
+	if configuration.HTTP.ReadHeaderTimeout != 0 ||
+		configuration.HTTP.RequestBodyTimeout != 0 ||
+		configuration.HTTP.PublicIdleTimeout != 0 ||
+		configuration.HTTP.IdleConnectionTimeout != 0 ||
+		configuration.HTTP.ResponseHeaderTimeout != 0 ||
+		configuration.HTTP.UpgradeIdleTimeout != 0 ||
+		configuration.HTTP.MaxRequestBodyBytes != 0 {
+		t.Fatalf("HTTP protocol boundaries must default to disabled: %+v", configuration.HTTP)
+	}
 }
 
 func TestValidateServerRejectsHTTPHardLimitOverflow(t *testing.T) {
@@ -252,24 +269,34 @@ func TestValidateServerRejectsHTTPHardLimitOverflow(t *testing.T) {
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP setting above the hard limit was accepted")
 	}
+	configuration = DefaultServer()
+	configuration.HTTP.UpgradeIdleTimeout = httpHardMaxUpgradeIdleTimeout + time.Second
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTP Upgrade timeout above the hard limit was accepted")
+	}
+	configuration = DefaultServer()
+	configuration.HTTP.MaxRequestBodyBytes = httpHardMaxRequestBodyBytes + 1
+	if err := validateServer(configuration); err == nil {
+		t.Fatal("HTTP request body limit above the hard limit was accepted")
+	}
 }
 
 func TestValidateServerAllowsDisabledBusinessTimeouts(t *testing.T) {
 	configuration := DefaultServer()
+	configuration.HTTP.ReadHeaderTimeout = 0
+	configuration.HTTP.RequestBodyTimeout = 0
+	configuration.HTTP.PublicIdleTimeout = 0
 	configuration.HTTP.IdleConnectionTimeout = 0
 	configuration.HTTP.ResponseHeaderTimeout = 0
+	configuration.HTTP.UpgradeIdleTimeout = 0
+	configuration.HTTP.MaxRequestBodyBytes = 0
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("disabled HTTP business timeouts were rejected: %v", err)
 	}
 }
 
-func TestValidateServerRejectsDisabledSafetyTimeout(t *testing.T) {
+func TestValidateServerRejectsInvalidSafetyTimeout(t *testing.T) {
 	configuration := DefaultServer()
-	configuration.HTTP.ReadHeaderTimeout = 0
-	if err := validateServer(configuration); err == nil {
-		t.Fatal("disabled HTTP safety timeout was accepted")
-	}
-	configuration = DefaultServer()
 	configuration.HTTP.GracefulShutdownTimeout = 3 * time.Minute
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP safety timeout above the hard limit was accepted")

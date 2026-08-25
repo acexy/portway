@@ -82,6 +82,14 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "Bad Request", http.StatusBadRequest)
 		return
 	}
+	if request.TLS != nil {
+		serverName, serverNameError := proxyhttp.NormalizeRequestHost(request.TLS.ServerName)
+		if serverNameError != nil || serverName != domain {
+			manager.logHTTPRequest(request, "rejected", "sni_host_mismatch", domain)
+			http.Error(writer, "Misdirected Request", http.StatusMisdirectedRequest)
+			return
+		}
+	}
 	upgrade := proxyhttp.IsUpgradeRequest(request)
 	http2 := request.ProtoMajor == 2
 
