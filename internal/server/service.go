@@ -58,10 +58,10 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 		configuration.Generation = 1
 	}
 	return &Service{
-		logger:             logger,
-		configuration:      newConfigurationManager(configuration),
-		clientRegistry:     session.NewRegistryWithLimit(maxClientSessions),
-		managed:            newManagedCoordinator(),
+		logger:         logger,
+		configuration:  newConfigurationManager(configuration),
+		clientRegistry: session.NewRegistryWithLimit(maxClientSessions),
+		managed:        newManagedCoordinator(),
 		inboundAdmission: make(
 			chan struct{},
 			maxUnaffiliatedInboundConnections,
@@ -167,6 +167,7 @@ func (s *Service) Run(ctx context.Context) error {
 				"http_header",
 			),
 			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
+			IdleTimeout:       configuration.HTTP.PublicIdleTimeout,
 			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
 			Protocols:         httpProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
@@ -239,6 +240,7 @@ func (s *Service) Run(ctx context.Context) error {
 				"https_header",
 			),
 			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
+			IdleTimeout:       configuration.HTTP.PublicIdleTimeout,
 			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
 			Protocols:         httpsProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,

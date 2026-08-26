@@ -76,18 +76,18 @@ func TestPerformanceSoak(t *testing.T) {
 	clientConfiguration.Proxies = []config.ProxyConfig{
 		{
 			Name: "tcp", Type: "tcp", LocalIP: "127.0.0.1",
-			LocalPort: uint16(tcpBackend.Addr().(*net.TCPAddr).Port),
+			LocalPort:  uint16(tcpBackend.Addr().(*net.TCPAddr).Port),
 			RemotePort: uint16(tcpProxyAddress.Port),
 		},
 		{
 			Name: "udp", Type: "udp", LocalIP: "127.0.0.1",
-			LocalPort: uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port),
+			LocalPort:  uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port),
 			RemotePort: uint16(udpProxyAddress.Port),
 		},
 		{
 			Name: "http", Type: "http", Domain: "soak.example.com",
-			LocalIP: "127.0.0.1",
-			LocalPort: uint16(httpBackend.Listener.Addr().(*net.TCPAddr).Port),
+			LocalIP:       "127.0.0.1",
+			LocalPort:     uint16(httpBackend.Listener.Addr().(*net.TCPAddr).Port),
 			PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 		},
 	}

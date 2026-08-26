@@ -11,10 +11,14 @@ import (
 // HTTPConfig configures the public HTTP server and its bounded resources.
 type HTTPConfig struct {
 	ReadHeaderTimeout              time.Duration `yaml:"read_header_timeout"`
+	RequestBodyTimeout             time.Duration `yaml:"request_body_timeout"`
+	PublicIdleTimeout              time.Duration `yaml:"public_idle_timeout"`
 	GracefulShutdownTimeout        time.Duration `yaml:"graceful_shutdown_timeout"`
 	IdleConnectionTimeout          time.Duration `yaml:"idle_connection_timeout"`
 	ResponseHeaderTimeout          time.Duration `yaml:"response_header_timeout"`
+	UpgradeIdleTimeout             time.Duration `yaml:"upgrade_idle_timeout"`
 	MaxHeaderBytes                 int           `yaml:"max_header_bytes"`
+	MaxRequestBodyBytes            int64         `yaml:"max_request_body_bytes"`
 	MaxConcurrentRequests          int           `yaml:"max_concurrent_requests"`
 	MaxConcurrentRequestsPerClient int           `yaml:"max_concurrent_requests_per_client"`
 	MaxConcurrentRequestsPerDomain int           `yaml:"max_concurrent_requests_per_domain"`
@@ -27,21 +31,34 @@ type HTTPConfig struct {
 }
 
 func validateHTTPConfig(configuration HTTPConfig) error {
-	if configuration.ReadHeaderTimeout <= 0 ||
-		configuration.ReadHeaderTimeout > httpHardMaxReadHeaderTimeout {
-		return fmt.Errorf("http.read_header_timeout must be greater than zero and at most %s", httpHardMaxReadHeaderTimeout)
-	}
 	if configuration.GracefulShutdownTimeout <= 0 ||
 		configuration.GracefulShutdownTimeout > httpHardMaxGracefulShutdownTimeout {
 		return fmt.Errorf("http.graceful_shutdown_timeout must be greater than zero and at most %s", httpHardMaxGracefulShutdownTimeout)
 	}
 	for name, value := range map[string]time.Duration{
+		"read_header_timeout":     configuration.ReadHeaderTimeout,
+		"request_body_timeout":    configuration.RequestBodyTimeout,
+		"public_idle_timeout":     configuration.PublicIdleTimeout,
 		"idle_connection_timeout": configuration.IdleConnectionTimeout,
 		"response_header_timeout": configuration.ResponseHeaderTimeout,
+		"upgrade_idle_timeout":    configuration.UpgradeIdleTimeout,
 	} {
-		if value < 0 || value > httpHardMaxBusinessTimeout {
-			return fmt.Errorf("http.%s must be zero or at most %s", name, httpHardMaxBusinessTimeout)
+		maximum := httpHardMaxBusinessTimeout
+		if name == "read_header_timeout" {
+			maximum = httpHardMaxReadHeaderTimeout
+		} else if name == "upgrade_idle_timeout" {
+			maximum = httpHardMaxUpgradeIdleTimeout
 		}
+		if value < 0 || value > maximum {
+			return fmt.Errorf("http.%s must be zero or at most %s", name, maximum)
+		}
+	}
+	if configuration.MaxRequestBodyBytes < 0 ||
+		configuration.MaxRequestBodyBytes > httpHardMaxRequestBodyBytes {
+		return fmt.Errorf(
+			"http.max_request_body_bytes must be zero or at most %d",
+			httpHardMaxRequestBodyBytes,
+		)
 	}
 	limits := []struct {
 		name  string

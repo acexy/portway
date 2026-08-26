@@ -23,10 +23,10 @@ var _ transport.Stream = (*secureConnection)(nil)
 
 type secureConnection struct {
 	net.Conn
-	readAEAD      cipher.AEAD
-	writeAEAD     cipher.AEAD
-	readMutex     sync.Mutex
-	writeMutex    sync.Mutex
+	readAEAD             cipher.AEAD
+	writeAEAD            cipher.AEAD
+	readMutex            sync.Mutex
+	writeMutex           sync.Mutex
 	readSequence         uint64
 	writeSequence        uint64
 	readBuffer           []byte

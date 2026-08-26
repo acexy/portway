@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/link"
@@ -32,6 +34,21 @@ func (upstreamTimeoutError) Timeout() bool   { return true }
 func (upstreamTimeoutError) Temporary() bool { return true }
 
 var _ net.Error = upstreamTimeoutError{}
+
+type blockingRequestBody struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (body *blockingRequestBody) Read([]byte) (int, error) {
+	<-body.closed
+	return 0, stdhttp.ErrBodyReadAfterClose
+}
+
+func (body *blockingRequestBody) Close() error {
+	body.once.Do(func() { close(body.closed) })
+	return nil
+}
 
 func TestReverseProxyReturnsGatewayTimeoutForUpstreamTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -65,6 +82,61 @@ func TestReverseProxyReturnsGatewayTimeoutForUpstreamTimeout(t *testing.T) {
 	binding.ServeHTTP(response, request)
 	if response.Code != stdhttp.StatusGatewayTimeout {
 		t.Fatalf("response status = %d, want %d", response.Code, stdhttp.StatusGatewayTimeout)
+	}
+}
+
+func TestReverseProxyRejectsOversizedRequestBody(t *testing.T) {
+	configuration := config.DefaultServer().HTTP
+	configuration.MaxRequestBodyBytes = 4
+	binding, cleanup := newTestBinding(t, configuration)
+	defer cleanup()
+	binding.proxy.Transport = timeoutRoundTripper(func(request *stdhttp.Request) (*stdhttp.Response, error) {
+		_, err := io.ReadAll(request.Body)
+		return nil, err
+	})
+	request := httptest.NewRequest(stdhttp.MethodPost, "http://app.example.com/", strings.NewReader("12345"))
+	request.ContentLength = -1
+	response := httptest.NewRecorder()
+
+	binding.ServeHTTP(response, request)
+
+	if response.Code != stdhttp.StatusRequestEntityTooLarge {
+		t.Fatalf("response status = %d, want %d", response.Code, stdhttp.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestReverseProxyTimesOutRequestBody(t *testing.T) {
+	configuration := config.DefaultServer().HTTP
+	configuration.RequestBodyTimeout = 20 * time.Millisecond
+	binding, cleanup := newTestBinding(t, configuration)
+	defer cleanup()
+	binding.proxy.Transport = timeoutRoundTripper(func(request *stdhttp.Request) (*stdhttp.Response, error) {
+		_, err := io.ReadAll(request.Body)
+		return nil, err
+	})
+	body := &blockingRequestBody{closed: make(chan struct{})}
+	request := httptest.NewRequest(stdhttp.MethodPost, "http://app.example.com/", body)
+	response := httptest.NewRecorder()
+
+	binding.ServeHTTP(response, request)
+
+	if response.Code != stdhttp.StatusRequestTimeout {
+		t.Fatalf("response status = %d, want %d", response.Code, stdhttp.StatusRequestTimeout)
+	}
+}
+
+func newTestBinding(t *testing.T, configuration config.HTTPConfig) (*Binding, func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	broker := link.NewBroker(ctx)
+	binding := NewBinding(
+		ctx, configuration, "binding-one", "app.example.com", broker,
+		NewConnectionLimiter(1), nil,
+	)
+	return binding, func() {
+		binding.Close()
+		cancel()
+		broker.Close()
 	}
 }
 

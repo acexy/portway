@@ -114,9 +114,11 @@ proxies:
 省略或留空 `public_schemes` 时默认仅使用 HTTP 入口。
 公共 `Host` 会被匹配到已认证的客户端注册信息。`portwayd` 终止公网 HTTPS，
 随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。Visitor
-提供的 `Forwarded` 和 `X-Forwarded-*` 会被删除，`portwayd` 写入可信的
+提供的 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 和
+`X-Forwarded-Proto` 会被删除，`portwayd` 写入可信的
 `X-Forwarded-For`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。HTTP 与 HTTPS
-共用代理限制。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
+共用代理限制。HTTPS 要求规范化后的 SNI 与 HTTP `Host` 完全一致。协议超时和
+请求体限制默认关闭，可在服务端 `http` 配置中启用。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
 无效更新会继续使用上一代集合。HTTPS 支持 HTTP/1.1、HTTP/2，最低使用 TLS 1.2。
 当前不支持 HTTPS 回源、SNI 透传、ACME 和 HTTP/3。
 
@@ -142,16 +144,54 @@ Portway 保留数据报边界，并为每个公网访问者关联提供独立的
 Portway 可以在 `portway` 和 `portwayd` 之间使用 QUIC 替代 TCP。
 QUIC 除了需要 Portway Token 认证外，还需要服务端证书和 TLS 验证。
 
-对于私有部署，生成内部 CA 和服务端证书：
+对于私有部署，可生成内部 CA 和服务端证书。证书 SAN 必须匹配客户端配置的
+`transport.quic.server_name`：
 
 ```bash
+# 客户端使用 IP 校验服务端。
+portwayd gen cert --ip 10.0.0.10
+
+# 客户端使用域名校验服务端；server_address 仍可填写 IP。
+portwayd gen cert --server-name gateway.example.com
+
+# 同时允许两种身份。
 portwayd gen cert \
   --server-name gateway.example.com \
   --ip 10.0.0.10
 ```
 
-运行 `portwayd help gen cert` 查看所有证书选项。请将生成的根 CA 私钥离线保管，
-仅向客户端分发根 CA 证书。
+同时省略 `--server-name` 和 `--ip` 时，证书默认包含 `localhost` 和
+`127.0.0.1`，只适合本机使用。如果 `server_name` 配置为 IP，该 IP 必须通过
+`--ip` 写入证书；DNS SAN 不能用于校验 IP 身份。
+
+在 `portwayd` 配置生成的服务端证书和私钥：
+
+```yaml
+transport:
+  type: quic
+  listen_address: 0.0.0.0:7000
+  quic:
+    cert_file: ./certs/server.crt
+    key_file: ./certs/server.key
+```
+
+在 `portway` 配置匹配的身份和生成的根 CA 证书：
+
+```yaml
+transport:
+  type: quic
+  server_address: 10.0.0.10:7000
+  quic:
+    server_name: 10.0.0.10
+    ca_file: ./certs/root-ca.crt
+```
+
+使用域名证书时，`server_address` 仍可填写 `10.0.0.10:7000`，但
+`server_name` 必须填写 `gateway.example.com`。Portway 使用 `server_address`
+建立连接，使用 `server_name` 校验证书。
+
+运行 `portwayd help gen cert` 查看所有证书选项。必须妥善保护 `root-ca.key` 和
+`server.key`；只向客户端分发 `root-ca.crt`，客户端不需要任何私钥。
 
 ## 命令
 

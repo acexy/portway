@@ -123,9 +123,12 @@ When omitted or empty, `public_schemes` defaults to HTTP only.
 The public `Host` is matched to an authenticated client registration. Portwayd
 terminates public HTTPS and forwards HTTP through the authenticated tunnel, so
 the local application receives a normal HTTP request. Visitor-supplied
-`Forwarded` and `X-Forwarded-*` values are removed; Portwayd writes trusted
+`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto`
+values are removed; Portwayd writes trusted
 `X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto` values. HTTP and
-HTTPS share the same proxy limits. HTTPS selects certificates by SNI from an atomically
+HTTPS share the same proxy limits. For HTTPS, the normalized SNI and HTTP `Host`
+must match. Protocol timeouts and request-body limits default to disabled and can
+be enabled under the server `http` configuration. HTTPS selects certificates by SNI from an atomically
 reloadable certificate set; invalid updates leave the previous set active. HTTPS supports
 HTTP/1.1 and HTTP/2 with a minimum TLS version of 1.2. HTTPS backend forwarding,
 SNI passthrough, ACME, and HTTP/3 are not currently supported.
@@ -154,16 +157,56 @@ Portway can use QUIC instead of TCP between `portway` and `portwayd`. QUIC
 requires a server certificate and TLS verification in addition to Portway Token
 authentication.
 
-For private deployments, generate an internal CA and server certificate:
+For private deployments, generate an internal CA and server certificate. Choose
+SANs that match the value clients will configure as `transport.quic.server_name`:
 
 ```bash
+# Clients verify the server by IP.
+portwayd gen cert --ip 10.0.0.10
+
+# Clients verify the server by DNS name. server_address may still contain an IP.
+portwayd gen cert --server-name gateway.example.com
+
+# Allow either identity.
 portwayd gen cert \
   --server-name gateway.example.com \
   --ip 10.0.0.10
 ```
 
-Run `portwayd help gen cert` for all certificate options. Keep the generated root CA
-private key offline and distribute only the root CA certificate to clients.
+When neither `--server-name` nor `--ip` is supplied, the certificate defaults
+to `localhost` and `127.0.0.1` and is suitable only for local use. If
+`server_name` is an IP address, that exact address must be present through
+`--ip`; a DNS SAN does not validate an IP identity.
+
+Configure the generated server certificate and key on `portwayd`:
+
+```yaml
+transport:
+  type: quic
+  listen_address: 0.0.0.0:7000
+  quic:
+    cert_file: ./certs/server.crt
+    key_file: ./certs/server.key
+```
+
+Configure the matching identity and generated root CA certificate on `portway`:
+
+```yaml
+transport:
+  type: quic
+  server_address: 10.0.0.10:7000
+  quic:
+    server_name: 10.0.0.10
+    ca_file: ./certs/root-ca.crt
+```
+
+For a DNS certificate, `server_address` may still be `10.0.0.10:7000`, but
+`server_name` must be `gateway.example.com`. Portway uses `server_address` to
+connect and `server_name` to verify the certificate.
+
+Run `portwayd help gen cert` for all certificate options. Keep `root-ca.key` and
+`server.key` private. Distribute only `root-ca.crt` to clients; clients do not
+need either private key.
 
 ## Commands
 

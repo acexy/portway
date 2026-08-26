@@ -34,7 +34,9 @@ transport:
     # * Required when transport.type=quic.
     # Server certificate chain presented to QUIC clients.
     # Run "portwayd gen cert" to create an internal CA and a server
-    # certificate under ./certs for local or private deployments.
+    # certificate under ./certs for local or private deployments. Its DNS SAN
+    # or IP SAN must match each client's transport.quic.server_name. Generate a
+    # DNS identity with --server-name or an IP identity with --ip.
     cert_file: /path/to/server.crt
 
     # * Required when transport.type=quic.
@@ -82,9 +84,17 @@ https:
 # Defaults apply even when both public listeners are empty. Changing an
 # effective value currently requires restarting portwayd.
 http:
-  # Optional. Slow-header protection. Defaults to 10s.
-  # Valid range: greater than 0s and at most 60s.
-  read_header_timeout: 10s
+  # Optional. Defaults to 0s, which disables the Portway deadline.
+  # Maximum non-zero value: 60s.
+  read_header_timeout: 0s
+
+  # Optional. Maximum duration for receiving a complete request body.
+  # Defaults to 0s, which disables the Portway deadline. Maximum: 10m.
+  request_body_timeout: 0s
+
+  # Optional. Public HTTP/HTTPS keep-alive idle timeout. Defaults to 0s,
+  # which uses Go's unlimited server default. Maximum: 10m.
+  public_idle_timeout: 0s
 
   # Optional. Maximum graceful HTTP shutdown period. Defaults to 30s.
   # Valid range: greater than 0s and at most 2m.
@@ -97,6 +107,14 @@ http:
   # Optional. Defaults to 0s. Zero allows streaming responses without a
   # Portway response-header deadline. Maximum non-zero value: 10m.
   response_header_timeout: 0s
+
+  # Optional. Full-duplex inactivity timeout after an HTTP Upgrade. Successful
+  # reads or writes refresh it. Defaults to 0s; maximum non-zero value: 24h.
+  upgrade_idle_timeout: 0s
+
+  # Optional. Maximum request body size. Defaults to 0, which is unlimited.
+  # Hard maximum when enabled: 1073741824 bytes (1 GiB).
+  max_request_body_bytes: 0
 
   # Optional capacity settings. Defaults are shown below. Every effective value
   # must be greater than zero and no greater than its documented hard maximum.
@@ -193,10 +211,17 @@ security:
 
 # Optional authentication entries. TCP and QUIC use the same immutable
 # authentication snapshot. All configured Tokens and ClientIDs must be globally
-# unique across shared, governed, and managed entries.
+# unique across shared, governed, and managed entries. The Shared Token and both
+# client directories are hot-reloaded as one atomic snapshot. Adding, removing,
+# replacing, or reassigning any Token disconnects every active and recoverable
+# client after the new snapshot is published; clients with unchanged credentials
+# may reconnect with the same Token. Governed policy-only changes remain selective,
+# while Managed configuration-only changes use online rollout.
 authentication:
   # Optional. When present but empty, generate a cryptographically random
-  # 32-byte Token at startup and log it once. Omit this field to disable shared
+  # 32-byte Token at startup and log it once. Later configuration scans reuse
+  # that effective Token instead of silently generating another value. Configure
+  # an explicit new value to rotate it. Omit this field to disable shared
   # authentication when either client directory is configured.
   shared_token: ""
 
@@ -204,7 +229,8 @@ authentication:
   # allowlist, public port/domain policy, and resource limits. Omitted limit
   # fields use production-safe defaults; explicit values must remain within
   # their documented program hard limits. File names are operator-facing labels
-  # and do not need to match ClientID.
+  # and do not need to match ClientID. Any Token change in this directory triggers
+  # the deployment-wide disconnect described above.
   # The http permission separately allows public_schemes and domains for
   # type=http declarations; listeners and HTTPS certificates remain global.
   # See config/governed/governed-client.yaml for a complete record example.
@@ -214,6 +240,8 @@ authentication:
   # and complete server-owned proxy configuration. A client may have at most
   # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
   # TCP ports, UDP ports, and HTTP domains must each be globally unique.
+  # Any Token change in this directory triggers the deployment-wide disconnect
+  # described above; proxy configuration-only changes retain online rollout.
   # Managed type=http entries explicitly select public_schemes. Every selected
   # listener must be enabled globally; HTTPS certificates are configured above,
   # while each managed local target still speaks HTTP.

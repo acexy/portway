@@ -48,8 +48,11 @@ func DefaultServer() ServerConfig {
 		LogLevel: LogLevelInfo,
 		HTTP: HTTPConfig{
 			ReadHeaderTimeout:              httpDefaultReadHeaderTimeout,
+			RequestBodyTimeout:             0,
+			PublicIdleTimeout:              0,
 			GracefulShutdownTimeout:        httpDefaultGracefulShutdownTimeout,
 			MaxHeaderBytes:                 httpDefaultMaxHeaderBytes,
+			MaxRequestBodyBytes:            0,
 			MaxConcurrentRequests:          httpDefaultMaxConcurrentRequests,
 			MaxConcurrentRequestsPerClient: httpDefaultMaxConcurrentRequestsPerClient,
 			MaxConcurrentRequestsPerDomain: httpDefaultMaxConcurrentRequestsPerDomain,
@@ -59,6 +62,7 @@ func DefaultServer() ServerConfig {
 			MaxUpgradeConnectionsPerClient: httpDefaultMaxUpgradeConnectionsPerClient,
 			MaxUpgradeConnectionsPerDomain: httpDefaultMaxUpgradeConnectionsPerDomain,
 			MaxConcurrentHTTP2Streams:      httpDefaultMaxConcurrentHTTP2Streams,
+			UpgradeIdleTimeout:             0,
 		},
 		UDP: DefaultUDPConfig(),
 	}

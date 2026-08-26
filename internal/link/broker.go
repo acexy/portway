@@ -18,6 +18,9 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
+// ErrCapacityReached reports that the bounded Link broker cannot accept another Link.
+var ErrCapacityReached = errors.New("link capacity reached")
+
 // Target identifies the authenticated owner and proxy binding of one link.
 type Target struct {
 	ClientID        string
@@ -38,9 +41,9 @@ type brokerPendingLink struct {
 	ticketDigest [sha256.Size]byte
 	expiresAt    time.Time
 	timer        *time.Timer
-	onCancel     func()
+	onCancel     func(string)
 	ready        chan linkOpenResult
-	handler      func(context.Context, net.Conn) error
+	handler      func(context.Context, string, net.Conn) error
 }
 
 type brokerActiveLink struct {
@@ -95,11 +98,10 @@ func NewBroker(ctx context.Context) *Broker {
 
 func (broker *Broker) ServeStream(
 	target Target,
-	onCancel func(),
-	handler func(context.Context, net.Conn) error,
-) error {
-	_, err := broker.request(target, onCancel, nil, handler)
-	return err
+	onCancel func(string),
+	handler func(context.Context, string, net.Conn) error,
+) (string, error) {
+	return broker.request(target, onCancel, nil, handler)
 }
 
 // ServeStreamContext requests one stream and cancels its pending or active
@@ -107,8 +109,8 @@ func (broker *Broker) ServeStream(
 func (broker *Broker) ServeStreamContext(
 	ctx context.Context,
 	target Target,
-	onCancel func(),
-	handler func(context.Context, net.Conn) error,
+	onCancel func(string),
+	handler func(context.Context, string, net.Conn) error,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -140,14 +142,14 @@ func (broker *Broker) OpenStream(ctx context.Context, target Target) (net.Conn, 
 
 func (broker *Broker) request(
 	target Target,
-	onCancel func(),
+	onCancel func(string),
 	ready chan linkOpenResult,
-	handler func(context.Context, net.Conn) error,
+	handler func(context.Context, string, net.Conn) error,
 ) (string, error) {
 	broker.mutex.Lock()
 	if broker.closed || broker.limitReachedLocked(target) {
 		broker.mutex.Unlock()
-		return "", errors.New("link capacity reached")
+		return "", ErrCapacityReached
 	}
 	broker.mutex.Unlock()
 
@@ -158,7 +160,7 @@ func (broker *Broker) request(
 	broker.mutex.Lock()
 	if broker.closed || broker.limitReachedLocked(target) {
 		broker.mutex.Unlock()
-		return "", errors.New("link capacity reached")
+		return "", ErrCapacityReached
 	}
 	expiresAt := time.Now().Add(pendingTimeout)
 	pending := &brokerPendingLink{
@@ -188,7 +190,7 @@ func (broker *Broker) request(
 		WriteTimeoutMS:  uint32(target.WriteTimeout.Milliseconds()),
 	}); err != nil {
 		broker.cancel(linkID, false, err)
-		return "", err
+		return linkID, err
 	}
 	return linkID, nil
 }
@@ -231,7 +233,7 @@ func (broker *Broker) BindWithActivation(
 		pending.timer.Stop()
 		broker.mutex.Unlock()
 		if pending.onCancel != nil {
-			pending.onCancel()
+			pending.onCancel(binding.LinkID)
 		}
 		if pending.ready != nil {
 			pending.ready <- linkOpenResult{err: context.DeadlineExceeded}
@@ -277,7 +279,7 @@ func (broker *Broker) BindWithActivation(
 	}
 
 	if pending.handler != nil {
-		err = pending.handler(ctx, managed)
+		err = pending.handler(ctx, binding.LinkID, managed)
 		managed.Close()
 	} else {
 		pending.ready <- linkOpenResult{connection: managed}
@@ -316,7 +318,7 @@ func (broker *Broker) cancel(linkID string, notify bool, err error) {
 	broker.mutex.Unlock()
 	pending.timer.Stop()
 	if pending.onCancel != nil {
-		pending.onCancel()
+		pending.onCancel(linkID)
 	}
 	if pending.ready != nil {
 		pending.ready <- linkOpenResult{err: err}
@@ -347,7 +349,7 @@ func (broker *Broker) cancelAny(linkID string, err error) {
 	broker.mutex.Unlock()
 	pending.timer.Stop()
 	if pending.onCancel != nil {
-		pending.onCancel()
+		pending.onCancel(linkID)
 	}
 	if pending.ready != nil {
 		pending.ready <- linkOpenResult{err: err}

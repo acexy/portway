@@ -149,17 +149,20 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 		Writer: control.NewWriter(serverControl),
 	}
 	handlerObserved := make(chan bool, 1)
+	handlerLinkID := make(chan string, 1)
 	requestResult := make(chan error, 1)
 	go func() {
-		requestResult <- broker.ServeStream(target, nil, func(_ context.Context, _ net.Conn) error {
+		_, err := broker.ServeStream(target, nil, func(_ context.Context, linkID string, _ net.Conn) error {
 			broker.mutex.Lock()
 			active := broker.activeClients[target.ClientID] == 1 &&
 				broker.activeProxies[brokerProxyKey(target)] == 1 &&
 				broker.pendingClients[target.ClientID] == 0
 			broker.mutex.Unlock()
 			handlerObserved <- active
+			handlerLinkID <- linkID
 			return nil
 		})
+		requestResult <- err
 	}()
 	envelope, err := protocol.ReadControl(clientControl)
 	if err != nil {
@@ -209,6 +212,9 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 	if !<-handlerObserved {
 		t.Fatal("pending and active Link counters did not transition atomically")
 	}
+	if observedLinkID := <-handlerLinkID; observedLinkID != open.LinkID {
+		t.Fatalf("handler received Link ID %q, expected %q", observedLinkID, open.LinkID)
+	}
 	if err := <-bindResult; err != nil {
 		t.Fatal(err)
 	}
@@ -229,15 +235,16 @@ func TestBrokerParentContextReleasesPendingLinks(t *testing.T) {
 	cancelled := make(chan struct{}, 1)
 	requestResult := make(chan error, 1)
 	go func() {
-		requestResult <- broker.ServeStream(
+		_, err := broker.ServeStream(
 			Target{
 				ClientID: "client-a", SessionID: "session-a", ProxyName: "proxy-a",
 				ProxyType: protocol.ProxyTypeTCP, BindingID: "binding-a",
 				Writer: control.NewWriter(serverControl),
 			},
-			func() { cancelled <- struct{}{} },
-			func(context.Context, net.Conn) error { return nil },
+			func(string) { cancelled <- struct{}{} },
+			func(context.Context, string, net.Conn) error { return nil },
 		)
+		requestResult <- err
 	}()
 	if _, err := protocol.ReadControl(clientControl); err != nil {
 		t.Fatal(err)

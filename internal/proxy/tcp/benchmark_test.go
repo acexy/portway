@@ -16,7 +16,8 @@ func BenchmarkTCPForward(b *testing.B) {
 			ctx, cancel := context.WithCancel(context.Background())
 			forwardErrors := make(chan error, 1)
 			go func() {
-				forwardErrors <- Forward(ctx, proxyLeft, proxyRight)
+				_, err := Forward(ctx, proxyLeft, proxyRight)
+				forwardErrors <- err
 			}()
 			echoErrors := make(chan error, 1)
 			go func() {
