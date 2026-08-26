@@ -57,8 +57,7 @@ func NewBinding(
 		resolveTarget: resolveTarget,
 		associations:  make(map[netip.AddrPort]*association),
 	}
-	binding.waitGroup.Add(1)
-	go binding.sweep()
+	binding.waitGroup.Go(binding.sweep)
 	return binding
 }
 
@@ -123,7 +122,6 @@ func (binding *Binding) remove(candidate *association) {
 }
 
 func (binding *Binding) sweep() {
-	defer binding.waitGroup.Done()
 	interval := binding.configuration.AssociationIdleTimeout / 2
 	if interval > time.Second {
 		interval = time.Second

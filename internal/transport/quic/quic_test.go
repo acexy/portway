@@ -326,23 +326,21 @@ func TestQUICConcurrentDataStreamsShareGeneration(t *testing.T) {
 	errorsChannel := make(chan error, streamCount)
 	var waitGroup sync.WaitGroup
 	for index := range streamCount {
-		waitGroup.Add(1)
-		go func(value byte) {
-			defer waitGroup.Done()
+		waitGroup.Go(func() {
 			dataStream, openError := session.OpenDataStream(ctx)
 			if openError != nil {
 				errorsChannel <- openError
 				return
 			}
 			defer dataStream.Close()
-			if _, writeError := dataStream.Write([]byte{value}); writeError != nil {
+			if _, writeError := dataStream.Write([]byte{byte(index)}); writeError != nil {
 				errorsChannel <- writeError
 				return
 			}
 			if closeError := dataStream.CloseWrite(); closeError != nil {
 				errorsChannel <- closeError
 			}
-		}(byte(index))
+		})
 	}
 	for range streamCount {
 		inbound, acceptError := server.Accept(ctx)

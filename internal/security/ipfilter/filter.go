@@ -106,8 +106,7 @@ func New(
 		"file":  path,
 		"rules": snapshot.count,
 	})
-	filter.waitGroup.Add(1)
-	go filter.watch(filterContext)
+	filter.waitGroup.Go(func() { filter.watch(filterContext) })
 	return filter, nil
 }
 
@@ -210,7 +209,6 @@ func (filter *Filter) recordDenied(address netip.Addr, ingress string) {
 }
 
 func (filter *Filter) watch(ctx context.Context) {
-	defer filter.waitGroup.Done()
 	ticker := time.NewTicker(reloadInterval)
 	defer ticker.Stop()
 	for {

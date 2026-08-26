@@ -139,10 +139,15 @@ func TestPerformanceSoak(t *testing.T) {
 	var httpOperations atomic.Uint64
 	errorsChannel := make(chan error, 3)
 	var waitGroup sync.WaitGroup
-	waitGroup.Add(3)
-	go runTCPSoakLoad(loadContext, tcpVisitor, &tcpOperations, errorsChannel, &waitGroup)
-	go runUDPSoakLoad(loadContext, udpVisitor, udpPayload, &udpOperations, errorsChannel, &waitGroup)
-	go runHTTPSoakLoad(loadContext, doHTTPRequest, &httpOperations, errorsChannel, &waitGroup)
+	waitGroup.Go(func() {
+		runTCPSoakLoad(loadContext, tcpVisitor, &tcpOperations, errorsChannel)
+	})
+	waitGroup.Go(func() {
+		runUDPSoakLoad(loadContext, udpVisitor, udpPayload, &udpOperations, errorsChannel)
+	})
+	waitGroup.Go(func() {
+		runHTTPSoakLoad(loadContext, doHTTPRequest, &httpOperations, errorsChannel)
+	})
 	waitGroup.Wait()
 	close(errorsChannel)
 	for loadError := range errorsChannel {
@@ -175,9 +180,7 @@ func runTCPSoakLoad(
 	connection net.Conn,
 	operations *atomic.Uint64,
 	errorsChannel chan<- error,
-	waitGroup *sync.WaitGroup,
 ) {
-	defer waitGroup.Done()
 	payload := bytes.Repeat([]byte("t"), 32*1024)
 	response := make([]byte, len(payload))
 	for ctx.Err() == nil {
@@ -203,9 +206,7 @@ func runUDPSoakLoad(
 	payload []byte,
 	operations *atomic.Uint64,
 	errorsChannel chan<- error,
-	waitGroup *sync.WaitGroup,
 ) {
-	defer waitGroup.Done()
 	response := make([]byte, len(payload))
 	for ctx.Err() == nil {
 		if err := connection.SetDeadline(time.Now().Add(time.Second)); err != nil {
@@ -233,9 +234,7 @@ func runHTTPSoakLoad(
 	request func() error,
 	operations *atomic.Uint64,
 	errorsChannel chan<- error,
-	waitGroup *sync.WaitGroup,
 ) {
-	defer waitGroup.Done()
 	for ctx.Err() == nil {
 		if err := request(); err != nil {
 			if ctx.Err() == nil {

@@ -586,7 +586,7 @@ configuration:
   revision: 1
   proxies:
 `)
-	for index := 0; index <= hardMaxProxiesPerClient; index++ {
+	for index := range hardMaxProxiesPerClient + 1 {
 		fmt.Fprintf(&managed, `
     - name: tcp-%d
       type: tcp
@@ -655,7 +655,7 @@ permissions:
 
 func TestAuthenticationFilesRejectsDirectoryTotalSizeLimit(t *testing.T) {
 	directory := t.TempDir()
-	for index := 0; index < 17; index++ {
+	for index := range 17 {
 		path := filepath.Join(directory, fmt.Sprintf("client-%02d.yaml", index))
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {

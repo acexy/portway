@@ -172,15 +172,13 @@ func (s *Service) Run(ctx context.Context) error {
 			Protocols:         httpProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
 		}
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			serveError := httpServer.Serve(httpListener)
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()
 			}
-		}()
+		})
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
@@ -246,15 +244,13 @@ func (s *Service) Run(ctx context.Context) error {
 			ConnContext:       ipfilter.HTTPConnectionContext,
 			TLSConfig:         tlsConfiguration,
 		}
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			serveError := httpsServer.Serve(tls.NewListener(httpsListener, tlsConfiguration))
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()
 			}
-		}()
+		})
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
@@ -263,22 +259,16 @@ func (s *Service) Run(ctx context.Context) error {
 			defer cancel()
 			_ = httpsServer.Shutdown(shutdownContext)
 		}()
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			s.watchHTTPSCertificate(sessionContext)
-		}()
+		})
 	}
-	sessions.Add(1)
-	go func() {
-		defer sessions.Done()
+	sessions.Go(func() {
 		s.monitorClients(sessionContext)
-	}()
-	sessions.Add(1)
-	go func() {
-		defer sessions.Done()
+	})
+	sessions.Go(func() {
 		s.watchConfiguration(sessionContext)
-	}()
+	})
 	if configuration.Operations.ListenAddress != "" {
 		operationsListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
@@ -297,15 +287,13 @@ func (s *Service) Run(ctx context.Context) error {
 			ReadHeaderTimeout: operationsReadHeaderTimeout,
 			MaxHeaderBytes:    operationsMaxHeaderBytes,
 		}
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			serveError := operationsServer.Serve(operationsListener)
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()
 			}
-		}()
+		})
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
@@ -342,13 +330,11 @@ func (s *Service) Run(ctx context.Context) error {
 			continue
 		}
 
-		sessions.Add(1)
-		go func(accepted transport.Inbound) {
-			defer sessions.Done()
+		sessions.Go(func() {
 			defer releaseAdmission()
 			if err := s.handleAdmittedConnection(
 				sessionContext,
-				accepted,
+				inbound,
 				releaseAdmission,
 			); err != nil &&
 				!errors.Is(err, io.EOF) &&
@@ -356,7 +342,7 @@ func (s *Service) Run(ctx context.Context) error {
 				sessionContext.Err() == nil {
 				s.logger.Warn("client connection ended", err)
 			}
-		}(inbound)
+		})
 	}
 }
 

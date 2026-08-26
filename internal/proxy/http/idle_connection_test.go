@@ -26,7 +26,7 @@ func TestIdleTimeoutConnectionRefreshesOnActivity(t *testing.T) {
 	defer connection.Close()
 	defer client.Close()
 
-	for index := 0; index < 3; index++ {
+	for index := range 3 {
 		go func() { _, _ = client.Write([]byte{1}) }()
 		if _, err := connection.Read(make([]byte, 1)); err != nil {
 			t.Fatalf("read activity %d: %v", index, err)

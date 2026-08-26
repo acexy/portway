@@ -65,14 +65,11 @@ func (manager *linkManager) open(request protocol.OpenLink) {
 	}
 	linkContext, cancel := context.WithCancel(manager.context)
 	manager.links[request.LinkID] = cancel
-	manager.waitGroup.Add(1)
-	manager.mutex.Unlock()
-
-	go func() {
-		defer manager.waitGroup.Done()
+	manager.waitGroup.Go(func() {
 		defer manager.remove(request.LinkID)
 		manager.run(linkContext, request)
-	}()
+	})
+	manager.mutex.Unlock()
 }
 
 func (manager *linkManager) cancelLink(linkID string) {

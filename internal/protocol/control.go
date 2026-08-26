@@ -296,7 +296,7 @@ func ValidateRequestID(requestID string) error {
 	if len(requestID) > maxRequestIDBytes {
 		return fmt.Errorf("request ID exceeds %d bytes", maxRequestIDBytes)
 	}
-	for index := 0; index < len(requestID); index++ {
+	for index := range len(requestID) {
 		character := requestID[index]
 		if (character >= 'a' && character <= 'z') ||
 			(character >= 'A' && character <= 'Z') ||

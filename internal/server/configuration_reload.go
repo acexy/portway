@@ -345,9 +345,7 @@ func (s *Service) rolloutManagedConfigurations(
 		if managed == nil {
 			continue
 		}
-		waitGroup.Add(1)
-		go func(clientID string, managed *managedSession) {
-			defer waitGroup.Done()
+		waitGroup.Go(func() {
 			if err := s.rolloutManagedConfiguration(
 				rolloutContext,
 				clientID,
@@ -360,7 +358,7 @@ func (s *Service) rolloutManagedConfigurations(
 					"generation": candidate.Generation,
 				}).Error("managed configuration rollout failed", err)
 			}
-		}(clientID, managed)
+		})
 	}
 	waitGroup.Wait()
 }
@@ -427,7 +425,7 @@ func changedYAMLValue(prefix string, current reflect.Value, candidate reflect.Va
 		return prefix
 	}
 	valueType := current.Type()
-	for index := 0; index < current.NumField(); index++ {
+	for index := range current.NumField() {
 		if reflect.DeepEqual(current.Field(index).Interface(), candidate.Field(index).Interface()) {
 			continue
 		}

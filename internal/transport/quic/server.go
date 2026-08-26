@@ -101,13 +101,11 @@ func NewServer(
 		connections:    make(map[*quicgo.Conn]authentication.Context),
 		sourceFilter:   sourceFilter,
 	}
-	server.waitGroup.Add(1)
-	go server.acceptConnections()
+	server.waitGroup.Go(server.acceptConnections)
 	return server, nil
 }
 
 func (server *Server) acceptConnections() {
-	defer server.waitGroup.Done()
 	for {
 		connection, err := server.listener.Accept(server.context)
 		if err != nil {
@@ -157,8 +155,9 @@ func (server *Server) acceptConnections() {
 			continue
 		}
 		server.addConnection(connection)
-		server.waitGroup.Add(1)
-		go server.handleConnection(connection, sourceAddress, releaseSource)
+		server.waitGroup.Go(func() {
+			server.handleConnection(connection, sourceAddress, releaseSource)
+		})
 	}
 }
 
@@ -167,7 +166,6 @@ func (server *Server) handleConnection(
 	sourceAddress netip.Addr,
 	releaseSource func(),
 ) {
-	defer server.waitGroup.Done()
 	defer func() {
 		if releaseSource != nil {
 			releaseSource()
@@ -192,9 +190,7 @@ func (server *Server) handleConnection(
 	dataStreams := make(chan *quicgo.Stream)
 	streamErrors := make(chan error, 1)
 	var authenticated atomic.Bool
-	streamWaitGroup.Add(1)
-	go func() {
-		defer streamWaitGroup.Done()
+	streamWaitGroup.Go(func() {
 		for {
 			dataStream, acceptError := connection.AcceptStream(streamContext)
 			if acceptError != nil {
@@ -217,7 +213,7 @@ func (server *Server) handleConnection(
 				return
 			}
 		}
-	}()
+	})
 	defer func() {
 		cancelStreams()
 		streamWaitGroup.Wait()

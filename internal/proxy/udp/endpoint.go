@@ -72,14 +72,12 @@ func (endpoint *Endpoint) SetHandler(handler DatagramHandler) {
 // Start starts the socket read loop once.
 func (endpoint *Endpoint) Start() {
 	endpoint.startOnce.Do(func() {
-		endpoint.waitGroup.Add(2)
-		go endpoint.readLoop()
-		go endpoint.summaryLoop()
+		endpoint.waitGroup.Go(endpoint.readLoop)
+		endpoint.waitGroup.Go(endpoint.summaryLoop)
 	})
 }
 
 func (endpoint *Endpoint) readLoop() {
-	defer endpoint.waitGroup.Done()
 	buffer := make([]byte, endpoint.maxSize+1)
 	for {
 		length, source, err := endpoint.connection.ReadFromUDPAddrPort(buffer)
@@ -112,7 +110,6 @@ func (endpoint *Endpoint) readLoop() {
 }
 
 func (endpoint *Endpoint) summaryLoop() {
-	defer endpoint.waitGroup.Done()
 	ticker := time.NewTicker(summaryInterval)
 	defer ticker.Stop()
 	for {

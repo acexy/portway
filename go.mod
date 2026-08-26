@@ -1,12 +1,12 @@
 module github.com/acexy/portway
 
-go 1.25.8
+go 1.26.7
 
 require (
-	github.com/acexy/golang-toolkit v1.25.4
+	github.com/acexy/golang-toolkit v1.26.0
 	github.com/gaissmai/bart v0.29.0
 	github.com/quic-go/quic-go v0.61.0
-	github.com/sirupsen/logrus v1.10.1
+	github.com/sirupsen/logrus v1.10.2
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )

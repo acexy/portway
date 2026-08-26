@@ -68,13 +68,11 @@ func NewServer(
 		sourceLimiter:  authentication.NewSourceFailureLimiter(),
 		results:        make(chan acceptResult, maxConcurrentConnections),
 	}
-	server.waitGroup.Add(1)
-	go server.acceptLoop()
+	server.waitGroup.Go(server.acceptLoop)
 	return server, nil
 }
 
 func (server *Server) acceptLoop() {
-	defer server.waitGroup.Done()
 	for {
 		connection, err := server.listener.Accept()
 		if err != nil {
@@ -89,13 +87,11 @@ func (server *Server) acceptLoop() {
 			connection.Close()
 			continue
 		}
-		server.waitGroup.Add(1)
-		go server.authenticate(connection)
+		server.waitGroup.Go(func() { server.authenticate(connection) })
 	}
 }
 
 func (server *Server) authenticate(rawConnection net.Conn) {
-	defer server.waitGroup.Done()
 	defer func() {
 		<-server.connectionSlot
 	}()

@@ -267,12 +267,6 @@ appropriate `client.yaml` or `server.yaml` before running the installed command.
 The public documentation intentionally describes stable behavior and security
 properties without serving as a complete wire-protocol specification.
 
-## Current scope
-
-Portway focuses on lightweight, operator-managed reverse tunneling. It does not
-currently provide a web dashboard, P2P NAT traversal, TUN/TAP networking,
-dynamic plugins, or a distributed multi-tenant control plane.
-
 ## License
 
 Copyright 2026 Acexy.
