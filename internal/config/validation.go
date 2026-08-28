@@ -534,6 +534,9 @@ func MatchingForwardRule(
 
 // ValidateForwardConfiguration validates cross-file Forward safety boundaries.
 func ValidateForwardConfiguration(configuration ServerConfig) error {
+	if err := validateForwardServerConfig(configuration.Forwards); err != nil {
+		return err
+	}
 	return validateForwardConfiguration(configuration)
 }
 

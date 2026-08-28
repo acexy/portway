@@ -168,6 +168,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	if reflect.DeepEqual(candidate.Authentication, current.Authentication) &&
 		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
 		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
+		reflect.DeepEqual(candidate.Forwards, current.Forwards) &&
 		!httpsChanged &&
 		candidate.LogLevel == current.LogLevel {
 		s.configuration.updateSourceDigest(candidate.SourceDigest)
