@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
@@ -20,8 +21,11 @@ type managedExchange interface {
 		protocol.ManagedConfigPrepare,
 		protocol.ManagedConfigStatus,
 	) error
-	activate(context.Context, protocol.ManagedConfigStatus) error
+	activate(context.Context, protocol.ManagedConfigActivate) error
+	controlWriter() *control.Writer
 }
+
+func (exchange initialManagedExchange) controlWriter() *control.Writer { return exchange.writer }
 
 type initialManagedExchange struct {
 	connection net.Conn
@@ -45,21 +49,23 @@ func (exchange initialManagedExchange) prepare(
 
 func (exchange initialManagedExchange) activate(
 	_ context.Context,
-	status protocol.ManagedConfigStatus,
+	activation protocol.ManagedConfigActivate,
 ) error {
-	if err := exchange.writer.Write(protocol.MessageManagedConfigActivate, status); err != nil {
+	if err := exchange.writer.Write(protocol.MessageManagedConfigActivate, activation); err != nil {
 		return err
 	}
 	return expectManagedStatus(
 		exchange.connection,
 		protocol.MessageManagedConfigApplied,
-		status,
+		protocol.ManagedConfigStatus{Revision: activation.Revision, Digest: activation.Digest},
 	)
 }
 
 type onlineManagedExchange struct {
 	session *managedSession
 }
+
+func (exchange onlineManagedExchange) controlWriter() *control.Writer { return exchange.session.writer }
 
 func (s *Service) initializeManagedSession(
 	ctx context.Context,
@@ -93,6 +99,7 @@ func (s *Service) initializeManagedSession(
 			sessionID,
 			writer,
 			clientConfiguration,
+			authenticationContext,
 		); err != nil {
 			return err
 		}
@@ -112,7 +119,7 @@ func (s *Service) initializeManagedSession(
 			return errors.New("managed client session is no longer current")
 		}
 		s.proxyRegistry.Activate(clientID, sessionID)
-		s.registerManagedSession(clientID, sessionID, connection, writer)
+		s.registerManagedSession(clientID, sessionID, connection, writer, authenticationContext)
 		s.authenticationBarrier.RUnlock()
 
 		if err := connection.SetDeadline(time.Time{}); err != nil {
@@ -141,15 +148,17 @@ func (exchange onlineManagedExchange) prepare(
 
 func (exchange onlineManagedExchange) activate(
 	ctx context.Context,
-	status protocol.ManagedConfigStatus,
+	activation protocol.ManagedConfigActivate,
 ) error {
 	if err := exchange.session.writer.Write(
 		protocol.MessageManagedConfigActivate,
-		status,
+		activation,
 	); err != nil {
 		return err
 	}
-	return waitManagedStatus(ctx, exchange.session.applied, status)
+	return waitManagedStatus(ctx, exchange.session.applied, protocol.ManagedConfigStatus{
+		Revision: activation.Revision, Digest: activation.Digest,
+	})
 }
 
 func (s *Service) applyManagedGeneration(
@@ -157,7 +166,8 @@ func (s *Service) applyManagedGeneration(
 	clientID string,
 	sessionID string,
 	preparation protocol.ManagedConfigPrepare,
-	declarations protocol.SyncProxies,
+	declarations protocol.SyncConfiguration,
+	authenticationContext authentication.Context,
 	exchange managedExchange,
 	deactivate bool,
 ) error {
@@ -171,11 +181,11 @@ func (s *Service) applyManagedGeneration(
 	if deactivate {
 		s.proxyRegistry.Deactivate(clientID, sessionID)
 	}
-	result := s.proxyRegistry.Sync(
+	result := s.proxyRegistry.SyncAllowEmpty(
 		clientID,
 		sessionID,
 		"managed-"+preparation.Digest,
-		declarations,
+		protocol.SyncProxies{Revision: declarations.Revision, Proxies: declarations.Proxies},
 	)
 	if result.Status != protocol.ProxySyncStatusApplied {
 		if deactivate {
@@ -190,7 +200,20 @@ func (s *Service) applyManagedGeneration(
 		}
 		return errors.New("apply managed proxy configuration: rejected")
 	}
-	if err := exchange.activate(ctx, status); err != nil {
+	forwardResults := []protocol.ForwardResult{}
+	if s.forwardRegistry != nil {
+		var forwardError *protocol.ProxyError
+		forwardResults, forwardError = s.forwardRegistry.Sync(
+			clientID, sessionID, exchange.controlWriter(), authenticationContext,
+			config.DefaultPermissionLimits().MaxActiveForwardLinks, declarations.Forwards,
+		)
+		if forwardError != nil {
+			return fmt.Errorf("apply managed Forward configuration: %s: %s", forwardError.Code, forwardError.Message)
+		}
+	}
+	if err := exchange.activate(ctx, protocol.ManagedConfigActivate{
+		Revision: status.Revision, Digest: status.Digest, Forwards: forwardResults,
+	}); err != nil {
 		return err
 	}
 	if deactivate {

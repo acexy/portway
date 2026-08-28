@@ -15,6 +15,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/session"
 )
@@ -100,6 +101,9 @@ func (s *Service) applyConfigurationCandidateContext(
 	}()
 
 	current := s.configuration.snapshot()
+	if err := config.ValidateForwardConfiguration(candidate); err != nil {
+		return err
+	}
 
 	if serverTokenRequiresGeneration(candidate) &&
 		current.Authentication.SharedToken != nil {
@@ -237,7 +241,9 @@ func (s *Service) applyConfigurationCandidateContext(
 	}
 	s.configuration.publish(candidate)
 	s.authenticationStore.ReplaceRevoking(snapshot, revokedContexts)
-	reservationTransaction.Commit()
+	if reservationTransaction != nil {
+		reservationTransaction.Commit()
+	}
 
 	var revokedSessions []session.ExpiredClient
 	cleanupCallbacks := make([]func(), 0)
@@ -262,9 +268,23 @@ func (s *Service) applyConfigurationCandidateContext(
 		cleanup()
 	}
 	for _, revoked := range revokedSessions {
+		if s.forwardRegistry != nil {
+			s.forwardRegistry.Remove(revoked.ClientID, revoked.SessionID)
+		}
 		if revoked.Connection != nil {
 			_ = revoked.Connection.Close()
 		}
+	}
+	if s.forwardRegistry != nil &&
+		(!reflect.DeepEqual(current.Forwards, candidate.Forwards) ||
+			!reflect.DeepEqual(current.GovernedClients, candidate.GovernedClients) ||
+			!reflect.DeepEqual(current.ManagedClients, candidate.ManagedClients)) {
+		s.forwardRegistry.ApplyPolicy(
+			candidate.Generation,
+			func(context authentication.Context, declaration protocol.ForwardDeclaration) bool {
+				return forwardPolicyChanged(current, candidate, context, declaration)
+			},
+		)
 	}
 	s.rolloutManagedConfigurations(ctx, managedChanges, candidate)
 	s.logger.WithComponent("config_reload").InfoWithFields(

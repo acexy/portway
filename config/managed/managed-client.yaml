@@ -21,6 +21,21 @@ client_id: managed-client
 # their existing Token. Proxy configuration-only changes retain online rollout.
 token: PORTWAY_TOKEN_REQUIRED
 
+# Optional Managed Forward permission boundary.
+# Managed Forward targets always remain inside server.yaml forwards.rules. This
+# optional rule set may narrow that global boundary further, but never expand
+# it. Omit it to use only the global boundary. Rules are allowed only when this
+# record contains at least one configuration.forwards entry. Rule and Forward
+# changes are hot-reloadable with the Managed Prepare/Activate rollout.
+permissions:
+  forwards:
+    rules:
+      - ip_range: 10.40.0.0/16
+        tcp:
+          port_ranges:
+            - start: 5432
+              end: 5432
+
 # * Required. Complete server-owned client configuration.
 # A managed client must not define local proxies in client.yaml; it receives
 # this complete list after authentication and cannot override it.
@@ -81,3 +96,21 @@ configuration:
       # port, path, wildcard, IP literal, or trailing dot.
       # Not allowed for tcp or udp.
       domain: app.example.com
+
+  # Complete Managed Forward set. The client must not define local forwards.
+  # Names are unique across this record's proxies and forwards. listen_ip and
+  # listen_port remain client-side values; target_ip and target_port are checked
+  # against the server-wide and optional Managed rule sets. Changing or removing
+  # an entry uses Prepare/Activate and automatically closes affected connections.
+  forwards:
+    - name: database
+      # * Required. Allowed values: tcp, udp.
+      type: tcp
+      # * Required. Explicit client-side listening IP; no hostname.
+      listen_ip: 127.0.0.1
+      # * Required. Range 1-65535.
+      listen_port: 15432
+      # * Required. Explicit IP reachable from portwayd; no hostname.
+      target_ip: 10.40.1.20
+      # * Required. Range 1-65535.
+      target_port: 5432

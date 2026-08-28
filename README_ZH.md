@@ -5,15 +5,18 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  一款面向长期可靠服务暴露的轻量级反向隧道系统。
+  一款面向长期可靠网络访问的轻量级双向隧道系统。
 </p>
 
-Portway 通过公共服务端将私有网络中的服务暴露到公网。它将控制平面与隧道流量分离，
-支持 TCP 和 QUIC 作为底层客户端-服务端传输协议，并围绕显式资源归属、有界资源管理和安全默认配置进行设计。
+Portway 支持两个方向的网络连接：Proxy 模式通过公共服务端暴露客户端侧服务；
+Forward 模式则在客户端提供 Listener，经隧道访问服务端所在网络中经过授权的
+TCP/UDP 服务。它将控制平面与隧道流量分离，支持 TCP 和 QUIC 作为底层
+客户端-服务端传输协议，并围绕显式资源归属、有界资源管理和安全默认配置进行设计。
 
 ## 亮点
 
 - TCP、UDP 和基于域名的 HTTP/HTTPS 反向代理
+- 通过客户端 TCP/UDP Forward Listener 安全访问服务端侧网络
 - 可选 TCP 或 QUIC 作为客户端-服务端传输协议
 - 认证加密的客户端-服务端连接
 - 原子化代理注册与有界会话恢复
@@ -30,6 +33,9 @@ Portway 通过公共服务端将私有网络中的服务暴露到公网。它将
   - 完整配置代际的原子校验与发布
   - Token 变化时全量下线、策略变化时选择性吊销，以及 Managed 配置在线切换
   - 校验失败时自动保留上一份有效快照
+
+Portway 的两种流量模式覆盖私有网络连接的两个方向。请参阅
+[Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)，了解流量图、配置示例和安全边界。
 
 ## 快速开始
 
@@ -239,6 +245,7 @@ Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要
 
 ## 公开文档
 
+- [Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)
 - [技术概览](assets/docs/technical/README_ZH.md)
 - [运维接口](assets/docs/operations/README_ZH.md)
 - [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)

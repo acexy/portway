@@ -17,6 +17,26 @@ func (manager *Registry) Sync(
 	requestID string,
 	request protocol.SyncProxies,
 ) protocol.SyncResult {
+	return manager.sync(clientID, sessionID, requestID, request, false)
+}
+
+// SyncAllowEmpty applies a Proxy set that may be empty when a Forward exists.
+func (manager *Registry) SyncAllowEmpty(
+	clientID string,
+	sessionID string,
+	requestID string,
+	request protocol.SyncProxies,
+) protocol.SyncResult {
+	return manager.sync(clientID, sessionID, requestID, request, true)
+}
+
+func (manager *Registry) sync(
+	clientID string,
+	sessionID string,
+	requestID string,
+	request protocol.SyncProxies,
+	allowEmpty bool,
+) protocol.SyncResult {
 	manager.registrationMutex.Lock()
 	registrationLocked := true
 	defer func() {
@@ -121,7 +141,7 @@ func (manager *Registry) Sync(
 	baseRevision := state.revision
 	manager.mutex.Unlock()
 
-	if authenticationMode != authentication.ModeManaged && len(request.Proxies) == 0 {
+	if !allowEmpty && authenticationMode != authentication.ModeManaged && len(request.Proxies) == 0 {
 		return rejectedSyncResult(
 			request.Revision,
 			protocol.ProxyErrorInvalidProxy,

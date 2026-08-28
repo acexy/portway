@@ -560,6 +560,73 @@ func TestApplyConfigurationCandidateUpdatesSourceDigestWithoutGeneration(t *test
 	}
 }
 
+func TestApplyConfigurationCandidateHotReloadsForwardPolicy(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	current.Generation = 3
+	current.Forwards = config.ForwardServerConfig{
+		Enabled: true,
+		Rules: []config.ForwardIPRule{{
+			IPRange: "10.0.0.0/8",
+			TCP:     config.ForwardPortPermission{PortRanges: []config.PortRange{{Start: 5000, End: 5999}}},
+		}},
+	}
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger: logging.New("test"), configuration: newConfigurationManager(current),
+		clientRegistry: session.NewRegistry(), authenticationStore: authentication.NewStore(snapshot),
+		managed: newManagedCoordinator(),
+	}
+	candidate := current
+	candidate.Forwards.Rules = []config.ForwardIPRule{{
+		IPRange: "10.0.0.0/8",
+		TCP:     config.ForwardPortPermission{PortRanges: []config.PortRange{{Start: 5000, End: 6999}}},
+	}}
+	if err := service.applyConfigurationCandidate(candidate); err != nil {
+		t.Fatalf("hot reload Forward policy: %v", err)
+	}
+	updated := service.configuration.snapshot()
+	if updated.Generation != 4 || !reflect.DeepEqual(updated.Forwards, candidate.Forwards) {
+		t.Fatalf("Forward policy was not published: %+v", updated.Forwards)
+	}
+}
+
+func TestApplyConfigurationCandidateRejectsInvalidForwardPolicyAtomically(t *testing.T) {
+	token := "shared-token-with-at-least-32-random-bytes"
+	current := config.DefaultServer()
+	current.Authentication.SharedToken = &token
+	current.Generation = 8
+	current.Forwards = config.ForwardServerConfig{
+		Enabled: true,
+		Rules: []config.ForwardIPRule{{
+			IPRange: "10.0.0.0/8",
+			UDP:     config.ForwardPortPermission{PortRanges: []config.PortRange{{Start: 53, End: 53}}},
+		}},
+	}
+	snapshot, err := config.BuildAuthenticationSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		logger: logging.New("test"), configuration: newConfigurationManager(current),
+		clientRegistry: session.NewRegistry(), authenticationStore: authentication.NewStore(snapshot),
+		managed: newManagedCoordinator(),
+	}
+	candidate := current
+	candidate.Forwards.Rules = nil
+	if err := service.applyConfigurationCandidate(candidate); err == nil {
+		t.Fatal("enabled Forward policy without rules was accepted")
+	}
+	updated := service.configuration.snapshot()
+	if updated.Generation != 8 || !reflect.DeepEqual(updated.Forwards, current.Forwards) {
+		t.Fatal("rejected Forward policy changed the active snapshot")
+	}
+}
+
 func TestApplyConfigurationCandidateChangesLogLevelRepeatedly(t *testing.T) {
 	token := "shared-token-with-at-least-32-random-bytes"
 	current := config.DefaultServer()

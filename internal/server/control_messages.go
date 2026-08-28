@@ -24,14 +24,23 @@ func (s *Service) serveControlMessages(
 	authenticationMode authentication.Mode,
 	initialProxySynchronizationRequired bool,
 	onProxySynchronizationApplied func(),
+	authenticationContexts ...authentication.Context,
 ) (gracefullyClosed bool, err error) {
+	authenticationContext := authentication.Context{
+		Mode:     authenticationMode,
+		ClientID: clientID,
+	}
+	if len(authenticationContexts) != 0 {
+		authenticationContext = authenticationContexts[0]
+	}
 	for {
 		envelope, err := protocol.ReadControl(connection)
 		if err != nil {
 			return false, err
 		}
 		if initialProxySynchronizationRequired &&
-			envelope.Type != protocol.MessageSyncProxies {
+			envelope.Type != protocol.MessageSyncProxies &&
+			envelope.Type != protocol.MessageSyncConfiguration {
 			return false, fmt.Errorf(
 				"expected initial %s, got %s",
 				protocol.MessageSyncProxies,
@@ -165,6 +174,149 @@ func (s *Service) serveControlMessages(
 					"proxy_count": len(request.Proxies),
 				},
 			)
+		case protocol.MessageSyncConfiguration:
+			if authenticationMode == authentication.ModeManaged {
+				return false, errors.New("managed clients cannot declare configuration")
+			}
+			var request protocol.SyncConfiguration
+			if err := protocol.DecodePayload(envelope, &request); err != nil {
+				return false, err
+			}
+			if len(request.Proxies) == 0 && len(request.Forwards) == 0 {
+				return false, errors.New("complete configuration must not be empty")
+			}
+			if rejection := validateConfigurationCapabilities(
+				request,
+				negotiatedCapabilities,
+			); rejection != nil {
+				if err := writer.WriteResponse(
+					protocol.MessageSyncConfigurationResult,
+					envelope.RequestID,
+					*rejection,
+				); err != nil {
+					return false, err
+				}
+				return false, errProxyRegistrationRejected
+			}
+			proxyRequest := protocol.SyncProxies{
+				Revision: request.Revision,
+				Proxies:  request.Proxies,
+			}
+			if authenticationMode == authentication.ModeGoverned {
+				if result := s.validateGovernedProxies(clientID, proxyRequest); result != nil {
+					if err := writeConfigurationRejection(
+						writer,
+						envelope.RequestID,
+						request.Revision,
+						result.Error,
+					); err != nil {
+						return false, err
+					}
+					return false, errProxyRegistrationRejected
+				}
+			}
+			if s.forwardRegistry == nil {
+				return false, errors.New("Forward Registry is unavailable")
+			}
+			if forwardError := s.forwardRegistry.Validate(
+				authenticationContext,
+				request.Forwards,
+			); forwardError != nil {
+				if err := writeConfigurationRejection(
+					writer,
+					envelope.RequestID,
+					request.Revision,
+					forwardError,
+				); err != nil {
+					return false, err
+				}
+				return false, errProxyRegistrationRejected
+			}
+			proxyResult := s.proxyRegistry.SyncAllowEmpty(
+				clientID,
+				sessionID,
+				envelope.RequestID,
+				proxyRequest,
+			)
+			if proxyResult.Status == protocol.ProxySyncStatusRejected {
+				if err := writeConfigurationRejection(
+					writer,
+					envelope.RequestID,
+					request.Revision,
+					proxyResult.Error,
+				); err != nil {
+					return false, err
+				}
+				return false, errProxyRegistrationRejected
+			}
+			maxActiveForwardLinks := 0
+			if authenticationMode == authentication.ModeGoverned {
+				governed, _ := s.configuration.governedClient(clientID)
+				maxActiveForwardLinks = governed.Permissions.Limits.MaxActiveForwardLinks
+			}
+			forwardResults, forwardError := s.forwardRegistry.Sync(
+				clientID,
+				sessionID,
+				writer,
+				authenticationContext,
+				maxActiveForwardLinks,
+				request.Forwards,
+			)
+			if forwardError != nil {
+				return false, errors.New("validated Forward synchronization failed")
+			}
+			if err := writer.WriteResponse(
+				protocol.MessageSyncConfigurationResult,
+				envelope.RequestID,
+				protocol.SyncConfigurationResult{
+					Revision: request.Revision,
+					Status:   protocol.ProxySyncStatusApplied,
+					Proxies:  proxyResult.Proxies,
+					Forwards: forwardResults,
+				},
+			); err != nil {
+				return false, err
+			}
+			s.proxyRegistry.Activate(clientID, sessionID)
+			if initialProxySynchronizationRequired {
+				if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
+					return false, errors.New("initialized client session is no longer current")
+				}
+				if err := connection.SetDeadline(time.Time{}); err != nil {
+					return false, fmt.Errorf("clear initial configuration deadline: %w", err)
+				}
+				initialProxySynchronizationRequired = false
+			}
+			if onProxySynchronizationApplied != nil {
+				onProxySynchronizationApplied()
+			}
+		case protocol.MessageRequestForwardLink:
+			var request protocol.RequestForwardLink
+			if err := protocol.DecodePayload(envelope, &request); err != nil {
+				return false, err
+			}
+			if s.forwardRegistry == nil {
+				return false, errors.New("Forward Registry is unavailable")
+			}
+			offer := s.forwardRegistry.Offer(clientID, sessionID, request)
+			if err := writer.Write(protocol.MessageForwardLinkOffer, offer); err != nil {
+				return false, err
+			}
+		case protocol.MessageCancelForwardLink:
+			var cancellation protocol.CancelForwardLink
+			if err := protocol.DecodePayload(envelope, &cancellation); err != nil {
+				return false, err
+			}
+			s.linkBroker.CancelLink(cancellation.LinkID)
+		case protocol.MessageForwardLinkFailed:
+			var failure protocol.ForwardLinkFailed
+			if err := protocol.DecodePayload(envelope, &failure); err != nil {
+				return false, err
+			}
+			s.linkBroker.ReportFailure(clientID, sessionID, protocol.LinkFailed{
+				LinkID: failure.LinkID,
+				Code:   failure.Code,
+			})
 		case protocol.MessageLinkFailed:
 			var failure protocol.LinkFailed
 			if err := protocol.DecodePayload(envelope, &failure); err != nil {
@@ -197,4 +349,58 @@ func (s *Service) serveControlMessages(
 			return false, fmt.Errorf("unsupported control message %q", envelope.Type)
 		}
 	}
+}
+
+func validateConfigurationCapabilities(
+	request protocol.SyncConfiguration,
+	capabilities []protocol.Capability,
+) *protocol.SyncConfigurationResult {
+	for _, declaration := range request.Proxies {
+		if !coll.SliceContains(capabilities, protocol.Capability(declaration.Type)) {
+			return &protocol.SyncConfigurationResult{
+				Revision: request.Revision,
+				Status:   protocol.ProxySyncStatusRejected,
+				Error: &protocol.ProxyError{
+					Code:      protocol.ProxyErrorProxyTypeNotAllowed,
+					ProxyName: declaration.Name,
+					Message:   "proxy capability is not negotiated",
+				},
+			}
+		}
+	}
+	for _, declaration := range request.Forwards {
+		capability := protocol.CapabilityTCPForward
+		if declaration.Type == protocol.ForwardTypeUDP {
+			capability = protocol.CapabilityUDPForward
+		}
+		if !coll.SliceContains(capabilities, capability) {
+			return &protocol.SyncConfigurationResult{
+				Revision: request.Revision,
+				Status:   protocol.ProxySyncStatusRejected,
+				Error: &protocol.ProxyError{
+					Code:      protocol.ProxyErrorForwardTypeNotAllowed,
+					ProxyName: declaration.Name,
+					Message:   "Forward capability is not negotiated",
+				},
+			}
+		}
+	}
+	return nil
+}
+
+func writeConfigurationRejection(
+	writer *control.Writer,
+	requestID string,
+	revision uint64,
+	rejection *protocol.ProxyError,
+) error {
+	return writer.WriteResponse(
+		protocol.MessageSyncConfigurationResult,
+		requestID,
+		protocol.SyncConfigurationResult{
+			Revision: revision,
+			Status:   protocol.ProxySyncStatusRejected,
+			Error:    rejection,
+		},
+	)
 }

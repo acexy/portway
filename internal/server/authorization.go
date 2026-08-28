@@ -4,20 +4,33 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
 )
 
-func negotiateCapabilities(clientCapabilities []protocol.Capability) []protocol.Capability {
+func (s *Service) negotiateCapabilities(clientCapabilities []protocol.Capability) []protocol.Capability {
 	supported := map[protocol.Capability]struct{}{
 		protocol.CapabilityTCP:         {},
 		protocol.CapabilityUDP:         {},
 		protocol.CapabilityHTTP:        {},
 		protocol.CapabilityJSONControl: {},
+	}
+	forwardConfiguration := s.configuration.snapshot().Forwards
+	if forwardConfiguration.Enabled {
+		for _, rule := range forwardConfiguration.Rules {
+			if len(rule.TCP.PortRanges) != 0 {
+				supported[protocol.CapabilityTCPForward] = struct{}{}
+			}
+			if len(rule.UDP.PortRanges) != 0 {
+				supported[protocol.CapabilityUDPForward] = struct{}{}
+			}
+		}
 	}
 	negotiated := coll.SliceFilter(
 		clientCapabilities,
@@ -30,6 +43,116 @@ func negotiateCapabilities(clientCapabilities []protocol.Capability) []protocol.
 		return []protocol.Capability{}
 	}
 	return negotiated
+}
+
+func forwardPolicyChanged(
+	current config.ServerConfig,
+	candidate config.ServerConfig,
+	authenticationContext authentication.Context,
+	declaration protocol.ForwardDeclaration,
+) bool {
+	currentGlobal, currentAllowed := config.MatchingForwardRule(
+		current.Forwards.Rules,
+		declaration.Type,
+		declaration.TargetIP,
+		declaration.TargetPort,
+	)
+	candidateGlobal, candidateAllowed := config.MatchingForwardRule(
+		candidate.Forwards.Rules,
+		declaration.Type,
+		declaration.TargetIP,
+		declaration.TargetPort,
+	)
+	currentAllowed = current.Forwards.Enabled && currentAllowed
+	candidateAllowed = candidate.Forwards.Enabled && candidateAllowed
+	if currentAllowed != candidateAllowed ||
+		!reflect.DeepEqual(currentGlobal, candidateGlobal) {
+		return true
+	}
+	currentRules := clientForwardRules(current, authenticationContext)
+	candidateRules := clientForwardRules(candidate, authenticationContext)
+	currentClientRule, currentClientAllowed := config.MatchingForwardRule(
+		currentRules,
+		declaration.Type,
+		declaration.TargetIP,
+		declaration.TargetPort,
+	)
+	candidateClientRule, candidateClientAllowed := config.MatchingForwardRule(
+		candidateRules,
+		declaration.Type,
+		declaration.TargetIP,
+		declaration.TargetPort,
+	)
+	if authenticationContext.Mode == authentication.ModeShared {
+		return false
+	}
+	if authenticationContext.Mode == authentication.ModeManaged &&
+		len(currentRules) == 0 && len(candidateRules) == 0 {
+		return false
+	}
+	return currentClientAllowed != candidateClientAllowed ||
+		!reflect.DeepEqual(currentClientRule, candidateClientRule)
+}
+
+func clientForwardRules(
+	configuration config.ServerConfig,
+	authenticationContext authentication.Context,
+) []config.ForwardIPRule {
+	switch authenticationContext.Mode {
+	case authentication.ModeGoverned:
+		return configuration.GovernedClients[authenticationContext.ClientID].Permissions.Forwards.Rules
+	case authentication.ModeManaged:
+		return configuration.ManagedClients[authenticationContext.ClientID].Permissions.Forwards.Rules
+	default:
+		return nil
+	}
+}
+
+func (s *Service) forwardTargetAllowed(
+	authenticationContext authentication.Context,
+	declaration protocol.ForwardDeclaration,
+) bool {
+	configuration := s.configuration.snapshot()
+	if !configuration.Forwards.Enabled || !config.ForwardTargetAllowed(
+		configuration.Forwards.Rules,
+		declaration.Type,
+		declaration.TargetIP,
+		declaration.TargetPort,
+	) {
+		return false
+	}
+	switch authenticationContext.Mode {
+	case authentication.ModeShared:
+		return true
+	case authentication.ModeGoverned:
+		client, exists := configuration.GovernedClients[authenticationContext.ClientID]
+		if !exists || !coll.SliceContains(client.Permissions.ForwardTypes, declaration.Type) {
+			return false
+		}
+		return config.ForwardTargetAllowed(
+			client.Permissions.Forwards.Rules,
+			declaration.Type,
+			declaration.TargetIP,
+			declaration.TargetPort,
+		)
+	case authentication.ModeManaged:
+		client, exists := configuration.ManagedClients[authenticationContext.ClientID]
+		if !exists {
+			return false
+		}
+		rules := client.Permissions.Forwards.Rules
+		if len(rules) == 0 {
+			return true
+		}
+		return config.ForwardTargetAllowed(
+			rules,
+			declaration.Type,
+			declaration.TargetIP,
+			declaration.TargetPort,
+		)
+	default:
+		return false
+	}
 }
 
 func (s *Service) validateGovernedProxies(

@@ -6,6 +6,7 @@ import (
 
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
+	"gopkg.in/yaml.v3"
 )
 
 // LogLevel selects the minimum severity emitted by the process logger.
@@ -66,6 +67,23 @@ type ProxyPermission struct {
 	RemotePortRanges []PortRange `yaml:"remote_port_ranges"`
 }
 
+// ForwardPortPermission configures target port ranges for one protocol.
+type ForwardPortPermission struct {
+	PortRanges []PortRange `yaml:"port_ranges"`
+}
+
+// ForwardIPRule binds one target network to its permitted protocol ports.
+type ForwardIPRule struct {
+	IPRange string                `yaml:"ip_range"`
+	TCP     ForwardPortPermission `yaml:"tcp"`
+	UDP     ForwardPortPermission `yaml:"udp"`
+}
+
+// ForwardPermissions narrows the server-wide Forward target allowlist.
+type ForwardPermissions struct {
+	Rules []ForwardIPRule `yaml:"rules"`
+}
+
 // HTTPPermission configures authorized exact or single-label wildcard domains.
 type HTTPPermission struct {
 	PublicSchemes []protocol.HTTPPublicScheme `yaml:"public_schemes"`
@@ -74,20 +92,31 @@ type HTTPPermission struct {
 
 // PermissionLimits configures per-client resource ceilings.
 type PermissionLimits struct {
-	MaxProxies     int `yaml:"max_proxies"`
-	MaxTCPProxies  int `yaml:"max_tcp_proxies"`
-	MaxUDPProxies  int `yaml:"max_udp_proxies"`
-	MaxHTTPProxies int `yaml:"max_http_proxies"`
-	MaxActiveLinks int `yaml:"max_active_links"`
+	MaxProxies            int `yaml:"max_proxies"`
+	MaxTCPProxies         int `yaml:"max_tcp_proxies"`
+	MaxUDPProxies         int `yaml:"max_udp_proxies"`
+	MaxHTTPProxies        int `yaml:"max_http_proxies"`
+	MaxActiveLinks        int `yaml:"max_active_links"`
+	MaxForwards           int `yaml:"max_forwards"`
+	MaxTCPForwards        int `yaml:"max_tcp_forwards"`
+	MaxUDPForwards        int `yaml:"max_udp_forwards"`
+	MaxActiveForwardLinks int `yaml:"max_active_forward_links"`
 }
 
 // GovernedPermissions restricts one client's proxy declarations.
 type GovernedPermissions struct {
-	ProxyTypes []protocol.ProxyType `yaml:"proxy_types"`
-	TCP        ProxyPermission      `yaml:"tcp"`
-	UDP        ProxyPermission      `yaml:"udp"`
-	HTTP       HTTPPermission       `yaml:"http"`
-	Limits     PermissionLimits     `yaml:"limits"`
+	ProxyTypes   []protocol.ProxyType   `yaml:"proxy_types"`
+	TCP          ProxyPermission        `yaml:"tcp"`
+	UDP          ProxyPermission        `yaml:"udp"`
+	HTTP         HTTPPermission         `yaml:"http"`
+	Limits       PermissionLimits       `yaml:"limits"`
+	ForwardTypes []protocol.ForwardType `yaml:"forward_types"`
+	Forwards     ForwardPermissions     `yaml:"forwards"`
+}
+
+// ManagedPermissions optionally narrows server-owned Forward targets.
+type ManagedPermissions struct {
+	Forwards ForwardPermissions `yaml:"forwards"`
 }
 
 // GovernedClientConfig defines one independently authenticated governed client.
@@ -99,14 +128,16 @@ type GovernedClientConfig struct {
 
 // ManagedConfiguration is the complete server-owned client proxy generation.
 type ManagedConfiguration struct {
-	Revision uint64        `yaml:"revision"`
-	Proxies  []ProxyConfig `yaml:"proxies"`
+	Revision uint64          `yaml:"revision"`
+	Proxies  []ProxyConfig   `yaml:"proxies"`
+	Forwards []ForwardConfig `yaml:"forwards"`
 }
 
 // ManagedClientConfig defines one independently authenticated managed client.
 type ManagedClientConfig struct {
 	ClientID      string               `yaml:"client_id"`
 	Token         string               `yaml:"token"`
+	Permissions   ManagedPermissions   `yaml:"permissions"`
 	Configuration ManagedConfiguration `yaml:"configuration"`
 }
 
@@ -154,6 +185,17 @@ type ClientConfig struct {
 	LogLevel       LogLevel                   `yaml:"log_level"`
 	Authentication ClientAuthenticationConfig `yaml:"authentication"`
 	Proxies        []ProxyConfig              `yaml:"proxies"`
+	Forwards       []ForwardConfig            `yaml:"forwards"`
+}
+
+// ForwardConfig describes one client-side listener and server-side target.
+type ForwardConfig struct {
+	Name       string               `yaml:"name"`
+	Type       protocol.ForwardType `yaml:"type"`
+	ListenIP   string               `yaml:"listen_ip"`
+	ListenPort uint16               `yaml:"listen_port"`
+	TargetIP   string               `yaml:"target_ip"`
+	TargetPort uint16               `yaml:"target_port"`
 }
 
 // TunnelConfig configures public proxy listeners owned by the server.
@@ -195,6 +237,7 @@ type ServerConfig struct {
 	UDP            UDPConfig                  `yaml:"udp"`
 	Security       SecurityConfig             `yaml:"security"`
 	Operations     OperationsConfig           `yaml:"operations"`
+	Forwards       ForwardServerConfig        `yaml:"forwards"`
 	LogLevel       LogLevel                   `yaml:"log_level"`
 	Authentication ServerAuthenticationConfig `yaml:"authentication"`
 	// SourcePath is the main file used for server hot reload.
@@ -208,4 +251,23 @@ type ServerConfig struct {
 	// GovernedClients and ManagedClients are validated immutable source records.
 	GovernedClients map[string]GovernedClientConfig `yaml:"-"`
 	ManagedClients  map[string]ManagedClientConfig  `yaml:"-"`
+}
+
+// ForwardServerConfig configures the server-wide Forward safety boundary.
+type ForwardServerConfig struct {
+	Enabled    bool            `yaml:"enabled"`
+	Rules      []ForwardIPRule `yaml:"rules"`
+	Configured bool            `yaml:"-"`
+}
+
+// UnmarshalYAML records that the optional forwards section was explicitly configured.
+func (configuration *ForwardServerConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain ForwardServerConfig
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*configuration = ForwardServerConfig(decoded)
+	configuration.Configured = true
+	return nil
 }

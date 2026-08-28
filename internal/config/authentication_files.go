@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -145,8 +146,21 @@ func loadManagedClients(path string) (map[string]ManagedClientConfig, error) {
 				client.ClientID,
 			)
 		}
-		if err := validateManagedProxies(client.Configuration.Proxies); err != nil {
+		if err := validateManagedConfiguration(client.Configuration); err != nil {
 			return nil, fmt.Errorf("validate managed client %q: %w", client.ClientID, err)
+		}
+		if err := validateForwardRules(
+			"permissions.forwards.rules",
+			client.Permissions.Forwards.Rules,
+		); err != nil {
+			return nil, fmt.Errorf("validate managed client %q: %w", client.ClientID, err)
+		}
+		if len(client.Configuration.Forwards) == 0 &&
+			len(client.Permissions.Forwards.Rules) != 0 {
+			return nil, fmt.Errorf(
+				"validate managed client %q: permissions.forwards.rules must be empty without configuration.forwards",
+				client.ClientID,
+			)
 		}
 		if _, duplicate := clients[client.ClientID]; duplicate {
 			return nil, fmt.Errorf("client_id %q is duplicated", client.ClientID)
@@ -381,6 +395,21 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 	if err := validatePortRanges("permissions.udp.remote_port_ranges", permissions.UDP.RemotePortRanges); err != nil {
 		return err
 	}
+	forwardTypes := make(map[protocol.ForwardType]struct{}, len(permissions.ForwardTypes))
+	for _, forwardType := range permissions.ForwardTypes {
+		switch forwardType {
+		case protocol.ForwardTypeTCP, protocol.ForwardTypeUDP:
+		default:
+			return fmt.Errorf("permissions.forward_types contains unsupported type %q", forwardType)
+		}
+		if _, duplicate := forwardTypes[forwardType]; duplicate {
+			return fmt.Errorf("permissions.forward_types contains duplicate type %q", forwardType)
+		}
+		forwardTypes[forwardType] = struct{}{}
+	}
+	if err := validateForwardRules("permissions.forwards.rules", permissions.Forwards.Rules); err != nil {
+		return err
+	}
 	domains := make(map[string]struct{}, len(permissions.HTTP.Domains))
 	for index, domain := range permissions.HTTP.Domains {
 		if strings.HasPrefix(domain, "*.") {
@@ -414,6 +443,10 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 		{"max_udp_proxies", limits.MaxUDPProxies, hardMaxProxiesPerClient},
 		{"max_http_proxies", limits.MaxHTTPProxies, hardMaxProxiesPerClient},
 		{"max_active_links", limits.MaxActiveLinks, hardMaxActiveLinksPerClient},
+		{"max_forwards", limits.MaxForwards, hardMaxProxiesPerClient},
+		{"max_tcp_forwards", limits.MaxTCPForwards, hardMaxProxiesPerClient},
+		{"max_udp_forwards", limits.MaxUDPForwards, hardMaxProxiesPerClient},
+		{"max_active_forward_links", limits.MaxActiveForwardLinks, hardMaxActiveLinksPerClient},
 	} {
 		if limit.value <= 0 || limit.value > limit.max {
 			return fmt.Errorf(
@@ -428,6 +461,12 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 		limits.MaxHTTPProxies > limits.MaxProxies {
 		return errors.New(
 			"permissions per-type proxy limits must not exceed max_proxies",
+		)
+	}
+	if limits.MaxTCPForwards > limits.MaxForwards ||
+		limits.MaxUDPForwards > limits.MaxForwards {
+		return errors.New(
+			"permissions per-type forward limits must not exceed max_forwards",
 		)
 	}
 	if err := validateGovernedRulePresence(
@@ -460,6 +499,30 @@ func validateGovernedPermissions(permissions GovernedPermissions) error {
 			"permissions.http.public_schemes must be empty when http is not allowed",
 		)
 	}
+	tcpForwardRules := 0
+	udpForwardRules := 0
+	for _, rule := range permissions.Forwards.Rules {
+		if len(rule.TCP.PortRanges) != 0 {
+			tcpForwardRules++
+		}
+		if len(rule.UDP.PortRanges) != 0 {
+			udpForwardRules++
+		}
+	}
+	if err := validateGovernedForwardRulePresence(
+		protocol.ForwardTypeTCP,
+		forwardTypes,
+		tcpForwardRules,
+	); err != nil {
+		return err
+	}
+	if err := validateGovernedForwardRulePresence(
+		protocol.ForwardTypeUDP,
+		forwardTypes,
+		udpForwardRules,
+	); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -491,6 +554,126 @@ func validateGovernedRulePresence(
 		return fmt.Errorf("%s must be empty when %s is not allowed", field, proxyType)
 	}
 	return nil
+}
+
+func validateGovernedForwardRulePresence(
+	forwardType protocol.ForwardType,
+	allowedTypes map[protocol.ForwardType]struct{},
+	ruleCount int,
+) error {
+	_, allowed := allowedTypes[forwardType]
+	if allowed && ruleCount == 0 {
+		return fmt.Errorf(
+			"permissions.forwards.rules must contain %s ports when %s is allowed",
+			forwardType,
+			forwardType,
+		)
+	}
+	if !allowed && ruleCount != 0 {
+		return fmt.Errorf(
+			"permissions.forwards.rules must not contain %s ports when %s is not allowed",
+			forwardType,
+			forwardType,
+		)
+	}
+	return nil
+}
+
+func validateForwardConfiguration(configuration ServerConfig) error {
+	for clientID, client := range configuration.GovernedClients {
+		if !configuration.Forwards.Enabled &&
+			(len(client.Permissions.ForwardTypes) != 0 ||
+				len(client.Permissions.Forwards.Rules) != 0) {
+			return fmt.Errorf(
+				"governed client %q configures Forward while forwards.enabled is false",
+				clientID,
+			)
+		}
+		if err := validateForwardRuleSubset(
+			configuration.Forwards.Rules,
+			client.Permissions.Forwards.Rules,
+		); err != nil {
+			return fmt.Errorf("governed client %q: %w", clientID, err)
+		}
+	}
+	for clientID, client := range configuration.ManagedClients {
+		if !configuration.Forwards.Enabled &&
+			(len(client.Permissions.Forwards.Rules) != 0 ||
+				len(client.Configuration.Forwards) != 0) {
+			return fmt.Errorf(
+				"managed client %q configures Forward while forwards.enabled is false",
+				clientID,
+			)
+		}
+		if err := validateForwardRuleSubset(
+			configuration.Forwards.Rules,
+			client.Permissions.Forwards.Rules,
+		); err != nil {
+			return fmt.Errorf("managed client %q: %w", clientID, err)
+		}
+		effectiveRules := configuration.Forwards.Rules
+		if len(client.Permissions.Forwards.Rules) != 0 {
+			effectiveRules = client.Permissions.Forwards.Rules
+		}
+		for index, forward := range client.Configuration.Forwards {
+			if !ForwardTargetAllowed(
+				effectiveRules,
+				forward.Type,
+				forward.TargetIP,
+				forward.TargetPort,
+			) {
+				return fmt.Errorf(
+					"managed client %q configuration.forwards[%d] target is not allowed",
+					clientID,
+					index,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func validateForwardRuleSubset(global []ForwardIPRule, child []ForwardIPRule) error {
+	for childIndex, childRule := range child {
+		childPrefix, _ := netip.ParsePrefix(childRule.IPRange)
+		matched := false
+		for _, globalRule := range global {
+			globalPrefix, _ := netip.ParsePrefix(globalRule.IPRange)
+			if !globalPrefix.Contains(childPrefix.Addr()) ||
+				globalPrefix.Bits() > childPrefix.Bits() {
+				continue
+			}
+			if !portRangesAreSubset(childRule.TCP.PortRanges, globalRule.TCP.PortRanges) ||
+				!portRangesAreSubset(childRule.UDP.PortRanges, globalRule.UDP.PortRanges) {
+				continue
+			}
+			matched = true
+			break
+		}
+		if !matched {
+			return fmt.Errorf(
+				"permissions.forwards.rules[%d] is not a subset of server forwards.rules",
+				childIndex,
+			)
+		}
+	}
+	return nil
+}
+
+func portRangesAreSubset(child []PortRange, parent []PortRange) bool {
+	for _, childRange := range child {
+		contained := false
+		for _, parentRange := range parent {
+			if childRange.Start >= parentRange.Start && childRange.End <= parentRange.End {
+				contained = true
+				break
+			}
+		}
+		if !contained {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePortRanges(field string, ranges []PortRange) error {

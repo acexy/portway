@@ -31,6 +31,35 @@ tunnel:
   # 该地址不能与其他 TCP Listener 冲突。
   https_listen_address: ""
 
+# Forward 默认关闭；开启时规则必填，并构成 Shared、Governed、Managed 均无法
+# 绕过的服务端全局 Allowlist。每条 IP 规则只绑定自身的 TCP/UDP 端口范围，目标
+# IP 和端口必须命中同一条规则。同一规则集合内 CIDR 不得重叠或相互包含；精确
+# IPv4/IPv6 地址分别使用 /32、/128；目标不支持主机名。
+# 所有 forwards 字段和客户端 Forward 权限均可作为完整候选快照热加载。成功发布
+# 后自动断开受影响的 Forward 连接；非法候选保留上一代快照；无关 Proxy 不受影响。
+forwards:
+  # 可选，默认 false。关闭时可以保留规则作为未生效的预配置，之后可热加载开启。
+  enabled: false
+  # 配置 forwards 段时必须存在且非空。
+  rules:
+    - ip_range: 10.0.0.0/8
+      tcp:
+        # 端口闭区间，范围 1-65535；必须排序且不得重叠。
+        port_ranges:
+          - start: 22
+            end: 22
+          - start: 5432
+            end: 5432
+      udp:
+        port_ranges:
+          - start: 53
+            end: 53
+    - ip_range: 192.168.10.0/24
+      tcp:
+        port_ranges:
+          - start: 8000
+            end: 8999
+
 # 公网 HTTPS SNI 证书集合。启用 HTTPS Listener 时至少配置一项；精确域名优先于
 # 单层通配符，每个声明域名必须被对应证书 SAN 覆盖。缺少或未知 SNI 时拒绝握手。
 # 文件内容、路径和完整列表作为一个快照原子热更新；无效候选保留上一代快照。

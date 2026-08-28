@@ -31,6 +31,8 @@ const (
 	CapabilityUDP         Capability = "udp"
 	CapabilityHTTP        Capability = "http"
 	CapabilityJSONControl Capability = "json-control"
+	CapabilityTCPForward  Capability = "tcp_forward"
+	CapabilityUDPForward  Capability = "udp_forward"
 )
 
 // ManagementMode identifies who owns a client's proxy configuration.
@@ -83,6 +85,20 @@ const (
 	MessageManagedConfigActivate MessageType = "managed_config_activate"
 	// MessageManagedConfigApplied confirms activation of a managed configuration.
 	MessageManagedConfigApplied MessageType = "managed_config_applied"
+	// MessageSyncConfiguration atomically declares complete Proxy and Forward sets.
+	MessageSyncConfiguration MessageType = "sync_configuration"
+	// MessageSyncConfigurationResult reports a complete configuration result.
+	MessageSyncConfigurationResult MessageType = "sync_configuration_result"
+	// MessageRequestForwardLink asks the server to prepare one Forward Link.
+	MessageRequestForwardLink MessageType = "request_forward_link"
+	// MessageForwardLinkOffer returns an authorized one-time Forward Ticket.
+	MessageForwardLinkOffer MessageType = "forward_link_offer"
+	// MessageCancelForwardLink cancels a pending Forward Link.
+	MessageCancelForwardLink MessageType = "cancel_forward_link"
+	// MessageForwardLinkFailed reports Forward Link setup failure.
+	MessageForwardLinkFailed MessageType = "forward_link_failed"
+	// MessageForwardBindingRevoked removes one Forward Binding after reload.
+	MessageForwardBindingRevoked MessageType = "forward_binding_revoked"
 )
 
 // SessionErrorCode identifies a stable session registration or recovery failure.

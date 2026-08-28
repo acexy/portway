@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"unicode/utf8"
 
@@ -26,7 +27,13 @@ func validateClient(configuration ClientConfig) error {
 	if err := validateClientAuthentication(configuration.Authentication); err != nil {
 		return err
 	}
-	return validateProxies(configuration.Proxies, "proxies")
+	if err := validateProxies(configuration.Proxies, "proxies"); err != nil {
+		return err
+	}
+	if err := validateForwards(configuration.Forwards, "forwards"); err != nil {
+		return err
+	}
+	return validateProxyForwardNames(configuration.Proxies, configuration.Forwards)
 }
 
 // ValidateClientID validates a configured or protocol-provided client ID.
@@ -85,6 +92,9 @@ func validateServer(configuration ServerConfig) error {
 		return err
 	}
 	if err := validateUDPConfig(configuration.UDP); err != nil {
+		return err
+	}
+	if err := validateForwardServerConfig(configuration.Forwards); err != nil {
 		return err
 	}
 	if strings.TrimSpace(configuration.Security.HTTPClientIPHeader) !=
@@ -209,6 +219,16 @@ func validateToken(token string) error {
 
 func validateManagedProxies(proxies []ProxyConfig) error {
 	return validateProxies(proxies, "configuration.proxies")
+}
+
+func validateManagedConfiguration(configuration ManagedConfiguration) error {
+	if err := validateManagedProxies(configuration.Proxies); err != nil {
+		return err
+	}
+	if err := validateForwards(configuration.Forwards, "configuration.forwards"); err != nil {
+		return err
+	}
+	return validateProxyForwardNames(configuration.Proxies, configuration.Forwards)
 }
 
 func validateConfiguredPublicSchemeAvailability(configuration ServerConfig) error {
@@ -349,6 +369,174 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 	return nil
 }
 
+func validateForwards(forwards []ForwardConfig, field string) error {
+	if len(forwards) > hardMaxProxiesPerClient {
+		return fmt.Errorf("%s must contain at most %d entries", field, hardMaxProxiesPerClient)
+	}
+	names := make(map[string]struct{}, len(forwards))
+	listeners := make(map[string]struct{}, len(forwards))
+	for index, forward := range forwards {
+		if err := ValidateProxyName(forward.Name); err != nil {
+			return fmt.Errorf("%s[%d].name has an invalid format", field, index)
+		}
+		if _, duplicate := names[forward.Name]; duplicate {
+			return fmt.Errorf("%s[%d].name is duplicated", field, index)
+		}
+		names[forward.Name] = struct{}{}
+		switch forward.Type {
+		case protocol.ForwardTypeTCP, protocol.ForwardTypeUDP:
+		default:
+			return fmt.Errorf("%s[%d].type must be tcp or udp", field, index)
+		}
+		listenAddress, err := netip.ParseAddr(forward.ListenIP)
+		if err != nil || listenAddress.String() != forward.ListenIP {
+			return fmt.Errorf("%s[%d].listen_ip must be a canonical IP address", field, index)
+		}
+		if forward.ListenPort == 0 {
+			return fmt.Errorf("%s[%d].listen_port must be between 1 and 65535", field, index)
+		}
+		targetAddress, err := netip.ParseAddr(forward.TargetIP)
+		if err != nil || targetAddress.String() != forward.TargetIP {
+			return fmt.Errorf("%s[%d].target_ip must be a canonical IP address", field, index)
+		}
+		if forward.TargetPort == 0 {
+			return fmt.Errorf("%s[%d].target_port must be between 1 and 65535", field, index)
+		}
+		listener := fmt.Sprintf("%s/%s/%d", forward.Type, listenAddress, forward.ListenPort)
+		if _, duplicate := listeners[listener]; duplicate {
+			return fmt.Errorf("%s[%d] duplicates a %s listener", field, index, forward.Type)
+		}
+		listeners[listener] = struct{}{}
+	}
+	return nil
+}
+
+func validateProxyForwardNames(proxies []ProxyConfig, forwards []ForwardConfig) error {
+	names := make(map[string]struct{}, len(proxies))
+	for _, proxy := range proxies {
+		names[proxy.Name] = struct{}{}
+	}
+	for index, forward := range forwards {
+		if _, duplicate := names[forward.Name]; duplicate {
+			return fmt.Errorf("forwards[%d].name duplicates a proxy name", index)
+		}
+	}
+	return nil
+}
+
+func validateForwardServerConfig(configuration ForwardServerConfig) error {
+	if configuration.Configured && len(configuration.Rules) == 0 {
+		return errors.New("forwards.rules must not be empty when forwards is configured")
+	}
+	if configuration.Enabled && len(configuration.Rules) == 0 {
+		return errors.New("forwards.rules must not be empty when forwards.enabled is true")
+	}
+	return validateForwardRules("forwards.rules", configuration.Rules)
+}
+
+func validateForwardRules(field string, rules []ForwardIPRule) error {
+	prefixes := make([]netip.Prefix, len(rules))
+	for index, rule := range rules {
+		prefix, err := netip.ParsePrefix(rule.IPRange)
+		if err != nil || prefix.String() != rule.IPRange || prefix != prefix.Masked() {
+			return fmt.Errorf("%s[%d].ip_range must be a canonical CIDR", field, index)
+		}
+		if len(rule.TCP.PortRanges) == 0 && len(rule.UDP.PortRanges) == 0 {
+			return fmt.Errorf("%s[%d] must contain tcp or udp port ranges", field, index)
+		}
+		if err := validateSortedPortRanges(
+			fmt.Sprintf("%s[%d].tcp.port_ranges", field, index),
+			rule.TCP.PortRanges,
+		); err != nil {
+			return err
+		}
+		if err := validateSortedPortRanges(
+			fmt.Sprintf("%s[%d].udp.port_ranges", field, index),
+			rule.UDP.PortRanges,
+		); err != nil {
+			return err
+		}
+		for previousIndex, previous := range prefixes[:index] {
+			if previous.Contains(prefix.Addr()) || prefix.Contains(previous.Addr()) {
+				return fmt.Errorf(
+					"%s[%d].ip_range overlaps %s[%d].ip_range",
+					field,
+					index,
+					field,
+					previousIndex,
+				)
+			}
+		}
+		prefixes[index] = prefix
+	}
+	return nil
+}
+
+func validateSortedPortRanges(field string, ranges []PortRange) error {
+	var previousEnd uint16
+	for index, portRange := range ranges {
+		if portRange.Start == 0 || portRange.End == 0 || portRange.Start > portRange.End {
+			return fmt.Errorf("%s[%d] is invalid", field, index)
+		}
+		if index > 0 && portRange.Start <= previousEnd {
+			return fmt.Errorf("%s must be sorted and non-overlapping", field)
+		}
+		previousEnd = portRange.End
+	}
+	return nil
+}
+
+// ForwardTargetAllowed reports whether one concrete target matches one rule.
+func ForwardTargetAllowed(
+	rules []ForwardIPRule,
+	forwardType protocol.ForwardType,
+	targetIP string,
+	targetPort uint16,
+) bool {
+	_, allowed := MatchingForwardRule(rules, forwardType, targetIP, targetPort)
+	return allowed
+}
+
+// MatchingForwardRule returns the unique rule authorizing one target.
+func MatchingForwardRule(
+	rules []ForwardIPRule,
+	forwardType protocol.ForwardType,
+	targetIP string,
+	targetPort uint16,
+) (ForwardIPRule, bool) {
+	address, err := netip.ParseAddr(targetIP)
+	if err != nil || targetPort == 0 {
+		return ForwardIPRule{}, false
+	}
+	for _, rule := range rules {
+		prefix, parseError := netip.ParsePrefix(rule.IPRange)
+		if parseError != nil || !prefix.Contains(address) {
+			continue
+		}
+		var ranges []PortRange
+		switch forwardType {
+		case protocol.ForwardTypeTCP:
+			ranges = rule.TCP.PortRanges
+		case protocol.ForwardTypeUDP:
+			ranges = rule.UDP.PortRanges
+		default:
+			return ForwardIPRule{}, false
+		}
+		for _, portRange := range ranges {
+			if targetPort >= portRange.Start && targetPort <= portRange.End {
+				return rule, true
+			}
+		}
+		return ForwardIPRule{}, false
+	}
+	return ForwardIPRule{}, false
+}
+
+// ValidateForwardConfiguration validates cross-file Forward safety boundaries.
+func ValidateForwardConfiguration(configuration ServerConfig) error {
+	return validateForwardConfiguration(configuration)
+}
+
 func validateHTTPPublicSchemes(
 	schemes []protocol.HTTPPublicScheme,
 	field string,
@@ -374,4 +562,9 @@ func validateHTTPPublicSchemes(
 // ValidateManagedProxies validates a complete server-owned client proxy set.
 func ValidateManagedProxies(proxies []ProxyConfig) error {
 	return validateManagedProxies(proxies)
+}
+
+// ValidateManagedForwards validates one server-owned client Forward set.
+func ValidateManagedForwards(forwards []ForwardConfig) error {
+	return validateForwards(forwards, "configuration.forwards")
 }

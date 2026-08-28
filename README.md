@@ -5,11 +5,13 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  Lightweight reverse tunneling for reliable, long-running service exposure.
+  Lightweight bidirectional tunneling for reliable, long-running network access.
 </p>
 
-Portway exposes services from private networks through a public server. It keeps
-the control plane separate from tunneled traffic, supports TCP and QUIC as its
+Portway connects networks in both directions: Proxy mode exposes client-side
+services through a public server, while Forward mode lets users access approved
+server-side TCP/UDP services through a listener on the client. It keeps the
+control plane separate from tunneled traffic, supports TCP and QUIC as its
 underlying client-server transport, and is designed around explicit ownership,
 bounded resources, and secure defaults.
 
@@ -18,6 +20,7 @@ bounded resources, and secure defaults.
 ## Highlights
 
 - TCP, UDP, and domain-based HTTP/HTTPS reverse proxying
+- TCP and UDP Forward listeners for securely reaching server-side networks
 - Selectable TCP or QUIC client-server transport
 - Authenticated and encrypted client-server connections
 - Atomic proxy registration and bounded session recovery
@@ -35,6 +38,10 @@ bounded resources, and secure defaults.
   - deployment-wide disconnect on Token changes, selective policy revocation,
     and online Managed configuration rollout
   - retention of the previous effective snapshot on validation failure
+
+Portway's two traffic modes cover both sides of private-network connectivity:
+see [Proxy and Forward modes](assets/docs/modes/README.md) for diagrams,
+configuration examples, and their security boundaries.
 
 ## Quick start
 
@@ -255,6 +262,7 @@ appropriate `client.yaml` or `server.yaml` before running the installed command.
 
 ## Public documentation
 
+- [Proxy and Forward modes](assets/docs/modes/README.md)
 - [Technical overview](assets/docs/technical/README.md)
 - [Operations endpoints](assets/docs/operations/README.md)
 - [Authentication and configuration control](assets/docs/authentication/README.md)

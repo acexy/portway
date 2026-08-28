@@ -154,7 +154,7 @@ func (s *Service) handleAdmittedConnection(
 	// The Session Registry now owns a bounded Initializing record, so this
 	// connection no longer consumes the unaffiliated admission budget.
 	releaseAdmission()
-	negotiatedCapabilities := negotiateCapabilities(clientHello.Capabilities)
+	negotiatedCapabilities := s.negotiateCapabilities(clientHello.Capabilities)
 	if err := protocol.WriteControl(connection, protocol.MessageServerHello, protocol.ServerHello{
 		ClientID:       clientHello.ClientID,
 		ManagementMode: protocol.ManagementMode(inbound.Authentication.Mode),
@@ -197,10 +197,16 @@ func (s *Service) handleAdmittedConnection(
 		if recoverableSession {
 			s.clientRegistry.Disconnect(clientHello.ClientID, sessionID, time.Now())
 			s.proxyRegistry.Suspend(clientHello.ClientID, sessionID)
+			if s.forwardRegistry != nil {
+				s.forwardRegistry.Remove(clientHello.ClientID, sessionID)
+			}
 			return
 		}
 		s.clientRegistry.Remove(clientHello.ClientID, sessionID)
 		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)
+		if s.forwardRegistry != nil {
+			s.forwardRegistry.Remove(clientHello.ClientID, sessionID)
+		}
 	}()
 
 	if err := connection.SetDeadline(time.Time{}); err != nil {
@@ -256,6 +262,7 @@ func (s *Service) handleAdmittedConnection(
 				},
 			)
 		},
+		inbound.Authentication,
 	)
 	if gracefullyClosed {
 		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)

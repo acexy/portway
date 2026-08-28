@@ -8,6 +8,19 @@ client_id: managed-client
 # 仅代理配置变化时仍使用在线切换。
 token: PORTWAY_TOKEN_REQUIRED
 
+# Managed Forward 可选权限边界。Managed Forward 始终受全局 forwards.rules 约束；
+# 此可选规则只能进一步收紧，不能扩张。省略时仅使用全局边界；只有本记录包含
+# configuration.forwards 时才允许配置。规则和 Forward 均支持热加载，并通过
+# Managed Prepare/Activate 在线切换。
+permissions:
+  forwards:
+    rules:
+      - ip_range: 10.40.0.0/16
+        tcp:
+          port_ranges:
+            - start: 5432
+              end: 5432
+
 configuration:
   # 必填。正整数；每次修改配置都必须递增，不能以相同 revision 修改内容。
   revision: 1
@@ -48,3 +61,20 @@ configuration:
       local_port: 8080
       # HTTP 必填：规范化小写 DNS 域名；TCP/UDP 禁止配置。
       domain: app.example.com
+
+  # Managed Forward 完整集合。客户端禁止在 client.yaml 中配置本地 forwards。
+  # listen_ip/listen_port 只在客户端使用；target_ip/target_port 同时受全局规则和
+  # 可选 Managed 规则审批。修改或删除条目使用 Prepare/Activate，并自动断开
+  # 受影响连接。
+  forwards:
+    - name: database
+      # 必填。可选值：tcp、udp。
+      type: tcp
+      # 必填。客户端明确监听 IP，不接受主机名。
+      listen_ip: 127.0.0.1
+      # 必填，范围 1-65535。
+      listen_port: 15432
+      # 必填。portwayd 所在网络可达的明确 IP，不接受主机名。
+      target_ip: 10.40.1.20
+      # 必填，范围 1-65535。
+      target_port: 5432

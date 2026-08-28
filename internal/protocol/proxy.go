@@ -60,6 +60,11 @@ const (
 	ProxyErrorDomainNotAllowed        ProxyErrorCode = "domain_not_allowed"
 	ProxyErrorPublicSchemeNotAllowed  ProxyErrorCode = "public_scheme_not_allowed"
 	ProxyErrorClientLimitExceeded     ProxyErrorCode = "client_limit_exceeded"
+	ProxyErrorForwardDisabled         ProxyErrorCode = "forward_disabled"
+	ProxyErrorForwardTypeNotAllowed   ProxyErrorCode = "forward_type_not_allowed"
+	ProxyErrorForwardTargetNotAllowed ProxyErrorCode = "forward_target_not_allowed"
+	ProxyErrorForwardLimitExceeded    ProxyErrorCode = "forward_limit_exceeded"
+	ProxyErrorForwardBindingInvalid   ProxyErrorCode = "forward_binding_invalid"
 )
 
 // ProxyDeclaration contains server-visible proxy configuration.

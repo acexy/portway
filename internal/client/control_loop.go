@@ -23,7 +23,12 @@ func (s *Service) runControlLoop(
 	writer *control.Writer,
 	transportSession transport.ClientSession,
 	managementMode protocol.ManagementMode,
+	forwardRuntimes ...*forwardManager,
 ) error {
+	var forwardRuntime *forwardManager
+	if len(forwardRuntimes) != 0 {
+		forwardRuntime = forwardRuntimes[0]
+	}
 	sessionContext, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
 
@@ -56,10 +61,14 @@ func (s *Service) runControlLoop(
 	var sentSequence uint64
 	var acknowledgedSequence uint64
 	var pendingManagedProxies []config.ProxyConfig
+	var pendingManagedForwardRuntime *forwardManager
 	var pendingManagedStatus *protocol.ManagedConfigStatus
 	for {
 		select {
 		case <-ctx.Done():
+			if pendingManagedForwardRuntime != nil {
+				pendingManagedForwardRuntime.close()
+			}
 			linkManager.close()
 			s.closeControlSession(
 				connection,
@@ -77,6 +86,33 @@ func (s *Service) runControlLoop(
 				return errors.New("control message reader stopped")
 			}
 			switch envelope.Type {
+			case protocol.MessageForwardLinkOffer:
+				if forwardRuntime == nil {
+					return fmt.Errorf("%w: unexpected Forward Link offer", transport.ErrProtocol)
+				}
+				var offer protocol.ForwardLinkOffer
+				if err := protocol.DecodePayload(envelope, &offer); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				forwardRuntime.deliverOffer(offer)
+			case protocol.MessageForwardBindingRevoked:
+				if forwardRuntime == nil {
+					return fmt.Errorf("%w: unexpected Forward revocation", transport.ErrProtocol)
+				}
+				var revocation protocol.ForwardBindingRevoked
+				if err := protocol.DecodePayload(envelope, &revocation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				forwardRuntime.revoke(revocation)
+			case protocol.MessageCancelForwardLink:
+				if forwardRuntime == nil {
+					return fmt.Errorf("%w: unexpected Forward cancellation", transport.ErrProtocol)
+				}
+				var cancellation protocol.CancelForwardLink
+				if err := protocol.DecodePayload(envelope, &cancellation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				forwardRuntime.cancelLink(cancellation.LinkID)
 			case protocol.MessagePong:
 				var heartbeat protocol.Heartbeat
 				if err := protocol.DecodePayload(envelope, &heartbeat); err != nil {
@@ -128,6 +164,10 @@ func (s *Service) runControlLoop(
 				if err != nil {
 					return err
 				}
+				forwards, err := managedForwardConfigurations(preparation.Forwards)
+				if err != nil {
+					return err
+				}
 				if pendingManagedStatus != nil {
 					if status != *pendingManagedStatus {
 						return fmt.Errorf(
@@ -155,6 +195,13 @@ func (s *Service) runControlLoop(
 					)
 				}
 				pendingManagedProxies = proxies
+				pendingManagedForwardRuntime, err = newForwardManager(
+					sessionContext, sessionLogger, s.runtimeIdentity(), sessionID,
+					writer, transportSession, forwards,
+				)
+				if err != nil {
+					return transport.Permanent(err)
+				}
 				pendingManagedStatus = &status
 				if err := writer.Write(
 					protocol.MessageManagedConfigPrepared,
@@ -163,7 +210,7 @@ func (s *Service) runControlLoop(
 					return err
 				}
 			case protocol.MessageManagedConfigActivate:
-				var activation protocol.ManagedConfigStatus
+				var activation protocol.ManagedConfigActivate
 				if err := protocol.DecodePayload(envelope, &activation); err != nil {
 					return classifyControlProtocolError(err)
 				}
@@ -171,7 +218,7 @@ func (s *Service) runControlLoop(
 					s.managedMutex.RLock()
 					currentStatus := s.managedStatus
 					s.managedMutex.RUnlock()
-					if activation != currentStatus {
+					if activation.Revision != currentStatus.Revision || activation.Digest != currentStatus.Digest {
 						return fmt.Errorf(
 							"%w: managed configuration activation has no preparation",
 							transport.ErrProtocol,
@@ -179,13 +226,13 @@ func (s *Service) runControlLoop(
 					}
 					if err := writer.Write(
 						protocol.MessageManagedConfigApplied,
-						activation,
+						currentStatus,
 					); err != nil {
 						return err
 					}
 					continue
 				}
-				if activation != *pendingManagedStatus {
+				if activation.Revision != pendingManagedStatus.Revision || activation.Digest != pendingManagedStatus.Digest {
 					return fmt.Errorf(
 						"%w: managed configuration activation mismatch",
 						transport.ErrProtocol,
@@ -193,16 +240,25 @@ func (s *Service) runControlLoop(
 				}
 				s.setRuntimeProxies(pendingManagedProxies)
 				linkManager.updateProxies(pendingManagedProxies)
+				if err := pendingManagedForwardRuntime.applyBindings(activation.Forwards); err != nil {
+					return fmt.Errorf("%w: %v", transport.ErrProtocol, err)
+				}
+				pendingManagedForwardRuntime.start()
+				if forwardRuntime != nil {
+					forwardRuntime.close()
+				}
+				forwardRuntime = pendingManagedForwardRuntime
 				s.managedMutex.Lock()
-				s.managedStatus = activation
+				s.managedStatus = protocol.ManagedConfigStatus{Revision: activation.Revision, Digest: activation.Digest}
 				s.managedMutex.Unlock()
 				if err := writer.Write(
 					protocol.MessageManagedConfigApplied,
-					activation,
+					s.managedStatus,
 				); err != nil {
 					return err
 				}
 				pendingManagedProxies = nil
+				pendingManagedForwardRuntime = nil
 				pendingManagedStatus = nil
 				sessionLogger.InfoWithField(
 					"managed configuration applied",

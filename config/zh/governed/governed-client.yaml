@@ -42,6 +42,25 @@ permissions:
       - app.example.com
       - "*.customer.example.com"
 
+  # Governed 客户端只有显式配置 forward_types 和对应规则后才获得 Forward 权限。
+  # 每条规则必须完整包含于 server.yaml 的某一条 forwards.rules，禁止跨全局规则
+  # 拼接或自动裁剪。权限变化支持热加载，并吊销受影响 Governed Session 及其连接。
+  forward_types:
+    - tcp
+    - udp
+  forwards:
+    rules:
+      - ip_range: 10.20.0.0/16
+        tcp:
+          port_ranges:
+            - start: 5432
+              end: 5432
+      - ip_range: 10.30.0.53/32
+        udp:
+          port_ranges:
+            - start: 53
+              end: 53
+
   # 可选配额。缺省使用下列默认值；显式值必须大于 0 且不超过硬上限。
   # 各类型代理上限不得超过 max_proxies。
   limits:
@@ -55,3 +74,9 @@ permissions:
     max_http_proxies: 10
     # Pending 与 Active Link 合计；默认 100，硬上限 512。
     max_active_links: 100
+
+    # Forward 配额，与程序级 Link 总上限共同生效。
+    max_forwards: 5
+    max_tcp_forwards: 4
+    max_udp_forwards: 1
+    max_active_forward_links: 20

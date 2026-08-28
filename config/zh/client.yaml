@@ -69,3 +69,22 @@ proxies:
     local_ip: 127.0.0.1
     local_port: 53
     remote_port: 5353
+
+# Forward 在 portway 客户端接收流量，经认证隧道访问 portwayd 所在网络中的
+# IP:端口。Shared/Governed 客户端自行维护完整集合；Managed 客户端禁止本地
+# 配置，由服务端下发。同一客户端的 Proxy 和 Forward 名称必须全局唯一。
+# 客户端 YAML 仅在进程启动时读取；修改 Forward 或其他本地配置后必须重启。
+forwards:
+  - name: database
+    # 必填。可选值：tcp、udp。
+    type: tcp
+    # 必填。客户端明确监听 IP，不接受主机名。除非需要供其他机器访问，
+    # 否则应绑定回环地址。
+    listen_ip: 127.0.0.1
+    # 必填。客户端监听端口，范围 1-65535。
+    listen_port: 15432
+    # 必填。portwayd 所在网络可达的明确目标 IP，不接受主机名。服务端会按
+    # 全局 Forward Allowlist 和 Governed 客户端权限共同审批。
+    target_ip: 10.20.1.15
+    # 必填。服务端侧目标端口，范围 1-65535。
+    target_port: 5432

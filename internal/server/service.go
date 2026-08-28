@@ -14,6 +14,7 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
+	forwardregistry "github.com/acexy/portway/internal/forward/registry"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/logging"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
@@ -42,6 +43,7 @@ type Service struct {
 	configuration         *configurationManager
 	clientRegistry        *session.Registry
 	proxyRegistry         *proxyregistry.Registry
+	forwardRegistry       *forwardregistry.Registry
 	linkBroker            *link.Broker
 	transportServer       transport.Server
 	authenticationStore   *authentication.Store
@@ -114,6 +116,8 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
+	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardTargetAllowed)
+	defer s.forwardRegistry.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,
 		s.logger.WithComponent("proxy_registry"),

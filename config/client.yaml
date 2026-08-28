@@ -114,3 +114,25 @@ proxies:
     local_port: 53
     # * Required when type=udp. Public UDP port, range 1-65535.
     remote_port: 5353
+
+# A Forward accepts traffic on portway and carries it through the authenticated
+# tunnel to an IP:port reachable from portwayd. Shared and Governed clients own
+# this complete set. Managed clients must not configure it locally because the
+# server supplies it. The client reads its YAML only at process startup; local
+# configuration changes, including Forward changes, require a client restart.
+# Names are unique across proxies and forwards for the same client.
+forwards:
+  - name: database
+    # * Required. Allowed values: tcp, udp.
+    type: tcp
+    # * Required. Explicit client-side listening IP; hostnames are not
+    # accepted. Bind loopback unless other machines must use this entry.
+    listen_ip: 127.0.0.1
+    # * Required. Client-side listening port, range 1-65535.
+    listen_port: 15432
+    # * Required. Explicit target IP reachable from portwayd; hostnames are
+    # not accepted. The server checks this IP and port against its global
+    # Forward allowlist and any Governed client permissions.
+    target_ip: 10.20.1.15
+    # * Required. Server-side target port, range 1-65535.
+    target_port: 5432

@@ -75,6 +75,27 @@ permissions:
       - app.example.com
       - "*.customer.example.com"
 
+  # Governed clients receive no Forward permission unless forward_types and
+  # matching rules are explicitly configured. Every rule must be a complete
+  # subset of one server-wide forwards.rules entry; ranges are never clipped or
+  # combined across global rules. Forward permission changes are hot-reloadable
+  # and revoke the affected Governed Session and its connections.
+  forward_types:
+    - tcp
+    - udp
+  forwards:
+    rules:
+      - ip_range: 10.20.0.0/16
+        tcp:
+          port_ranges:
+            - start: 5432
+              end: 5432
+      - ip_range: 10.30.0.53/32
+        udp:
+          port_ranges:
+            - start: 53
+              end: 53
+
   # Optional. Per-client ceilings applied before the program hard limits.
   # Omitted fields use the defaults shown below. Every configured value must be
   # greater than zero and no greater than its documented hard maximum.
@@ -95,3 +116,9 @@ permissions:
     # Counts pending and active links for this client.
     # Default: 100. Hard maximum: 512.
     max_active_links: 100
+
+    # Forward-specific ceilings, evaluated in addition to Link limits.
+    max_forwards: 5
+    max_tcp_forwards: 4
+    max_udp_forwards: 1
+    max_active_forward_links: 20

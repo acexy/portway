@@ -33,11 +33,11 @@ const (
 )
 
 var errManagedLocalProxies = errors.New(
-	"managed clients cannot configure local proxies",
+	"managed clients cannot configure local proxies or forwards",
 )
 
 var errClientDeclaredProxiesRequired = errors.New(
-	"shared and governed clients require at least one local proxy",
+	"shared and governed clients require at least one local proxy or forward",
 )
 
 var errReconnectPeriodExceeded = errors.New(
@@ -69,6 +69,7 @@ type Service struct {
 	runtimeMutex    sync.RWMutex
 	runtimeClientID string
 	runtimeProxies  []config.ProxyConfig
+	runtimeForwards []config.ForwardConfig
 	managedMutex    sync.RWMutex
 	managedStatus   protocol.ManagedConfigStatus
 }
@@ -80,6 +81,7 @@ func NewService(logger *logging.Logger, configuration config.ClientConfig) *Serv
 		configuration:   configuration,
 		runtimeClientID: configuration.ClientID,
 		runtimeProxies:  append([]config.ProxyConfig(nil), configuration.Proxies...),
+		runtimeForwards: append([]config.ForwardConfig(nil), configuration.Forwards...),
 	}
 }
 

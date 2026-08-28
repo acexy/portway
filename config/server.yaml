@@ -59,6 +59,39 @@ tunnel:
   # which disables HTTPS. It must differ from all other TCP listeners.
   https_listen_address: ""
 
+# Forward is disabled by default. When enabled, rules are mandatory and form a
+# server-wide allowlist that Shared, Governed, and Managed clients cannot bypass.
+# Every IP rule binds that CIDR to its own TCP and/or UDP port ranges; an IP and
+# port must match the same rule. CIDRs in one rule set must not overlap or
+# contain one another. Exact IPv4/IPv6 targets use /32 and /128. Target hostnames
+# are not supported. All forwards fields and client Forward permissions are
+# hot-reloadable as one candidate snapshot. A successful reload automatically
+# closes affected Forward connections; invalid candidates preserve the previous
+# snapshot. Existing Proxy connections are not affected by unrelated changes.
+forwards:
+  # Optional. Defaults to false. Rules may be retained while disabled so the
+  # feature can be enabled later by hot reload without redesigning the policy.
+  enabled: false
+  # Required and non-empty whenever the forwards section is configured.
+  rules:
+    - ip_range: 10.0.0.0/8
+      tcp:
+        # Inclusive ranges in 1-65535; sorted and non-overlapping.
+        port_ranges:
+          - start: 22
+            end: 22
+          - start: 5432
+            end: 5432
+      udp:
+        port_ranges:
+          - start: 53
+            end: 53
+    - ip_range: 192.168.10.0/24
+      tcp:
+        port_ranges:
+          - start: 8000
+            end: 8999
+
 # Optional. Public HTTPS SNI certificate set. At least one entry is required
 # when tunnel.https_listen_address is configured. Exact names take precedence
 # over single-label wildcards. Every declared name must be covered by the
