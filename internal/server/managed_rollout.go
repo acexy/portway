@@ -12,6 +12,7 @@ import (
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -185,9 +186,9 @@ func (s *Service) applyManagedGeneration(
 		clientID,
 		sessionID,
 		"managed-"+preparation.Digest,
-		protocol.SyncProxies{Revision: declarations.Revision, Proxies: declarations.Proxies},
+		proxyregistry.SyncRequest{Revision: declarations.Revision, Proxies: declarations.Proxies},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != proxyregistry.SyncStatusApplied {
 		if deactivate {
 			s.proxyRegistry.Activate(clientID, sessionID)
 		}
@@ -202,7 +203,7 @@ func (s *Service) applyManagedGeneration(
 	}
 	forwardResults := []protocol.ForwardResult{}
 	if s.forwardRegistry != nil {
-		var forwardError *protocol.ProxyError
+		var forwardError *protocol.ForwardError
 		forwardResults, forwardError = s.forwardRegistry.Sync(
 			clientID, sessionID, exchange.controlWriter(), authenticationContext,
 			config.DefaultForwardPermissionLimits().MaxActiveLinks, declarations.Forwards,

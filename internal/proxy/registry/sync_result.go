@@ -10,7 +10,7 @@ func (state *clientState) cacheSyncRequest(
 	requestID string,
 	revision uint64,
 	fingerprint [sha256.Size]byte,
-	result protocol.SyncResult,
+	result SyncResult,
 ) {
 	if len(state.requestOrder) == maxCachedSyncRequests {
 		oldest := state.requestOrder[0]
@@ -24,19 +24,19 @@ func (state *clientState) cacheSyncRequest(
 }
 func rejectedSyncResult(
 	revision uint64,
-	code protocol.ProxyErrorCode,
+	code ErrorCode,
 	proxyName string,
 	message string,
-) protocol.SyncResult {
-	return protocol.SyncResult{
+) SyncResult {
+	return SyncResult{
 		Revision: revision,
-		Status:   protocol.ProxySyncStatusRejected,
+		Status:   SyncStatusRejected,
 		Proxies:  []protocol.ProxyResult{},
-		Error: &protocol.ProxyError{
+		Error: &Error{
 			Code:      code,
 			Message:   message,
 			ProxyName: proxyName,
-			Retryable: code == protocol.ProxyErrorSessionInactive,
+			Retryable: code == ErrorSessionInactive,
 		},
 	}
 }

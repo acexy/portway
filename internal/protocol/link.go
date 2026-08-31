@@ -22,11 +22,12 @@ const (
 )
 
 const (
-	LinkErrorLocalDialFailed LinkErrorCode = "local_dial_failed"
-	LinkErrorTransportFailed LinkErrorCode = "transport_failed"
-	LinkErrorInvalidBinding  LinkErrorCode = "invalid_binding"
-	LinkErrorExpired         LinkErrorCode = "link_expired"
-	LinkErrorCancelled       LinkErrorCode = "link_cancelled"
+	LinkErrorLocalDialFailed  LinkErrorCode = "local_dial_failed"
+	LinkErrorTransportFailed  LinkErrorCode = "transport_failed"
+	LinkErrorInvalidBinding   LinkErrorCode = "invalid_binding"
+	LinkErrorExpired          LinkErrorCode = "link_expired"
+	LinkErrorCancelled        LinkErrorCode = "link_cancelled"
+	LinkErrorTargetDialFailed LinkErrorCode = "target_dial_failed"
 )
 
 // OpenLink asks a client to create one RoleData stream and local connection.

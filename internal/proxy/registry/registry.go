@@ -55,7 +55,7 @@ type clientState struct {
 	revision           uint64
 	fingerprint        [sha256.Size]byte
 	lastRequestID      string
-	lastResult         protocol.SyncResult
+	lastResult         SyncResult
 	requestCache       map[string]cachedSyncRequest
 	requestOrder       []string
 	authentication     authentication.Context
@@ -70,7 +70,7 @@ type clientState struct {
 type cachedSyncRequest struct {
 	revision    uint64
 	fingerprint [sha256.Size]byte
-	result      protocol.SyncResult
+	result      SyncResult
 }
 
 // Stats is a low-cardinality snapshot of registered proxy resources.
@@ -263,7 +263,7 @@ func (manager *Registry) AttachAuthenticated(
 	state.revision = 0
 	state.fingerprint = [sha256.Size]byte{}
 	state.lastRequestID = ""
-	state.lastResult = protocol.SyncResult{}
+	state.lastResult = SyncResult{}
 	state.requestCache = make(map[string]cachedSyncRequest)
 	state.requestOrder = nil
 	state.authentication = authenticationContext

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	forwardtcp "github.com/acexy/portway/internal/forward/tcp"
 	forwardudp "github.com/acexy/portway/internal/forward/udp"
@@ -37,19 +38,47 @@ type binding struct {
 
 // Registry owns active Forward Bindings.
 type Registry struct {
-	mutex      sync.RWMutex
-	bindings   map[string]*binding
-	broker     *link.Broker
-	policy     Policy
-	closed     bool
+	mutex     sync.RWMutex
+	bindings  map[string]*binding
+	broker    *link.Broker
+	policy    Policy
+	udpConfig func() config.UDPConfig
+	closed    bool
+}
+
+// Stats is a low-cardinality snapshot of Forward Binding state.
+type Stats struct {
+	Bindings       int
+	ActiveBindings int
+	TCPBindings    int
+	UDPBindings    int
+}
+
+// SnapshotStats returns aggregate Forward Binding counts.
+func (registry *Registry) SnapshotStats() Stats {
+	registry.mutex.RLock()
+	defer registry.mutex.RUnlock()
+	stats := Stats{Bindings: len(registry.bindings)}
+	for _, current := range registry.bindings {
+		if current.active {
+			stats.ActiveBindings++
+		}
+		if current.declaration.Type == protocol.ForwardTypeTCP {
+			stats.TCPBindings++
+		} else if current.declaration.Type == protocol.ForwardTypeUDP {
+			stats.UDPBindings++
+		}
+	}
+	return stats
 }
 
 // New creates a Forward Registry.
-func New(broker *link.Broker, policy Policy) *Registry {
+func New(broker *link.Broker, policy Policy, udpConfig func() config.UDPConfig) *Registry {
 	return &Registry{
-		bindings:   make(map[string]*binding),
-		broker:     broker,
-		policy:     policy,
+		bindings:  make(map[string]*binding),
+		broker:    broker,
+		policy:    policy,
+		udpConfig: udpConfig,
 	}
 }
 
@@ -61,7 +90,7 @@ func (registry *Registry) Sync(
 	authenticationContext authentication.Context,
 	maxActiveLinks int,
 	declarations []protocol.ForwardDeclaration,
-) ([]protocol.ForwardResult, *protocol.ProxyError) {
+) ([]protocol.ForwardResult, *protocol.ForwardError) {
 	if validationError := registry.Validate(authenticationContext, declarations); validationError != nil {
 		return nil, validationError
 	}
@@ -69,7 +98,7 @@ func (registry *Registry) Sync(
 	registry.mutex.Lock()
 	if registry.closed {
 		registry.mutex.Unlock()
-		return nil, forwardError(protocol.ProxyErrorSessionInactive, "", "Forward Registry is closed")
+		return nil, forwardError(protocol.ForwardErrorSessionInactive, "", "Forward Registry is closed")
 	}
 	old := make([]*binding, 0)
 	for key, existing := range registry.bindings {
@@ -86,7 +115,7 @@ func (registry *Registry) Sync(
 				registry.bindings[bindingKey(previous.clientID, previous.sessionID, previous.declaration.Name)] = previous
 			}
 			registry.mutex.Unlock()
-			return nil, forwardError(protocol.ProxyErrorInvalidRequest, declaration.Name, "generate Forward Binding")
+			return nil, forwardError(protocol.ForwardErrorInvalidRequest, declaration.Name, "generate Forward Binding")
 		}
 		_, active := registry.policy(authenticationContext, declaration)
 		current := &binding{
@@ -95,9 +124,13 @@ func (registry *Registry) Sync(
 			authentication: authenticationContext, maxActiveLinks: maxActiveLinks, active: active,
 		}
 		registry.bindings[bindingKey(clientID, sessionID, declaration.Name)] = current
-		results = append(results, protocol.ForwardResult{
+		result := protocol.ForwardResult{
 			Name: declaration.Name, Type: declaration.Type, BindingID: bindingID, Active: active,
-		})
+		}
+		if declaration.Type == protocol.ForwardTypeUDP {
+			result.UDP = protocolUDPConfig(registry.udpConfig())
+		}
+		results = append(results, result)
 	}
 	registry.mutex.Unlock()
 	for _, previous := range old {
@@ -110,24 +143,24 @@ func (registry *Registry) Sync(
 func (registry *Registry) Validate(
 	authenticationContext authentication.Context,
 	declarations []protocol.ForwardDeclaration,
-) *protocol.ProxyError {
+) *protocol.ForwardError {
 	names := make(map[string]struct{}, len(declarations))
 	for _, declaration := range declarations {
 		if declaration.Name == "" || declaration.TargetPort == 0 {
-			return forwardError(protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid Forward declaration")
+			return forwardError(protocol.ForwardErrorInvalidForward, declaration.Name, "invalid Forward declaration")
 		}
 		switch declaration.Type {
 		case protocol.ForwardTypeTCP, protocol.ForwardTypeUDP:
 		default:
-			return forwardError(protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid Forward type")
+			return forwardError(protocol.ForwardErrorInvalidForward, declaration.Name, "invalid Forward type")
 		}
 		if _, duplicate := names[declaration.Name]; duplicate {
-			return forwardError(protocol.ProxyErrorInvalidProxy, declaration.Name, "duplicate Forward name")
+			return forwardError(protocol.ForwardErrorInvalidForward, declaration.Name, "duplicate Forward name")
 		}
 		names[declaration.Name] = struct{}{}
 		configured, _ := registry.policy(authenticationContext, declaration)
 		if !configured {
-			return forwardError(protocol.ProxyErrorForwardTargetNotAllowed, declaration.Name, "Forward target is not allowed")
+			return forwardError(protocol.ForwardErrorTargetNotAllowed, declaration.Name, "Forward target is not allowed")
 		}
 	}
 	return nil
@@ -144,13 +177,13 @@ func (registry *Registry) Offer(
 	if current == nil || !current.active || current.bindingID != request.BindingID ||
 		current.declaration.Type != request.Type {
 		registry.mutex.RUnlock()
-		return rejectedOffer(request, protocol.ProxyErrorForwardBindingInvalid, "Forward Binding is invalid")
+		return rejectedOffer(request, protocol.ForwardErrorBindingInvalid, "Forward Binding is invalid")
 	}
 	bindingSnapshot := *current
 	registry.mutex.RUnlock()
 	_, active := registry.policy(bindingSnapshot.authentication, bindingSnapshot.declaration)
 	if !active {
-		return rejectedOffer(request, protocol.ProxyErrorForwardTargetNotAllowed, "Forward target is not allowed")
+		return rejectedOffer(request, protocol.ForwardErrorTargetNotAllowed, "Forward target is not allowed")
 	}
 	offer, err := registry.broker.OfferStream(link.Target{
 		ClientID: clientID, SessionID: sessionID,
@@ -163,9 +196,9 @@ func (registry *Registry) Offer(
 		Direction:      protocol.LinkDirectionForward,
 	}, registry.handlerFactory(bindingSnapshot))
 	if err != nil {
-		code := protocol.ProxyErrorInvalidRequest
+		code := protocol.ForwardErrorInvalidRequest
 		if errors.Is(err, link.ErrCapacityReached) {
-			code = protocol.ProxyErrorForwardLimitExceeded
+			code = protocol.ForwardErrorLimitExceeded
 		}
 		return rejectedOffer(request, code, "Forward Link cannot be created")
 	}
@@ -193,7 +226,10 @@ func (registry *Registry) handlerFactory(current binding) link.StreamHandlerFact
 	case protocol.ForwardTypeTCP:
 		return forwardtcp.TargetHandlerFactory(address, forwardTargetDialTimeout, authorize)
 	case protocol.ForwardTypeUDP:
-		return forwardudp.TargetHandlerFactory(address, 8192, 3*time.Second, authorize)
+		configuration := registry.udpConfig()
+		return forwardudp.TargetHandlerFactory(
+			address, configuration.MaxDatagramSize, configuration.LinkWriteTimeout, authorize,
+		)
 	default:
 		return func(context.Context) (link.StreamHandler, error) {
 			return nil, errors.New("unsupported Forward type")
@@ -226,8 +262,11 @@ func (registry *Registry) ApplyPolicy(
 	affected := make([]*binding, 0)
 	deactivated := make([]*binding, 0)
 	activated := make([]*binding, 0)
+	refreshed := make([]*binding, 0)
 	for _, current := range registry.bindings {
 		_, active := registry.policy(current.authentication, current.declaration)
+		bindingAffected := affectedPolicy(current.authentication, current.declaration)
+		wasActive := current.active
 		if current.active && !active {
 			current.active = false
 			deactivated = append(deactivated, current)
@@ -236,8 +275,11 @@ func (registry *Registry) ApplyPolicy(
 			current.active = true
 			activated = append(activated, current)
 		}
-		if affectedPolicy(current.authentication, current.declaration) || !active {
+		if bindingAffected || !active {
 			affected = append(affected, current)
+		}
+		if bindingAffected && wasActive && active {
+			refreshed = append(refreshed, current)
 		}
 	}
 	registry.mutex.Unlock()
@@ -253,11 +295,43 @@ func (registry *Registry) ApplyPolicy(
 			Reason:     "policy_changed",
 		})
 	}
+	for _, current := range refreshed {
+		_ = current.writer.Write(protocol.MessageForwardBindingRevoked, protocol.ForwardBindingRevoked{
+			Name: current.declaration.Name, Type: current.declaration.Type,
+			BindingID: current.bindingID, Generation: generation, Reason: "policy_changed",
+		})
+	}
+	activated = append(activated, refreshed...)
 	for _, current := range activated {
-		_ = current.writer.Write(protocol.MessageForwardBindingActivated, protocol.ForwardBindingActivated{
+		activation := protocol.ForwardBindingActivated{
 			Name: current.declaration.Name, Type: current.declaration.Type,
 			BindingID: current.bindingID, Generation: generation,
-		})
+		}
+		if current.declaration.Type == protocol.ForwardTypeUDP {
+			activation.UDP = protocolUDPConfig(registry.udpConfig())
+		}
+		_ = current.writer.Write(protocol.MessageForwardBindingActivated, activation)
+	}
+}
+
+func protocolUDPConfig(configuration config.UDPConfig) *protocol.ForwardUDPConfig {
+	return &protocol.ForwardUDPConfig{
+		AssociationIdleTimeout:                configuration.AssociationIdleTimeout,
+		LinkWriteTimeout:                      configuration.LinkWriteTimeout,
+		MaxDatagramSize:                       configuration.MaxDatagramSize,
+		MaxAssociations:                       configuration.MaxAssociations,
+		MaxAssociationsPerClient:              configuration.MaxAssociationsPerClient,
+		MaxAssociationsPerForward:             configuration.MaxAssociationsPerProxy,
+		MaxAssociationsPerSourceIP:            configuration.MaxAssociationsPerSourceIP,
+		MaxPendingAssociations:                configuration.MaxPendingAssociations,
+		MaxPendingAssociationsPerClient:       configuration.MaxPendingAssociationsPerClient,
+		MaxPendingAssociationsPerForward:      configuration.MaxPendingAssociationsPerProxy,
+		MaxNewAssociationsPerSecond:           configuration.MaxNewAssociationsPerSecond,
+		MaxNewAssociationsPerSecondPerClient:  configuration.MaxNewAssociationsPerSecondPerClient,
+		MaxNewAssociationsPerSecondPerForward: configuration.MaxNewAssociationsPerSecondPerProxy,
+		MaxQueuedDatagramsPerAssociation:      configuration.MaxQueuedDatagramsPerAssociation,
+		MaxQueuedBytesPerAssociation:          configuration.MaxQueuedBytesPerAssociation,
+		MaxQueuedBytes:                        configuration.MaxQueuedBytes,
 	}
 }
 
@@ -288,13 +362,13 @@ func newBindingID() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }
 
-func forwardError(code protocol.ProxyErrorCode, name string, message string) *protocol.ProxyError {
-	return &protocol.ProxyError{Code: code, ProxyName: name, Message: message, Retryable: false}
+func forwardError(code protocol.ForwardErrorCode, name string, message string) *protocol.ForwardError {
+	return &protocol.ForwardError{Code: code, ForwardName: name, Message: message, Retryable: false}
 }
 
 func rejectedOffer(
 	request protocol.RequestForwardLink,
-	code protocol.ProxyErrorCode,
+	code protocol.ForwardErrorCode,
 	message string,
 ) protocol.ForwardLinkOffer {
 	return protocol.ForwardLinkOffer{

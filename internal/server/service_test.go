@@ -31,23 +31,23 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 					Authentication: config.ClientAuthenticationConfig{ClientID: "customer-a"},
 					Permissions: config.GovernedPermissions{
 						Proxies: config.GovernedProxyPermissions{
-						TCP: &config.ProxyPermission{
-							RemotePortRanges: []config.PortRange{{Start: 20000, End: 20999}},
-						},
-						HTTP: &config.HTTPPermission{
-							PublicSchemes: []protocol.HTTPPublicScheme{
-								protocol.HTTPPublicSchemeHTTPS,
+							TCP: &config.ProxyPermission{
+								RemotePortRanges: []config.PortRange{{Start: 20000, End: 20999}},
 							},
-							Domains: []string{"*.customer-a.example.com"},
-						},
-						Limits: config.ProxyPermissionLimits{MaxTotal: 2},
+							HTTP: &config.HTTPPermission{
+								PublicSchemes: []protocol.HTTPPublicScheme{
+									protocol.HTTPPublicSchemeHTTPS,
+								},
+								Domains: []string{"*.customer-a.example.com"},
+							},
+							Limits: config.ProxyPermissionLimits{MaxTotal: 2},
 						},
 					},
 				},
 			},
 		}),
 	}
-	allowed := protocol.SyncProxies{
+	allowed := proxyregistry.SyncRequest{
 		Revision: 1,
 		Proxies: []protocol.ProxyDeclaration{
 			{Name: "ssh", Type: protocol.ProxyTypeTCP, RemotePort: 20022},
@@ -67,7 +67,7 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 	disallowed.Proxies[0].RemotePort = 22022
 	result := service.validateGovernedProxies("customer-a", disallowed)
 	if result == nil || result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorRemotePortNotAllowed {
+		result.Error.Code != proxyregistry.ErrorRemotePortNotAllowed {
 		t.Fatalf("expected remote port rejection, got %+v", result)
 	}
 
@@ -78,7 +78,7 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 	}
 	result = service.validateGovernedProxies("customer-a", disallowed)
 	if result == nil || result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorPublicSchemeNotAllowed {
+		result.Error.Code != proxyregistry.ErrorPublicSchemeNotAllowed {
 		t.Fatalf("expected public scheme rejection, got %+v", result)
 	}
 }
@@ -257,7 +257,7 @@ func TestRevokedAuthenticationContextsScopesTokenRotationToRecord(t *testing.T) 
 		configuration.ManagedClients = map[string]config.ManagedClientConfig{
 			"managed": {
 				Authentication: config.ClientAuthenticationConfig{ClientID: "managed", Token: managedToken},
-				Configuration: config.ManagedConfiguration{Revision: 1},
+				Configuration:  config.ManagedConfiguration{Revision: 1},
 			},
 		}
 		return configuration
@@ -562,7 +562,7 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 		"governed-client",
 		"session-1",
 		"request-one",
-		protocol.SyncProxies{
+		proxyregistry.SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{{
 				Name:       "governed-proxy",
@@ -571,7 +571,7 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 			}},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != proxyregistry.SyncStatusApplied {
 		t.Fatalf("register governed proxy: %+v", result)
 	}
 
@@ -905,10 +905,10 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	current.Proxies.HTTPS = config.HTTPSConfig{
 		ListenAddress: "127.0.0.1:8443",
 		Certificates: []config.HTTPSCertificateConfig{{
-		Domains:  []string{"localhost"},
-		CertFile: certificateFile,
-		KeyFile:  keyFile,
-	}}}
+			Domains:  []string{"localhost"},
+			CertFile: certificateFile,
+			KeyFile:  keyFile,
+		}}}
 	snapshot, err := config.BuildAuthenticationSnapshot(current)
 	if err != nil {
 		t.Fatal(err)
@@ -935,10 +935,10 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	candidate.Proxies.HTTPS = config.HTTPSConfig{
 		ListenAddress: current.Proxies.HTTPS.ListenAddress,
 		Certificates: []config.HTTPSCertificateConfig{{
-		Domains:  []string{"localhost"},
-		CertFile: replacementCertificateFile,
-		KeyFile:  replacementKeyFile,
-	}}}
+			Domains:  []string{"localhost"},
+			CertFile: replacementCertificateFile,
+			KeyFile:  replacementKeyFile,
+		}}}
 	if err := service.applyConfigurationCandidate(candidate); err != nil {
 		t.Fatalf("apply HTTPS certificate path update: %v", err)
 	}
@@ -1269,10 +1269,10 @@ func TestManagedConfigurationRevisionMustIncrease(t *testing.T) {
 			Configuration: config.ManagedConfiguration{
 				Revision: 2,
 				Proxies: []config.ProxyConfig{{
-					Name:       "ssh",
-					Type:       "tcp",
-					Local:      config.EndpointConfig{IP: "127.0.0.1", Port: 22},
-					Public:     config.ProxyPublicConfig{Port: 22022},
+					Name:   "ssh",
+					Type:   "tcp",
+					Local:  config.EndpointConfig{IP: "127.0.0.1", Port: 22},
+					Public: config.ProxyPublicConfig{Port: 22022},
 				}},
 			},
 		},
@@ -1575,7 +1575,7 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 	}
 }
 
-func TestServeControlMessagesRequiresInitialProxySynchronization(t *testing.T) {
+func TestServeControlMessagesRequiresInitialConfigurationSynchronization(t *testing.T) {
 	t.Parallel()
 
 	clientConnection, serverConnection := net.Pipe()
@@ -1607,7 +1607,7 @@ func TestServeControlMessagesRequiresInitialProxySynchronization(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := <-results; err == nil ||
-		!strings.Contains(err.Error(), "expected initial sync_proxies") {
+		!strings.Contains(err.Error(), "expected initial sync_configuration") {
 		t.Fatalf("unexpected initial message error: %v", err)
 	}
 }
@@ -1638,20 +1638,33 @@ func TestServeControlMessagesRejectsTCPMessageWithoutCapability(t *testing.T) {
 
 	if err := protocol.WriteControlWithRequestID(
 		clientConnection,
-		protocol.MessageSyncProxies,
+		protocol.MessageSyncConfiguration,
 		"request-one",
-		protocol.SyncProxies{
+		protocol.SyncConfiguration{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				{Name: "web", Type: protocol.ProxyTypeTCP, RemotePort: 8080},
 			},
+			Forwards: []protocol.ForwardDeclaration{},
 		},
 	); err != nil {
 		t.Fatalf("write proxy synchronization: %v", err)
 	}
+	envelope, err := protocol.ReadControl(clientConnection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejection protocol.SyncConfigurationResult
+	if err := protocol.DecodePayload(envelope, &rejection); err != nil {
+		t.Fatal(err)
+	}
+	if rejection.Status != protocol.ConfigurationSyncStatusRejected || rejection.Error == nil ||
+		rejection.Error.Code != protocol.ConfigurationErrorProxyTypeNotAllowed {
+		t.Fatalf("unexpected capability rejection: %+v", rejection)
+	}
 
-	err := <-results
-	if err == nil || err.Error() != "tcp proxy registration requires a negotiated capability" {
+	err = <-results
+	if !errors.Is(err, errProxyRegistrationRejected) {
 		t.Fatalf("unexpected capability validation error: %v", err)
 	}
 }

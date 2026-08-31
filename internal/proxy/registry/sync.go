@@ -15,8 +15,8 @@ func (manager *Registry) Sync(
 	clientID string,
 	sessionID string,
 	requestID string,
-	request protocol.SyncProxies,
-) protocol.SyncResult {
+	request SyncRequest,
+) SyncResult {
 	return manager.sync(clientID, sessionID, requestID, request, false)
 }
 
@@ -25,8 +25,8 @@ func (manager *Registry) SyncAllowEmpty(
 	clientID string,
 	sessionID string,
 	requestID string,
-	request protocol.SyncProxies,
-) protocol.SyncResult {
+	request SyncRequest,
+) SyncResult {
 	return manager.sync(clientID, sessionID, requestID, request, true)
 }
 
@@ -34,9 +34,9 @@ func (manager *Registry) sync(
 	clientID string,
 	sessionID string,
 	requestID string,
-	request protocol.SyncProxies,
+	request SyncRequest,
 	allowEmpty bool,
-) protocol.SyncResult {
+) SyncResult {
 	manager.registrationMutex.Lock()
 	registrationLocked := true
 	defer func() {
@@ -48,14 +48,14 @@ func (manager *Registry) sync(
 	if err := protocol.ValidateRequestID(requestID); err != nil {
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			err.Error(),
 		)
 	}
 	fingerprintBytes, err := json.Marshal(request.Proxies)
 	if err != nil {
-		return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidRequest, "", "encode proxy declaration")
+		return rejectedSyncResult(request.Revision, ErrorInvalidRequest, "", "encode proxy declaration")
 	}
 	fingerprint := sha256.Sum256(fingerprintBytes)
 
@@ -64,7 +64,7 @@ func (manager *Registry) sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorSessionInactive,
+			ErrorSessionInactive,
 			"",
 			"proxy registry is closed",
 		)
@@ -74,7 +74,7 @@ func (manager *Registry) sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorSessionInactive,
+			ErrorSessionInactive,
 			"",
 			"client session is not active",
 		)
@@ -88,7 +88,7 @@ func (manager *Registry) sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			"proxy request ID payload changed",
 		)
@@ -97,7 +97,7 @@ func (manager *Registry) sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			"proxy revision is stale",
 		)
@@ -111,7 +111,7 @@ func (manager *Registry) sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			"proxy revision payload changed",
 		)
@@ -120,7 +120,7 @@ func (manager *Registry) sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorCapacityExceeded,
+			ErrorCapacityExceeded,
 			"",
 			"proxy limit exceeded",
 		)
@@ -144,7 +144,7 @@ func (manager *Registry) sync(
 	if !allowEmpty && authenticationMode != authentication.ModeManaged && len(request.Proxies) == 0 {
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidProxy,
+			ErrorInvalidProxy,
 			"",
 			"at least one proxy declaration is required",
 		)
@@ -193,7 +193,7 @@ func (manager *Registry) sync(
 			manager.mutex.Unlock()
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"remote port is unavailable",
 			)
@@ -202,7 +202,7 @@ func (manager *Registry) sync(
 			manager.mutex.Unlock()
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"remote port is unavailable",
 			)
@@ -227,7 +227,7 @@ func (manager *Registry) sync(
 			manager.mutex.Unlock()
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"UDP remote port is unavailable",
 			)
@@ -278,7 +278,7 @@ func (manager *Registry) sync(
 			closeUDPEndpoints(newUDPEndpoints)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorInvalidRequest,
+				ErrorInvalidRequest,
 				declaration.Name,
 				"generate proxy binding ID",
 			)
@@ -333,7 +333,7 @@ func (manager *Registry) sync(
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorInvalidRequest,
+				ErrorInvalidRequest,
 				declaration.Name,
 				"create UDP proxy binding",
 			)
@@ -357,7 +357,7 @@ func (manager *Registry) sync(
 			closeTCPEndpoints(newEndpoints)
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
-			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, declaration.Name, "HTTP domain is unavailable")
+			return rejectedSyncResult(request.Revision, ErrorDomainConflict, declaration.Name, "HTTP domain is unavailable")
 		}
 	}
 	manager.mutex.Unlock()
@@ -383,7 +383,7 @@ func (manager *Registry) sync(
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
-			return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidRequest, declaration.Name, "create HTTP proxy binding")
+			return rejectedSyncResult(request.Revision, ErrorInvalidRequest, declaration.Name, "create HTTP proxy binding")
 		}
 		nextHTTPProxies[declaration.Name] = binding
 		results = append(results, protocol.ProxyResult{

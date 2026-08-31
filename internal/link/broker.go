@@ -66,15 +66,28 @@ type linkOpenResult struct {
 
 // Stats is a low-cardinality snapshot of logical link state.
 type Stats struct {
-	Pending int
-	Active  int
+	Pending        int
+	Active         int
+	ForwardPending int
+	ForwardActive  int
 }
 
 // SnapshotStats returns aggregate link counts.
 func (broker *Broker) SnapshotStats() Stats {
 	broker.mutex.Lock()
 	defer broker.mutex.Unlock()
-	return Stats{Pending: len(broker.pending), Active: len(broker.active)}
+	stats := Stats{Pending: len(broker.pending), Active: len(broker.active)}
+	for _, pending := range broker.pending {
+		if pending.target.Direction == protocol.LinkDirectionForward {
+			stats.ForwardPending++
+		}
+	}
+	for _, active := range broker.active {
+		if active.target.Direction == protocol.LinkDirectionForward {
+			stats.ForwardActive++
+		}
+	}
+	return stats
 }
 
 // Broker owns pending and active logical data links.
@@ -296,10 +309,14 @@ func (broker *Broker) BindWithActivation(
 	if pending.handlerFactory != nil {
 		handler, prepareError := pending.handlerFactory(ctx)
 		if prepareError != nil {
+			code := protocol.LinkErrorLocalDialFailed
+			if pending.target.Direction == protocol.LinkDirectionForward {
+				code = protocol.LinkErrorTargetDialFailed
+			}
 			rejectionError := broker.rejectBinding(
 				connection,
 				binding.LinkID,
-				protocol.LinkErrorLocalDialFailed,
+				code,
 			)
 			managed.Close()
 			broker.finish(binding.LinkID)

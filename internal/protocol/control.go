@@ -63,10 +63,6 @@ const (
 	MessageCloseSession MessageType = "close_session"
 	// MessageCloseAck confirms that a client session was removed.
 	MessageCloseAck MessageType = "close_ack"
-	// MessageSyncProxies atomically declares a client's complete proxy set.
-	MessageSyncProxies MessageType = "sync_proxies"
-	// MessageSyncResult reports an atomic proxy declaration result.
-	MessageSyncResult MessageType = "sync_result"
 	// MessageOpenLink asks a client to establish one proxy data link.
 	MessageOpenLink MessageType = "open_link"
 	// MessageCancelLink cancels a pending data link.

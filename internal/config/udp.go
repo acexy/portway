@@ -3,8 +3,17 @@ package config
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 )
+
+// EffectiveForwardUDPConfig supplies defaults for programmatic Forward configurations.
+func EffectiveForwardUDPConfig(configuration ForwardServerConfig) UDPConfig {
+	if reflect.DeepEqual(configuration.UDP, UDPConfig{}) {
+		return DefaultUDPConfig()
+	}
+	return configuration.UDP
+}
 
 const (
 	udpDefaultAssociationIdleTimeout               = 60 * time.Second
@@ -162,4 +171,9 @@ func validateUDPConfig(configuration UDPConfig) error {
 		return errors.New("udp.max_queued_bytes_per_association must not exceed udp.max_queued_bytes")
 	}
 	return nil
+}
+
+// ValidateUDPConfig validates externally supplied UDP runtime limits.
+func ValidateUDPConfig(configuration UDPConfig) error {
+	return validateUDPConfig(configuration)
 }

@@ -62,18 +62,19 @@ func (s *Service) syncConfiguration(
 	if err := protocol.DecodePayload(envelope, &result); err != nil {
 		return protocol.SyncConfigurationResult{}, classifyControlProtocolError(err)
 	}
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != protocol.ConfigurationSyncStatusApplied {
 		if result.Error == nil {
 			return protocol.SyncConfigurationResult{}, fmt.Errorf(
 				"%w: configuration rejected without an error",
 				transport.ErrProtocol,
 			)
 		}
-		return protocol.SyncConfigurationResult{}, &proxyRegistrationError{
-			code:      result.Error.Code,
-			proxyName: result.Error.ProxyName,
-			message:   result.Error.Message,
-			retryable: result.Error.Retryable,
+		return protocol.SyncConfigurationResult{}, &configurationRegistrationError{
+			code:         result.Error.Code,
+			resourceKind: result.Error.ResourceKind,
+			resourceName: result.Error.ResourceName,
+			message:      result.Error.Message,
+			retryable:    result.Error.Retryable,
 		}
 	}
 	return result, nil

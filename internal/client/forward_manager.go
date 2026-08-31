@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	forwardudp "github.com/acexy/portway/internal/forward/udp"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -22,25 +24,28 @@ type forwardRuntime struct {
 	configuration config.ForwardConfig
 	bindingID     string
 	active        bool
+	udpConfig     config.UDPConfig
 	tcp           *forwardtcp.Listener
 	udp           *forwardudp.Endpoint
 	cancel        context.CancelFunc
 }
 
 type forwardManager struct {
-	context   context.Context
-	cancel    context.CancelFunc
-	logger    *logging.Logger
-	clientID  string
-	sessionID string
-	writer    *control.Writer
-	transport transport.ClientSession
-	mutex     sync.Mutex
-	runtimes  map[string]*forwardRuntime
-	offers    map[string]chan protocol.ForwardLinkOffer
-	links     map[string]context.CancelFunc
-	waitGroup sync.WaitGroup
-	started   bool
+	context    context.Context
+	cancel     context.CancelFunc
+	logger     *logging.Logger
+	clientID   string
+	sessionID  string
+	writer     *control.Writer
+	transport  transport.ClientSession
+	mutex      sync.Mutex
+	runtimes   map[string]*forwardRuntime
+	offers     map[string]chan protocol.ForwardLinkOffer
+	links      map[string]context.CancelFunc
+	waitGroup  sync.WaitGroup
+	udpConfig  config.UDPConfig
+	udpLimiter *proxyudp.Limiter
+	started    bool
 }
 
 func newForwardManager(
@@ -82,6 +87,16 @@ func (manager *forwardManager) applyBindings(results []protocol.ForwardResult) e
 		if runtime == nil || runtime.configuration.Type != result.Type || result.BindingID == "" {
 			return errors.New("Forward binding result does not match local configuration")
 		}
+		if result.Type == protocol.ForwardTypeUDP {
+			if result.UDP == nil {
+				return errors.New("UDP Forward binding result is missing runtime limits")
+			}
+			udpConfiguration := forwardUDPConfig(*result.UDP)
+			if err := config.ValidateUDPConfig(udpConfiguration); err != nil {
+				return fmt.Errorf("invalid UDP Forward runtime limits: %w", err)
+			}
+			manager.applyUDPConfig(runtime, udpConfiguration)
+		}
 		runtime.bindingID = result.BindingID
 		runtime.active = result.Active
 	}
@@ -122,7 +137,10 @@ func (manager *forwardManager) prepareRuntime(runtime *forwardRuntime) error {
 		runtime.tcp = listener
 		return nil
 	}
-	packet, err := forwardudp.Listen(runtime.context, address, 8192, 64)
+	packet, err := forwardudp.Listen(
+		runtime.context, address, manager.clientID, runtime.configuration.Name, runtime.udpConfig,
+		manager.udpLimiter,
+	)
 	if err != nil {
 		return fmt.Errorf("prepare UDP Forward %q: %w", runtime.configuration.Name, err)
 	}
@@ -138,7 +156,9 @@ func (manager *forwardManager) serveRuntime(runtime *forwardRuntime) {
 				manager.waitGroup.Go(func() { manager.serveTCP(&runtimeSnapshot, visitor) })
 			})
 			if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
-				manager.logger.Error("TCP Forward listener failed", err)
+				manager.logger.WithFields(map[string]any{
+					"event": "forward_listener_failed", "forward_name": runtimeSnapshot.configuration.Name,
+				}).Error("TCP Forward listener failed", err)
 			}
 		})
 	}
@@ -148,7 +168,9 @@ func (manager *forwardManager) serveRuntime(runtime *forwardRuntime) {
 				manager.serveUDPAssociation(&runtimeSnapshot, association)
 			})
 			if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
-				manager.logger.Error("UDP Forward listener failed", err)
+				manager.logger.WithFields(map[string]any{
+					"event": "forward_listener_failed", "forward_name": runtimeSnapshot.configuration.Name,
+				}).Error("UDP Forward listener failed", err)
 			}
 		})
 	}
@@ -174,8 +196,10 @@ func (manager *forwardManager) serveUDPAssociation(
 		manager.reportForwardFailure(offer.LinkID, failure)
 		return
 	}
+	association.Activate()
 	_ = forwardudp.ForwardClient(
-		association.Context, stream, association.Packets, association.Write, 8192, 3*time.Second,
+		association.Context, stream, association.Packets, association.ReleaseQueue,
+		association.Write, runtime.udpConfig.MaxDatagramSize, runtime.udpConfig.LinkWriteTimeout,
 	)
 }
 
@@ -352,6 +376,18 @@ func (manager *forwardManager) activate(activation protocol.ForwardBindingActiva
 		manager.mutex.Unlock()
 		return errors.New("Forward activation does not match local configuration")
 	}
+	if activation.Type == protocol.ForwardTypeUDP {
+		if activation.UDP == nil {
+			manager.mutex.Unlock()
+			return errors.New("UDP Forward activation is missing runtime limits")
+		}
+		udpConfiguration := forwardUDPConfig(*activation.UDP)
+		if err := config.ValidateUDPConfig(udpConfiguration); err != nil {
+			manager.mutex.Unlock()
+			return fmt.Errorf("invalid UDP Forward runtime limits: %w", err)
+		}
+		manager.applyUDPConfig(runtime, udpConfiguration)
+	}
 	if runtime.active && runtime.bindingID == activation.BindingID {
 		manager.mutex.Unlock()
 		return nil
@@ -375,6 +411,38 @@ func (manager *forwardManager) activate(activation protocol.ForwardBindingActiva
 		"generation": activation.Generation,
 	})
 	return nil
+}
+
+func (manager *forwardManager) applyUDPConfig(
+	runtime *forwardRuntime,
+	configuration config.UDPConfig,
+) {
+	if manager.udpLimiter == nil || !reflect.DeepEqual(manager.udpConfig, configuration) {
+		manager.udpConfig = configuration
+		manager.udpLimiter = proxyudp.NewLimiter(configuration)
+	}
+	runtime.udpConfig = configuration
+}
+
+func forwardUDPConfig(configuration protocol.ForwardUDPConfig) config.UDPConfig {
+	return config.UDPConfig{
+		AssociationIdleTimeout:               configuration.AssociationIdleTimeout,
+		LinkWriteTimeout:                     configuration.LinkWriteTimeout,
+		MaxDatagramSize:                      configuration.MaxDatagramSize,
+		MaxAssociations:                      configuration.MaxAssociations,
+		MaxAssociationsPerClient:             configuration.MaxAssociationsPerClient,
+		MaxAssociationsPerProxy:              configuration.MaxAssociationsPerForward,
+		MaxAssociationsPerSourceIP:           configuration.MaxAssociationsPerSourceIP,
+		MaxPendingAssociations:               configuration.MaxPendingAssociations,
+		MaxPendingAssociationsPerClient:      configuration.MaxPendingAssociationsPerClient,
+		MaxPendingAssociationsPerProxy:       configuration.MaxPendingAssociationsPerForward,
+		MaxNewAssociationsPerSecond:          configuration.MaxNewAssociationsPerSecond,
+		MaxNewAssociationsPerSecondPerClient: configuration.MaxNewAssociationsPerSecondPerClient,
+		MaxNewAssociationsPerSecondPerProxy:  configuration.MaxNewAssociationsPerSecondPerForward,
+		MaxQueuedDatagramsPerAssociation:     configuration.MaxQueuedDatagramsPerAssociation,
+		MaxQueuedBytesPerAssociation:         configuration.MaxQueuedBytesPerAssociation,
+		MaxQueuedBytes:                       configuration.MaxQueuedBytes,
+	}
 }
 
 func (manager *forwardManager) reportForwardFailure(linkID string, code protocol.LinkErrorCode) {

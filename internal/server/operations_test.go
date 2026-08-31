@@ -57,6 +57,8 @@ func TestOperationsEndpointsReportLifecycleAndLowCardinalityMetrics(t *testing.T
 		"portway_configuration_generation 1\n",
 		"portway_sessions_active 0\n",
 		"portway_links_pending 0\n",
+		"portway_forward_links_pending 0\n",
+		"portway_forward_bindings 0\n",
 		"portway_udp_associations 0\n",
 	} {
 		if !strings.Contains(body, expected) {

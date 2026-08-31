@@ -12,6 +12,7 @@ import (
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 )
 
 func (s *Service) serveControlMessages(
@@ -38,12 +39,10 @@ func (s *Service) serveControlMessages(
 		if err != nil {
 			return false, err
 		}
-		if initialProxySynchronizationRequired &&
-			envelope.Type != protocol.MessageSyncProxies &&
-			envelope.Type != protocol.MessageSyncConfiguration {
+		if initialProxySynchronizationRequired && envelope.Type != protocol.MessageSyncConfiguration {
 			return false, fmt.Errorf(
 				"expected initial %s, got %s",
-				protocol.MessageSyncProxies,
+				protocol.MessageSyncConfiguration,
 				envelope.Type,
 			)
 		}
@@ -98,82 +97,6 @@ func (s *Service) serveControlMessages(
 			}
 			sessionLogger.Trace("close acknowledgment sent")
 			return true, nil
-		case protocol.MessageSyncProxies:
-			if authenticationMode == authentication.ModeManaged {
-				return false, errors.New("managed clients cannot declare proxy configuration")
-			}
-			var request protocol.SyncProxies
-			if err := protocol.DecodePayload(envelope, &request); err != nil {
-				return false, err
-			}
-			for _, declaration := range request.Proxies {
-				if !coll.SliceContains(
-					negotiatedCapabilities,
-					protocol.Capability(declaration.Type),
-				) {
-					return false, fmt.Errorf("%s proxy registration requires a negotiated capability", declaration.Type)
-				}
-			}
-			if authenticationMode == authentication.ModeGoverned {
-				if result := s.validateGovernedProxies(clientID, request); result != nil {
-					if err := writer.WriteResponse(
-						protocol.MessageSyncResult,
-						envelope.RequestID,
-						*result,
-					); err != nil {
-						return false, err
-					}
-					return false, errProxyRegistrationRejected
-				}
-			}
-			result := s.proxyRegistry.Sync(
-				clientID,
-				sessionID,
-				envelope.RequestID,
-				request,
-			)
-			if err := writer.WriteResponse(
-				protocol.MessageSyncResult,
-				envelope.RequestID,
-				result,
-			); err != nil {
-				return false, err
-			}
-			if result.Status == protocol.ProxySyncStatusRejected {
-				sessionLogger.WithComponent("proxy_registry").WarnWithFields(
-					"proxy registration rejected",
-					nil,
-					map[string]any{
-						"event":      "proxy_registration_rejected",
-						"error_code": result.Error.Code,
-					},
-				)
-				return false, errProxyRegistrationRejected
-			}
-			s.proxyRegistry.Activate(clientID, sessionID)
-			if initialProxySynchronizationRequired {
-				if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
-					return false, errors.New("initialized client session is no longer current")
-				}
-				if err := connection.SetDeadline(time.Time{}); err != nil {
-					return false, fmt.Errorf(
-						"clear initial proxy synchronization deadline: %w",
-						err,
-					)
-				}
-				initialProxySynchronizationRequired = false
-			}
-			if onProxySynchronizationApplied != nil {
-				onProxySynchronizationApplied()
-			}
-			sessionLogger.WithComponent("proxy_registry").InfoWithFields(
-				"proxy registration applied",
-				map[string]any{
-					"event":       "proxy_registration_applied",
-					"revision":    result.Revision,
-					"proxy_count": len(request.Proxies),
-				},
-			)
 		case protocol.MessageSyncConfiguration:
 			if authenticationMode == authentication.ModeManaged {
 				return false, errors.New("managed clients cannot declare configuration")
@@ -198,7 +121,7 @@ func (s *Service) serveControlMessages(
 				}
 				return false, errProxyRegistrationRejected
 			}
-			proxyRequest := protocol.SyncProxies{
+			proxyRequest := proxyregistry.SyncRequest{
 				Revision: request.Revision,
 				Proxies:  request.Proxies,
 			}
@@ -208,7 +131,7 @@ func (s *Service) serveControlMessages(
 						writer,
 						envelope.RequestID,
 						request.Revision,
-						result.Error,
+						configurationProxyError(result.Error),
 					); err != nil {
 						return false, err
 					}
@@ -226,7 +149,7 @@ func (s *Service) serveControlMessages(
 					writer,
 					envelope.RequestID,
 					request.Revision,
-					forwardError,
+					configurationForwardError(forwardError),
 				); err != nil {
 					return false, err
 				}
@@ -238,12 +161,12 @@ func (s *Service) serveControlMessages(
 				envelope.RequestID,
 				proxyRequest,
 			)
-			if proxyResult.Status == protocol.ProxySyncStatusRejected {
+			if proxyResult.Status == proxyregistry.SyncStatusRejected {
 				if err := writeConfigurationRejection(
 					writer,
 					envelope.RequestID,
 					request.Revision,
-					proxyResult.Error,
+					configurationProxyError(proxyResult.Error),
 				); err != nil {
 					return false, err
 				}
@@ -270,7 +193,7 @@ func (s *Service) serveControlMessages(
 				envelope.RequestID,
 				protocol.SyncConfigurationResult{
 					Revision: request.Revision,
-					Status:   protocol.ProxySyncStatusApplied,
+					Status:   protocol.ConfigurationSyncStatusApplied,
 					Proxies:  proxyResult.Proxies,
 					Forwards: forwardResults,
 				},
@@ -359,11 +282,12 @@ func validateConfigurationCapabilities(
 		if !coll.SliceContains(capabilities, protocol.Capability(declaration.Type)) {
 			return &protocol.SyncConfigurationResult{
 				Revision: request.Revision,
-				Status:   protocol.ProxySyncStatusRejected,
-				Error: &protocol.ProxyError{
-					Code:      protocol.ProxyErrorProxyTypeNotAllowed,
-					ProxyName: declaration.Name,
-					Message:   "proxy capability is not negotiated",
+				Status:   protocol.ConfigurationSyncStatusRejected,
+				Error: &protocol.ConfigurationError{
+					Code:         protocol.ConfigurationErrorProxyTypeNotAllowed,
+					ResourceKind: protocol.ConfigurationResourceProxy,
+					ResourceName: declaration.Name,
+					Message:      "proxy capability is not negotiated",
 				},
 			}
 		}
@@ -376,11 +300,12 @@ func validateConfigurationCapabilities(
 		if !coll.SliceContains(capabilities, capability) {
 			return &protocol.SyncConfigurationResult{
 				Revision: request.Revision,
-				Status:   protocol.ProxySyncStatusRejected,
-				Error: &protocol.ProxyError{
-					Code:      protocol.ProxyErrorForwardTypeNotAllowed,
-					ProxyName: declaration.Name,
-					Message:   "Forward capability is not negotiated",
+				Status:   protocol.ConfigurationSyncStatusRejected,
+				Error: &protocol.ConfigurationError{
+					Code:         protocol.ConfigurationErrorForwardTypeNotAllowed,
+					ResourceKind: protocol.ConfigurationResourceForward,
+					ResourceName: declaration.Name,
+					Message:      "Forward capability is not negotiated",
 				},
 			}
 		}
@@ -392,15 +317,37 @@ func writeConfigurationRejection(
 	writer *control.Writer,
 	requestID string,
 	revision uint64,
-	rejection *protocol.ProxyError,
+	rejection *protocol.ConfigurationError,
 ) error {
 	return writer.WriteResponse(
 		protocol.MessageSyncConfigurationResult,
 		requestID,
 		protocol.SyncConfigurationResult{
 			Revision: revision,
-			Status:   protocol.ProxySyncStatusRejected,
+			Status:   protocol.ConfigurationSyncStatusRejected,
 			Error:    rejection,
 		},
 	)
+}
+
+func configurationProxyError(source *proxyregistry.Error) *protocol.ConfigurationError {
+	if source == nil {
+		return nil
+	}
+	return &protocol.ConfigurationError{
+		Code: protocol.ConfigurationErrorCode(source.Code), Message: source.Message,
+		ResourceKind: protocol.ConfigurationResourceProxy,
+		ResourceName: source.ProxyName, Retryable: source.Retryable,
+	}
+}
+
+func configurationForwardError(source *protocol.ForwardError) *protocol.ConfigurationError {
+	if source == nil {
+		return nil
+	}
+	return &protocol.ConfigurationError{
+		Code: protocol.ConfigurationErrorCode(source.Code), Message: source.Message,
+		ResourceKind: protocol.ConfigurationResourceForward,
+		ResourceName: source.ForwardName, Retryable: source.Retryable,
+	}
 }

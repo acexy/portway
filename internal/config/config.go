@@ -119,7 +119,7 @@ type GovernedProxyPermissions struct {
 
 // GovernedForwardPermissions restricts client-declared Forwards.
 type GovernedForwardPermissions struct {
-	Rules  []ForwardIPRule        `yaml:"rules"`
+	Rules  []ForwardIPRule         `yaml:"rules"`
 	Limits ForwardPermissionLimits `yaml:"limits"`
 }
 
@@ -137,7 +137,7 @@ type ManagedPermissions struct {
 // GovernedClientConfig defines one independently authenticated governed client.
 type GovernedClientConfig struct {
 	Authentication ClientAuthenticationConfig `yaml:"authentication"`
-	Permissions    GovernedPermissions         `yaml:"permissions"`
+	Permissions    GovernedPermissions        `yaml:"permissions"`
 }
 
 // ManagedConfiguration is the complete server-owned client proxy generation.
@@ -150,8 +150,8 @@ type ManagedConfiguration struct {
 // ManagedClientConfig defines one independently authenticated managed client.
 type ManagedClientConfig struct {
 	Authentication ClientAuthenticationConfig `yaml:"authentication"`
-	Permissions    ManagedPermissions          `yaml:"permissions"`
-	Configuration  ManagedConfiguration        `yaml:"configuration"`
+	Permissions    ManagedPermissions         `yaml:"permissions"`
+	Configuration  ManagedConfiguration       `yaml:"configuration"`
 }
 
 // QUICClientTransportConfig configures the client side of the QUIC transport.
@@ -260,7 +260,7 @@ type OperationsConfig struct {
 // ServerConfig contains the complete server configuration.
 type ServerConfig struct {
 	Transport      ServerTransportConfig      `yaml:"transport"`
-	Proxies        ServerProxyConfig           `yaml:"proxies"`
+	Proxies        ServerProxyConfig          `yaml:"proxies"`
 	Security       SecurityConfig             `yaml:"security"`
 	Operations     OperationsConfig           `yaml:"operations"`
 	Forwards       ForwardServerConfig        `yaml:"forwards"`
@@ -283,13 +283,14 @@ type ServerConfig struct {
 type ForwardServerConfig struct {
 	Enabled    bool            `yaml:"enabled"`
 	Rules      []ForwardIPRule `yaml:"rules"`
+	UDP        UDPConfig       `yaml:"udp"`
 	Configured bool            `yaml:"-"`
 }
 
 // UnmarshalYAML records that the optional forwards section was explicitly configured.
 func (configuration *ForwardServerConfig) UnmarshalYAML(node *yaml.Node) error {
 	type plain ForwardServerConfig
-	var decoded plain
+	decoded := plain(*configuration)
 	if err := node.Decode(&decoded); err != nil {
 		return err
 	}

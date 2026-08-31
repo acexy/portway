@@ -6,58 +6,94 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/link"
 	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 )
 
 // Association owns queued datagrams for one local visitor address.
 type Association struct {
-	Context context.Context
-	Packets <-chan []byte
-	write   func([]byte) error
+	Context  context.Context
+	Packets  <-chan []byte
+	write    func([]byte) error
+	release  func(int)
+	touch    func()
+	activate func()
 }
 
 // Write sends one response datagram to the association visitor.
 func (association *Association) Write(payload []byte) error {
-	return association.write(payload)
+	err := association.write(payload)
+	if err == nil {
+		association.touch()
+	}
+	return err
+}
+
+// ReleaseQueue releases accounting for one dequeued visitor datagram.
+func (association *Association) ReleaseQueue(size int) {
+	association.release(size)
+}
+
+// Activate transitions the Association from pending to active accounting.
+func (association *Association) Activate() {
+	association.activate()
 }
 
 type associationRuntime struct {
-	association Association
-	cancel      context.CancelFunc
-	queue       chan []byte
+	association  Association
+	cancel       context.CancelFunc
+	queue        chan []byte
+	lease        *proxyudp.AssociationLease
+	lastActivity atomic.Int64
 }
 
 // Endpoint owns one client-side UDP socket and its visitor associations.
 type Endpoint struct {
-	context      context.Context
-	packet       net.PacketConn
-	maxDatagram  int
-	queueSize    int
-	mutex        sync.Mutex
-	associations map[string]*associationRuntime
-	waitGroup    sync.WaitGroup
-	closed       bool
+	context       context.Context
+	cancel        context.CancelFunc
+	packet        net.PacketConn
+	maxDatagram   int
+	queueSize     int
+	configuration config.UDPConfig
+	clientID      string
+	forwardName   string
+	limiter       *proxyudp.Limiter
+	mutex         sync.Mutex
+	associations  map[string]*associationRuntime
+	waitGroup     sync.WaitGroup
+	closed        bool
 }
 
 // Listen prepares one UDP Forward endpoint.
 func Listen(
 	ctx context.Context,
 	address string,
-	maxDatagram int,
-	queueSize int,
+	clientID string,
+	forwardName string,
+	configuration config.UDPConfig,
+	limiter *proxyudp.Limiter,
 ) (*Endpoint, error) {
-	packet, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", address)
+	endpointContext, cancel := context.WithCancel(ctx)
+	packet, err := (&net.ListenConfig{}).ListenPacket(endpointContext, "udp", address)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	return &Endpoint{
-		context: ctx, packet: packet, maxDatagram: maxDatagram, queueSize: queueSize,
+	endpoint := &Endpoint{
+		context: endpointContext, cancel: cancel, packet: packet, maxDatagram: configuration.MaxDatagramSize,
+		queueSize:     configuration.MaxQueuedDatagramsPerAssociation,
+		configuration: configuration, clientID: clientID, forwardName: forwardName,
+		limiter:      limiter,
 		associations: make(map[string]*associationRuntime),
-	}, nil
+	}
+	endpoint.waitGroup.Go(endpoint.sweep)
+	return endpoint, nil
 }
 
 // Serve routes local datagrams into source-address associations.
@@ -75,10 +111,18 @@ func (endpoint *Endpoint) Serve(handler func(*Association)) error {
 		if !ok {
 			return net.ErrClosed
 		}
+		if association == nil {
+			continue
+		}
 		payload := append([]byte(nil), buffer[:length]...)
+		if !association.lease.ReserveQueue(len(payload)) {
+			continue
+		}
 		select {
 		case association.queue <- payload:
+			association.lastActivity.Store(time.Now().UnixNano())
 		default:
+			association.lease.ReleaseQueue(len(payload))
 		}
 	}
 }
@@ -96,9 +140,20 @@ func (endpoint *Endpoint) association(
 	if current := endpoint.associations[key]; current != nil {
 		return current, true
 	}
+	addressPort, err := netip.ParseAddrPort(key)
+	if err != nil {
+		return nil, true
+	}
+	lease, allowed := endpoint.limiter.Acquire(
+		endpoint.clientID, endpoint.forwardName, addressPort.Addr(), time.Now(),
+	)
+	if !allowed {
+		return nil, true
+	}
 	ctx, cancel := context.WithCancel(endpoint.context)
 	queue := make(chan []byte, endpoint.queueSize)
-	current := &associationRuntime{cancel: cancel, queue: queue}
+	current := &associationRuntime{cancel: cancel, queue: queue, lease: lease}
+	current.lastActivity.Store(time.Now().UnixNano())
 	current.association = Association{
 		Context: ctx,
 		Packets: queue,
@@ -108,6 +163,11 @@ func (endpoint *Endpoint) association(
 				return io.ErrShortWrite
 			}
 			return err
+		},
+		release:  lease.ReleaseQueue,
+		activate: lease.Activate,
+		touch: func() {
+			current.lastActivity.Store(time.Now().UnixNano())
 		},
 	}
 	endpoint.associations[key] = current
@@ -119,8 +179,33 @@ func (endpoint *Endpoint) association(
 		}
 		endpoint.mutex.Unlock()
 		cancel()
+		lease.Close()
 	})
 	return current, true
+}
+
+func (endpoint *Endpoint) sweep() {
+	interval := endpoint.configuration.AssociationIdleTimeout / 2
+	if interval > time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-endpoint.context.Done():
+			return
+		case now := <-ticker.C:
+			cutoff := now.Add(-endpoint.configuration.AssociationIdleTimeout).UnixNano()
+			endpoint.mutex.Lock()
+			for _, association := range endpoint.associations {
+				if association.lastActivity.Load() <= cutoff {
+					association.cancel()
+				}
+			}
+			endpoint.mutex.Unlock()
+		}
+	}
 }
 
 // Close releases the socket and cancels every association.
@@ -131,6 +216,7 @@ func (endpoint *Endpoint) Close() error {
 		return nil
 	}
 	endpoint.closed = true
+	endpoint.cancel()
 	for _, association := range endpoint.associations {
 		association.cancel()
 	}
@@ -150,6 +236,7 @@ func ForwardClient(
 	ctx context.Context,
 	stream net.Conn,
 	packets <-chan []byte,
+	releaseQueue func(int),
 	writeResponse func([]byte) error,
 	maxDatagram int,
 	writeTimeout time.Duration,
@@ -174,6 +261,7 @@ func ForwardClient(
 		for {
 			select {
 			case payload := <-packets:
+				releaseQueue(len(payload))
 				if err := stream.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 					results <- err
 					return

@@ -97,16 +97,20 @@ func controlBenchmarkCases() []controlBenchmarkCase {
 			newDestination: func() any { return new(Heartbeat) },
 		},
 		{
-			name:           "Sync100Proxies",
-			messageType:    MessageSyncProxies,
-			payload:        SyncProxies{Revision: 1, Proxies: declarations100},
-			newDestination: func() any { return new(SyncProxies) },
+			name:        "Sync100Proxies",
+			messageType: MessageSyncConfiguration,
+			payload: SyncConfiguration{
+				Revision: 1, Proxies: declarations100, Forwards: []ForwardDeclaration{},
+			},
+			newDestination: func() any { return new(SyncConfiguration) },
 		},
 		{
-			name:           "Sync128Proxies",
-			messageType:    MessageSyncProxies,
-			payload:        SyncProxies{Revision: 1, Proxies: declarations128},
-			newDestination: func() any { return new(SyncProxies) },
+			name:        "Sync128Proxies",
+			messageType: MessageSyncConfiguration,
+			payload: SyncConfiguration{
+				Revision: 1, Proxies: declarations128, Forwards: []ForwardDeclaration{},
+			},
+			newDestination: func() any { return new(SyncConfiguration) },
 		},
 		{
 			name:        "OpenLink",

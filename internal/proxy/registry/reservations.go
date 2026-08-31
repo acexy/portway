@@ -154,8 +154,8 @@ func (manager *Registry) bindingOwnedByManagedClientLocked(
 func (manager *Registry) managedReservationRejectionLocked(
 	clientID string,
 	mode authentication.Mode,
-	request protocol.SyncProxies,
-) *protocol.SyncResult {
+	request SyncRequest,
+) *SyncResult {
 	for _, proxy := range request.Proxies {
 		var owner string
 		switch proxy.Type {
@@ -180,9 +180,9 @@ func (manager *Registry) managedReservationRejectionLocked(
 	return nil
 }
 
-func reservationConflictCode(proxyType protocol.ProxyType) protocol.ProxyErrorCode {
+func reservationConflictCode(proxyType protocol.ProxyType) ErrorCode {
 	if proxyType == protocol.ProxyTypeHTTP {
-		return protocol.ProxyErrorDomainConflict
+		return ErrorDomainConflict
 	}
-	return protocol.ProxyErrorPortConflict
+	return ErrorPortConflict
 }

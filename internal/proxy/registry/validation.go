@@ -10,7 +10,7 @@ func validateProxyDeclarations(
 	declarations []protocol.ProxyDeclaration,
 	httpEnabled bool,
 	httpsEnabled bool,
-) *protocol.SyncResult {
+) *SyncResult {
 	names := make(map[string]struct{}, len(declarations))
 	tcpPorts := make(map[uint16]struct{})
 	udpPorts := make(map[uint16]struct{})
@@ -19,7 +19,7 @@ func validateProxyDeclarations(
 		if config.ValidateProxyName(declaration.Name) != nil {
 			result := rejectedSyncResult(
 				revision,
-				protocol.ProxyErrorInvalidProxy,
+				ErrorInvalidProxy,
 				declaration.Name,
 				"invalid proxy declaration",
 			)
@@ -29,22 +29,22 @@ func validateProxyDeclarations(
 		case protocol.ProxyTypeTCP:
 			if declaration.RemotePort == 0 || declaration.Domain != "" ||
 				len(declaration.PublicSchemes) != 0 {
-				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid TCP proxy declaration")
+				result := rejectedSyncResult(revision, ErrorInvalidProxy, declaration.Name, "invalid TCP proxy declaration")
 				return &result
 			}
 			if _, duplicate := tcpPorts[declaration.RemotePort]; duplicate {
-				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "duplicate TCP remote port")
+				result := rejectedSyncResult(revision, ErrorInvalidProxy, declaration.Name, "duplicate TCP remote port")
 				return &result
 			}
 			tcpPorts[declaration.RemotePort] = struct{}{}
 		case protocol.ProxyTypeUDP:
 			if declaration.RemotePort == 0 || declaration.Domain != "" ||
 				len(declaration.PublicSchemes) != 0 {
-				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid UDP proxy declaration")
+				result := rejectedSyncResult(revision, ErrorInvalidProxy, declaration.Name, "invalid UDP proxy declaration")
 				return &result
 			}
 			if _, duplicate := udpPorts[declaration.RemotePort]; duplicate {
-				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "duplicate UDP remote port")
+				result := rejectedSyncResult(revision, ErrorInvalidProxy, declaration.Name, "duplicate UDP remote port")
 				return &result
 			}
 			udpPorts[declaration.RemotePort] = struct{}{}
@@ -52,7 +52,7 @@ func validateProxyDeclarations(
 			if declaration.RemotePort != 0 ||
 				config.ValidateHTTPDomain(declaration.Domain) != nil ||
 				!validPublicSchemes(declaration.PublicSchemes) {
-				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "invalid HTTP proxy declaration")
+				result := rejectedSyncResult(revision, ErrorInvalidProxy, declaration.Name, "invalid HTTP proxy declaration")
 				return &result
 			}
 			if (declaration.AllowsPublicScheme(protocol.HTTPPublicSchemeHTTP) &&
@@ -61,25 +61,25 @@ func validateProxyDeclarations(
 					!httpsEnabled) {
 				result := rejectedSyncResult(
 					revision,
-					protocol.ProxyErrorPublicSchemeUnavailable,
+					ErrorPublicSchemeUnavailable,
 					declaration.Name,
 					"requested public scheme is unavailable",
 				)
 				return &result
 			}
 			if _, duplicate := httpDomains[declaration.Domain]; duplicate {
-				result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "duplicate HTTP domain")
+				result := rejectedSyncResult(revision, ErrorInvalidProxy, declaration.Name, "duplicate HTTP domain")
 				return &result
 			}
 			httpDomains[declaration.Domain] = struct{}{}
 		default:
-			result := rejectedSyncResult(revision, protocol.ProxyErrorInvalidProxy, declaration.Name, "unsupported proxy type")
+			result := rejectedSyncResult(revision, ErrorInvalidProxy, declaration.Name, "unsupported proxy type")
 			return &result
 		}
 		if _, duplicate := names[declaration.Name]; duplicate {
 			result := rejectedSyncResult(
 				revision,
-				protocol.ProxyErrorInvalidProxy,
+				ErrorInvalidProxy,
 				declaration.Name,
 				"duplicate proxy name",
 			)

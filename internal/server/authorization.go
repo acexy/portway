@@ -12,6 +12,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 )
 
 func (s *Service) negotiateCapabilities(clientCapabilities []protocol.Capability) []protocol.Capability {
@@ -49,6 +50,12 @@ func forwardPolicyChanged(
 	authenticationContext authentication.Context,
 	declaration protocol.ForwardDeclaration,
 ) bool {
+	if declaration.Type == protocol.ForwardTypeUDP && !reflect.DeepEqual(
+		config.EffectiveForwardUDPConfig(current.Forwards),
+		config.EffectiveForwardUDPConfig(candidate.Forwards),
+	) {
+		return true
+	}
 	currentGlobal, currentAllowed := config.MatchingForwardRule(
 		current.Forwards.Rules,
 		declaration.Type,
@@ -157,13 +164,13 @@ func (s *Service) forwardPolicy(
 
 func (s *Service) validateGovernedProxies(
 	clientID string,
-	request protocol.SyncProxies,
-) *protocol.SyncResult {
+	request proxyregistry.SyncRequest,
+) *proxyregistry.SyncResult {
 	clientConfiguration, exists := s.configuration.governedClient(clientID)
 	if !exists {
 		return governedRejection(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			proxyregistry.ErrorInvalidRequest,
 			"",
 			"governed client configuration is unavailable",
 		)
@@ -177,7 +184,7 @@ func (s *Service) validateGovernedProxies(
 		if !allowed {
 			return governedRejection(
 				request.Revision,
-				protocol.ProxyErrorProxyTypeNotAllowed,
+				proxyregistry.ErrorProxyTypeNotAllowed,
 				declaration.Name,
 				"proxy type is not allowed",
 			)
@@ -188,7 +195,7 @@ func (s *Service) validateGovernedProxies(
 			if !portAllowed(declaration.RemotePort, permissions.TCP.RemotePortRanges) {
 				return governedRejection(
 					request.Revision,
-					protocol.ProxyErrorRemotePortNotAllowed,
+					proxyregistry.ErrorRemotePortNotAllowed,
 					declaration.Name,
 					"remote TCP port is not allowed",
 				)
@@ -197,7 +204,7 @@ func (s *Service) validateGovernedProxies(
 			if !portAllowed(declaration.RemotePort, permissions.UDP.RemotePortRanges) {
 				return governedRejection(
 					request.Revision,
-					protocol.ProxyErrorRemotePortNotAllowed,
+					proxyregistry.ErrorRemotePortNotAllowed,
 					declaration.Name,
 					"remote UDP port is not allowed",
 				)
@@ -206,7 +213,7 @@ func (s *Service) validateGovernedProxies(
 			if !domainAllowed(declaration.Domain, permissions.HTTP.Domains) {
 				return governedRejection(
 					request.Revision,
-					protocol.ProxyErrorDomainNotAllowed,
+					proxyregistry.ErrorDomainNotAllowed,
 					declaration.Name,
 					"HTTP domain is not allowed",
 				)
@@ -215,7 +222,7 @@ func (s *Service) validateGovernedProxies(
 				if !publicSchemeAllowed(scheme, permissions.HTTP.PublicSchemes) {
 					return governedRejection(
 						request.Revision,
-						protocol.ProxyErrorPublicSchemeNotAllowed,
+						proxyregistry.ErrorPublicSchemeNotAllowed,
 						declaration.Name,
 						"HTTP public scheme is not allowed",
 					)
@@ -230,7 +237,7 @@ func (s *Service) validateGovernedProxies(
 		(limits.MaxHTTP > 0 && typeCounts[protocol.ProxyTypeHTTP] > limits.MaxHTTP) {
 		return governedRejection(
 			request.Revision,
-			protocol.ProxyErrorClientLimitExceeded,
+			proxyregistry.ErrorClientLimitExceeded,
 			"",
 			"client proxy limit exceeded",
 		)
@@ -276,15 +283,15 @@ func domainAllowed(domain string, patterns []string) bool {
 
 func governedRejection(
 	revision uint64,
-	code protocol.ProxyErrorCode,
+	code proxyregistry.ErrorCode,
 	proxyName string,
 	message string,
-) *protocol.SyncResult {
-	return &protocol.SyncResult{
+) *proxyregistry.SyncResult {
+	return &proxyregistry.SyncResult{
 		Revision: revision,
-		Status:   protocol.ProxySyncStatusRejected,
+		Status:   proxyregistry.SyncStatusRejected,
 		Proxies:  []protocol.ProxyResult{},
-		Error: &protocol.ProxyError{
+		Error: &proxyregistry.Error{
 			Code:      code,
 			Message:   message,
 			ProxyName: proxyName,

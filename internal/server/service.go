@@ -116,7 +116,9 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
-	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy)
+	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy, func() config.UDPConfig {
+		return config.EffectiveForwardUDPConfig(s.configuration.snapshot().Forwards)
+	})
 	defer s.forwardRegistry.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,

@@ -158,17 +158,17 @@ func (s *Service) runControlSession(
 		); err != nil {
 			return "", false, err
 		}
-		if len(s.configuration.Forwards) == 0 {
-			if err := s.syncProxies(connection, writer); err != nil {
-				return "", false, err
-			}
-		} else {
-			if err := validateForwardCapabilities(
-				s.configuration.Forwards,
-				serverHello.Capabilities,
-			); err != nil {
-				return "", false, err
-			}
+		if err := validateForwardCapabilities(
+			s.configuration.Forwards,
+			serverHello.Capabilities,
+		); err != nil {
+			return "", false, err
+		}
+		result, err := s.syncConfiguration(connection, writer)
+		if err != nil {
+			return "", false, err
+		}
+		if len(s.configuration.Forwards) != 0 {
 			forwardRuntime, err = newForwardManager(
 				ctx,
 				s.logger,
@@ -182,10 +182,6 @@ func (s *Service) runControlSession(
 				return "", false, transport.Permanent(err)
 			}
 			defer func() { forwardRuntime.close() }()
-			result, err := s.syncConfiguration(connection, writer)
-			if err != nil {
-				return "", false, err
-			}
 			if err := forwardRuntime.applyBindings(result.Forwards); err != nil {
 				return "", false, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 			}

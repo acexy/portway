@@ -64,6 +64,7 @@ func DefaultServer() ServerConfig {
 			}},
 			UDP: DefaultUDPConfig(),
 		},
+		Forwards: ForwardServerConfig{UDP: DefaultUDPConfig()},
 		LogLevel: LogLevelInfo,
 	}
 }

@@ -18,11 +18,12 @@ type remoteSessionError struct {
 	retryable bool
 }
 
-type proxyRegistrationError struct {
-	code      protocol.ProxyErrorCode
-	proxyName string
-	message   string
-	retryable bool
+type configurationRegistrationError struct {
+	code         protocol.ConfigurationErrorCode
+	resourceKind protocol.ConfigurationResourceKind
+	resourceName string
+	message      string
+	retryable    bool
 }
 
 type reconnectPhase string
@@ -44,10 +45,11 @@ var errReconnectPeriodExceeded = errors.New(
 	"control connection retry period exceeded 8 hours",
 )
 
-func (registrationError *proxyRegistrationError) Error() string {
+func (registrationError *configurationRegistrationError) Error() string {
 	return fmt.Sprintf(
-		"proxy registration rejected: proxy=%q code=%s message=%s",
-		registrationError.proxyName,
+		"configuration registration rejected: kind=%q resource=%q code=%s message=%s",
+		registrationError.resourceKind,
+		registrationError.resourceName,
 		registrationError.code,
 		registrationError.message,
 	)

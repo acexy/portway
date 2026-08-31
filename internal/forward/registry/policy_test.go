@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
@@ -20,7 +21,7 @@ func TestPolicyDisablesAndReactivatesDormantBinding(t *testing.T) {
 	enabled := false
 	registry := New(broker, func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) {
 		return true, enabled
-	})
+	}, config.DefaultUDPConfig)
 	declaration := protocol.ForwardDeclaration{
 		Name: "database", Type: protocol.ForwardTypeTCP, TargetIP: "127.0.0.1", TargetPort: 5432,
 	}
@@ -53,5 +54,29 @@ func TestPolicyDisablesAndReactivatesDormantBinding(t *testing.T) {
 	if !bytes.Contains(messages.Bytes(), []byte(protocol.MessageForwardBindingActivated)) ||
 		!bytes.Contains(messages.Bytes(), []byte(protocol.MessageForwardBindingRevoked)) {
 		t.Fatalf("policy transition messages = %q", messages.String())
+	}
+}
+
+func TestUDPBindingCarriesServerRuntimeLimits(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	configuration := config.DefaultUDPConfig()
+	configuration.MaxDatagramSize = 1234
+	registry := New(
+		broker,
+		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
+		func() config.UDPConfig { return configuration },
+	)
+	results, forwardError := registry.Sync(
+		"client", "session", control.NewWriter(&bytes.Buffer{}), authentication.Context{}, 10,
+		[]protocol.ForwardDeclaration{{
+			Name: "dns", Type: protocol.ForwardTypeUDP, TargetIP: "127.0.0.1", TargetPort: 53,
+		}},
+	)
+	if forwardError != nil || len(results) != 1 || results[0].UDP == nil ||
+		results[0].UDP.MaxDatagramSize != configuration.MaxDatagramSize {
+		t.Fatalf("UDP Forward limits = %+v, error = %v", results, forwardError)
 	}
 }

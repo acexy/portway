@@ -16,7 +16,7 @@ type syncCommitPreparation struct {
 	clientID              string
 	sessionID             string
 	requestID             string
-	request               protocol.SyncProxies
+	request               SyncRequest
 	fingerprint           [sha256.Size]byte
 	baseRevision          uint64
 	authenticationMode    authentication.Mode
@@ -35,7 +35,7 @@ type syncCommitPreparation struct {
 	declarationsByUDPPort map[uint16]protocol.ProxyDeclaration
 }
 
-func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.SyncResult {
+func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResult {
 	clientID := preparation.clientID
 	sessionID := preparation.sessionID
 	requestID := preparation.requestID
@@ -59,9 +59,9 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
-	result := protocol.SyncResult{
+	result := SyncResult{
 		Revision: request.Revision,
-		Status:   protocol.ProxySyncStatusApplied,
+		Status:   SyncStatusApplied,
 		Proxies:  results,
 	}
 	manager.mutex.Lock()
@@ -78,7 +78,7 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 		)
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorSessionInactive,
+			ErrorSessionInactive,
 			"",
 			"client session changed during registration",
 		)
@@ -110,7 +110,7 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declarationsByPort[port].Name,
 				"remote port ownership changed during registration",
 			)
@@ -128,7 +128,7 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declarationsByUDPPort[port].Name,
 				"UDP remote port ownership changed during registration",
 			)
@@ -142,7 +142,7 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
-			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration")
+			return rejectedSyncResult(request.Revision, ErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration")
 		}
 	}
 

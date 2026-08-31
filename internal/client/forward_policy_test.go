@@ -54,6 +54,27 @@ func TestForwardManagerKeepsDormantConfigurationAndRestoresListener(t *testing.T
 	assertTCPAddressAvailable(t, address.String())
 }
 
+func TestForwardManagerRejectsMissingUDPServerLimits(t *testing.T) {
+	configuration := config.ForwardConfig{
+		Name: "dns", Type: protocol.ForwardTypeUDP,
+		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: 1053},
+		Target: config.EndpointConfig{IP: "127.0.0.1", Port: 53},
+	}
+	manager, err := newForwardManager(
+		context.Background(), logging.New("test"), "client", "session", nil, nil,
+		[]config.ForwardConfig{configuration},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.close()
+	if err := manager.applyBindings([]protocol.ForwardResult{{
+		Name: configuration.Name, Type: configuration.Type, BindingID: "binding", Active: true,
+	}}); err == nil {
+		t.Fatal("UDP Forward binding without server limits was accepted")
+	}
+}
+
 func assertTCPAddressAvailable(t *testing.T, address string) {
 	t.Helper()
 	listener, err := net.Listen("tcp", address)

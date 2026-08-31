@@ -434,7 +434,10 @@ func validateForwardServerConfig(configuration ForwardServerConfig) error {
 	if configuration.Enabled && len(configuration.Rules) == 0 {
 		return errors.New("forwards.rules must not be empty when forwards.enabled is true")
 	}
-	return validateForwardRules("forwards.rules", configuration.Rules)
+	if err := validateForwardRules("forwards.rules", configuration.Rules); err != nil {
+		return err
+	}
+	return validateUDPConfig(EffectiveForwardUDPConfig(configuration))
 }
 
 func validateForwardRules(field string, rules []ForwardIPRule) error {

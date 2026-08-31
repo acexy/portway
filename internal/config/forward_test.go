@@ -5,9 +5,34 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acexy/portway/internal/protocol"
 )
+
+func TestLoadServerForwardUDPOverridesDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	writeTestConfiguration(t, path, `
+forwards:
+  enabled: true
+  udp:
+    association_idle_timeout: 30s
+  rules:
+    - ip_range: 127.0.0.1/32
+      udp:
+        port_ranges:
+          - start: 53
+            end: 53
+`)
+	configuration, err := LoadServer(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Forwards.UDP.AssociationIdleTimeout != 30*time.Second ||
+		configuration.Forwards.UDP.MaxDatagramSize != DefaultUDPConfig().MaxDatagramSize {
+		t.Fatalf("unexpected Forward UDP configuration: %+v", configuration.Forwards.UDP)
+	}
+}
 
 func testForwardRule(cidr string, forwardType protocol.ForwardType, start uint16, end uint16) ForwardIPRule {
 	rule := ForwardIPRule{IPRange: cidr}
@@ -35,7 +60,7 @@ func TestValidateClientForwardConfiguration(t *testing.T) {
 
 	configuration.Proxies = []ProxyConfig{{
 		Name: "database", Type: protocol.ProxyTypeTCP,
-		Local: EndpointConfig{IP: "127.0.0.1", Port: 22},
+		Local:  EndpointConfig{IP: "127.0.0.1", Port: 22},
 		Public: ProxyPublicConfig{Port: 22022},
 	}}
 	if err := validateClient(configuration); err == nil ||
@@ -237,7 +262,7 @@ func TestDisabledForwardKeepsGovernedAndManagedConfigurationDormant(t *testing.T
 		Enabled:    false,
 		Rules: []ForwardIPRule{{
 			IPRange: "127.0.0.1/32",
-			TCP: ForwardPortPermission{PortRanges: []PortRange{{Start: 5432, End: 5432}}},
+			TCP:     ForwardPortPermission{PortRanges: []PortRange{{Start: 5432, End: 5432}}},
 		}},
 	}
 	configuration.GovernedClients = map[string]GovernedClientConfig{

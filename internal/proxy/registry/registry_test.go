@@ -42,16 +42,16 @@ func TestManagedReservationRejectsSharedClientBinding(t *testing.T) {
 		"shared-client",
 		"shared-session",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("shared", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
+	if result.Status != SyncStatusRejected ||
 		result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorPortConflict {
+		result.Error.Code != ErrorPortConflict {
 		t.Fatalf("managed reservation did not reject shared binding: %+v", result)
 	}
 }
@@ -65,11 +65,11 @@ func TestProxySyncRejectsEmptyDeclaration(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{Revision: 1},
+		SyncRequest{Revision: 1},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
+	if result.Status != SyncStatusRejected ||
 		result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorInvalidProxy ||
+		result.Error.Code != ErrorInvalidProxy ||
 		result.Error.Retryable {
 		t.Fatalf("expected permanent empty proxy rejection, got %+v", result)
 	}
@@ -82,10 +82,10 @@ func TestProxySyncRejectsOversizedRequestIDWithoutCaching(t *testing.T) {
 		"client-a",
 		"session-a",
 		strings.Repeat("x", 129),
-		protocol.SyncProxies{Revision: 1},
+		SyncRequest{Revision: 1},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
-		result.Error == nil || result.Error.Code != protocol.ProxyErrorInvalidRequest {
+	if result.Status != SyncStatusRejected ||
+		result.Error == nil || result.Error.Code != ErrorInvalidRequest {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	manager.mutex.Lock()
@@ -132,23 +132,23 @@ func TestProxySyncRejectsReusedRequestIDWithDifferentPayload(t *testing.T) {
 	manager.Attach("client-one", "session-one", nil)
 	first := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("first", port)},
 		},
 	)
-	if first.Status != protocol.ProxySyncStatusApplied {
+	if first.Status != SyncStatusApplied {
 		t.Fatalf("initial synchronization failed: %+v", first.Error)
 	}
 	second := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("second", port)},
 		},
 	)
-	if second.Status != protocol.ProxySyncStatusRejected ||
-		second.Error == nil || second.Error.Code != protocol.ProxyErrorInvalidRequest {
+	if second.Status != SyncStatusRejected ||
+		second.Error == nil || second.Error.Code != ErrorInvalidRequest {
 		t.Fatalf("changed request ID payload was not rejected: %+v", second)
 	}
 	if manager.clients["client-one"].revision != 1 ||
@@ -166,27 +166,27 @@ func TestProxySyncReturnsBoundedCachedResultForHistoricalRequest(t *testing.T) {
 	declaration := tcpProxyDeclaration("proxy", port)
 	first := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies:  []protocol.ProxyDeclaration{declaration},
 		},
 	)
-	if first.Status != protocol.ProxySyncStatusApplied {
+	if first.Status != SyncStatusApplied {
 		t.Fatalf("first synchronization failed: %+v", first.Error)
 	}
 	second := manager.Sync(
 		"client-one", "session-one", "request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies:  []protocol.ProxyDeclaration{declaration},
 		},
 	)
-	if second.Status != protocol.ProxySyncStatusApplied {
+	if second.Status != SyncStatusApplied {
 		t.Fatalf("second synchronization failed: %+v", second.Error)
 	}
 	replayed := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies:  []protocol.ProxyDeclaration{declaration},
 		},
@@ -268,14 +268,14 @@ func TestManagedReservationAllowsOwningManagedClient(t *testing.T) {
 		"managed-client",
 		"managed-session",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("managed", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("managed owner could not claim its reservation: %+v", result.Error)
 	}
 }
@@ -288,14 +288,14 @@ func TestManagedReservationRejectsHotReloadOverActiveSharedBinding(t *testing.T)
 		"shared-client",
 		"shared-session",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("shared", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("shared binding setup failed: %+v", result.Error)
 	}
 
@@ -327,14 +327,14 @@ func TestTCPProxySyncReusesEndpointWhenProxyIsRenamed(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("old-name", port),
 			},
 		},
 	)
-	if first.Status != protocol.ProxySyncStatusApplied {
+	if first.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", first.Error)
 	}
 	originalEndpoint := manager.endpoints[port]
@@ -343,14 +343,14 @@ func TestTCPProxySyncReusesEndpointWhenProxyIsRenamed(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("new-name", port),
 			},
 		},
 	)
-	if second.Status != protocol.ProxySyncStatusApplied {
+	if second.Status != SyncStatusApplied {
 		t.Fatalf("proxy rename failed: %+v", second.Error)
 	}
 	if manager.endpoints[port] != originalEndpoint {
@@ -378,7 +378,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("first", firstPort),
@@ -386,7 +386,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 			},
 		},
 	)
-	if initial.Status != protocol.ProxySyncStatusApplied {
+	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", initial.Error)
 	}
 	firstEndpoint := manager.endpoints[firstPort]
@@ -396,7 +396,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("first", secondPort),
@@ -404,7 +404,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 			},
 		},
 	)
-	if swapped.Status != protocol.ProxySyncStatusApplied {
+	if swapped.Status != SyncStatusApplied {
 		t.Fatalf("proxy endpoint swap failed: %+v", swapped.Error)
 	}
 	if manager.endpoints[firstPort] != firstEndpoint ||
@@ -429,14 +429,14 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("existing", existingPort),
 			},
 		},
 	)
-	if initial.Status != protocol.ProxySyncStatusApplied {
+	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", initial.Error)
 	}
 	originalEndpoint := manager.endpoints[existingPort]
@@ -451,7 +451,7 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("existing", existingPort),
@@ -459,9 +459,9 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 			},
 		},
 	)
-	if rejected.Status != protocol.ProxySyncStatusRejected ||
+	if rejected.Status != SyncStatusRejected ||
 		rejected.Error == nil ||
-		rejected.Error.Code != protocol.ProxyErrorPortConflict {
+		rejected.Error.Code != ErrorPortConflict {
 		t.Fatalf("expected port conflict, got %+v", rejected)
 	}
 	state := manager.clients["client-one"]
@@ -481,11 +481,11 @@ func TestProxySyncReportsInactiveSessionAsRetryable(t *testing.T) {
 		"missing-client",
 		"missing-session",
 		"request-one",
-		protocol.SyncProxies{Revision: 1},
+		SyncRequest{Revision: 1},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
+	if result.Status != SyncStatusRejected ||
 		result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorSessionInactive ||
+		result.Error.Code != ErrorSessionInactive ||
 		!result.Error.Retryable {
 		t.Fatalf("expected retryable inactive session rejection, got %+v", result)
 	}
@@ -501,14 +501,14 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				udpProxyDeclaration("existing", existingPort),
 			},
 		},
 	)
-	if initial.Status != protocol.ProxySyncStatusApplied {
+	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial UDP synchronization failed: %+v", initial.Error)
 	}
 	originalEndpoint := manager.udpEndpoints[existingPort]
@@ -525,7 +525,7 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				udpProxyDeclaration("existing", existingPort),
@@ -533,9 +533,9 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 			},
 		},
 	)
-	if rejected.Status != protocol.ProxySyncStatusRejected ||
+	if rejected.Status != SyncStatusRejected ||
 		rejected.Error == nil ||
-		rejected.Error.Code != protocol.ProxyErrorPortConflict {
+		rejected.Error.Code != ErrorPortConflict {
 		t.Fatalf("expected UDP port conflict, got %+v", rejected)
 	}
 	state := manager.clients["client-one"]
@@ -557,7 +557,7 @@ func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("tcp-service", port),
@@ -565,7 +565,7 @@ func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("TCP and UDP numeric port sharing failed: %+v", result.Error)
 	}
 	if manager.endpoints[port] == nil || manager.udpEndpoints[port] == nil {
@@ -585,14 +585,14 @@ func TestUDPSuspensionPreservesBindingForOriginalSessionRecovery(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				udpProxyDeclaration("udp-service", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("UDP synchronization failed: %+v", result.Error)
 	}
 	manager.Activate("client-one", "session-one")
