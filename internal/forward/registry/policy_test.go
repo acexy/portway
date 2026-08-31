@@ -80,3 +80,42 @@ func TestUDPBindingCarriesServerRuntimeLimits(t *testing.T) {
 		t.Fatalf("UDP Forward limits = %+v, error = %v", results, forwardError)
 	}
 }
+
+func TestSyncTransactionRollbackPreservesPublishedBinding(t *testing.T) {
+	broker := link.NewBroker(context.Background())
+	defer broker.Close()
+	registry := New(
+		broker,
+		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
+		config.DefaultUDPConfig,
+	)
+	declaration := protocol.ForwardDeclaration{
+		Name: "database", Type: protocol.ForwardTypeTCP,
+		TargetIP: "127.0.0.1", TargetPort: 5432,
+	}
+	results, forwardError := registry.Sync(
+		"client", "session", nil, authentication.Context{}, 10,
+		[]protocol.ForwardDeclaration{declaration},
+	)
+	if forwardError != nil {
+		t.Fatal(forwardError)
+	}
+	transaction, forwardError := registry.BeginSync(
+		"client", "session", nil, authentication.Context{}, 10,
+		[]protocol.ForwardDeclaration{{
+			Name: "database", Type: protocol.ForwardTypeTCP,
+			TargetIP: "127.0.0.1", TargetPort: 5433,
+		}},
+	)
+	if forwardError != nil {
+		t.Fatal(forwardError)
+	}
+	transaction.Rollback()
+	offer := registry.Offer("client", "session", protocol.RequestForwardLink{
+		RequestID: "request", Name: declaration.Name, Type: declaration.Type,
+		BindingID: results[0].BindingID,
+	})
+	if offer.Error != nil {
+		t.Fatalf("rollback replaced the published Binding: %+v", offer.Error)
+	}
+}

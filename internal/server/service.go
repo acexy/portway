@@ -39,19 +39,21 @@ func (reloadError restartRequiredError) Error() string {
 // It owns the client listener, control sessions, proxy registration, and
 // session-scoped TCP proxy resources.
 type Service struct {
-	logger                *logging.Logger
-	configuration         *configurationManager
-	clientRegistry        *session.Registry
-	proxyRegistry         *proxyregistry.Registry
-	forwardRegistry       *forwardregistry.Registry
-	linkBroker            *link.Broker
-	transportServer       transport.Server
-	authenticationStore   *authentication.Store
-	authenticationBarrier sync.RWMutex
-	managed               *managedCoordinator
-	httpsCertificates     *httpsCertificateManager
-	inboundAdmission      chan struct{}
-	ready                 atomic.Bool
+	logger                  *logging.Logger
+	configuration           *configurationManager
+	clientRegistry          *session.Registry
+	proxyRegistry           *proxyregistry.Registry
+	forwardRegistry         *forwardregistry.Registry
+	linkBroker              *link.Broker
+	transportServer         transport.Server
+	authenticationStore     *authentication.Store
+	authenticationBarrier   sync.RWMutex
+	configurationSyncMutex  sync.Mutex
+	configurationSyncStates map[string]*configurationSyncState
+	managed                 *managedCoordinator
+	httpsCertificates       *httpsCertificateManager
+	inboundAdmission        chan struct{}
+	ready                   atomic.Bool
 }
 
 // NewService creates a server service.
@@ -60,10 +62,11 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 		configuration.Generation = 1
 	}
 	return &Service{
-		logger:         logger,
-		configuration:  newConfigurationManager(configuration),
-		clientRegistry: session.NewRegistryWithLimit(maxClientSessions),
-		managed:        newManagedCoordinator(),
+		logger:                  logger,
+		configuration:           newConfigurationManager(configuration),
+		clientRegistry:          session.NewRegistryWithLimit(maxClientSessions),
+		managed:                 newManagedCoordinator(),
+		configurationSyncStates: make(map[string]*configurationSyncState),
 		inboundAdmission: make(
 			chan struct{},
 			maxUnaffiliatedInboundConnections,

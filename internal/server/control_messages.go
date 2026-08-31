@@ -34,6 +34,30 @@ func (s *Service) serveControlMessages(
 	if len(authenticationContexts) != 0 {
 		authenticationContext = authenticationContexts[0]
 	}
+	defer s.clearConfigurationSync(clientID, sessionID)
+	finishConfiguration := func(requestID string, result protocol.SyncConfigurationResult) error {
+		if err := writer.WriteResponse(
+			protocol.MessageSyncConfigurationResult,
+			requestID,
+			result,
+		); err != nil {
+			return err
+		}
+		s.proxyRegistry.Activate(clientID, sessionID)
+		if initialProxySynchronizationRequired {
+			if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
+				return errors.New("initialized client session is no longer current")
+			}
+			if err := connection.SetDeadline(time.Time{}); err != nil {
+				return fmt.Errorf("clear initial configuration deadline: %w", err)
+			}
+			initialProxySynchronizationRequired = false
+		}
+		if onProxySynchronizationApplied != nil {
+			onProxySynchronizationApplied()
+		}
+		return nil
+	}
 	for {
 		envelope, err := protocol.ReadControl(connection)
 		if err != nil {
@@ -108,6 +132,29 @@ func (s *Service) serveControlMessages(
 			if len(request.Proxies) == 0 && len(request.Forwards) == 0 {
 				return false, errors.New("complete configuration must not be empty")
 			}
+			cachedResult, synchronizationError := s.checkConfigurationSync(
+				clientID,
+				sessionID,
+				envelope.RequestID,
+				request,
+			)
+			if synchronizationError != nil {
+				if err := writeConfigurationRejection(
+					writer,
+					envelope.RequestID,
+					request.Revision,
+					synchronizationError,
+				); err != nil {
+					return false, err
+				}
+				return false, errProxyRegistrationRejected
+			}
+			if cachedResult != nil {
+				if err := finishConfiguration(envelope.RequestID, *cachedResult); err != nil {
+					return false, err
+				}
+				continue
+			}
 			if rejection := validateConfigurationCapabilities(
 				request,
 				negotiatedCapabilities,
@@ -141,10 +188,20 @@ func (s *Service) serveControlMessages(
 			if s.forwardRegistry == nil {
 				return false, errors.New("Forward Registry is unavailable")
 			}
-			if forwardError := s.forwardRegistry.Validate(
+			maxActiveForwardLinks := 0
+			if authenticationMode == authentication.ModeGoverned {
+				governed, _ := s.configuration.governedClient(clientID)
+				maxActiveForwardLinks = governed.Permissions.Forwards.Limits.MaxActiveLinks
+			}
+			forwardTransaction, forwardError := s.forwardRegistry.BeginSync(
+				clientID,
+				sessionID,
+				writer,
 				authenticationContext,
+				maxActiveForwardLinks,
 				request.Forwards,
-			); forwardError != nil {
+			)
+			if forwardError != nil {
 				if err := writeConfigurationRejection(
 					writer,
 					envelope.RequestID,
@@ -162,6 +219,7 @@ func (s *Service) serveControlMessages(
 				proxyRequest,
 			)
 			if proxyResult.Status == proxyregistry.SyncStatusRejected {
+				forwardTransaction.Rollback()
 				if err := writeConfigurationRejection(
 					writer,
 					envelope.RequestID,
@@ -172,46 +230,16 @@ func (s *Service) serveControlMessages(
 				}
 				return false, errProxyRegistrationRejected
 			}
-			maxActiveForwardLinks := 0
-			if authenticationMode == authentication.ModeGoverned {
-				governed, _ := s.configuration.governedClient(clientID)
-				maxActiveForwardLinks = governed.Permissions.Forwards.Limits.MaxActiveLinks
+			result := protocol.SyncConfigurationResult{
+				Revision: request.Revision,
+				Status:   protocol.ConfigurationSyncStatusApplied,
+				Proxies:  proxyResult.Proxies,
+				Forwards: append([]protocol.ForwardResult(nil), forwardTransaction.Results()...),
 			}
-			forwardResults, forwardError := s.forwardRegistry.Sync(
-				clientID,
-				sessionID,
-				writer,
-				authenticationContext,
-				maxActiveForwardLinks,
-				request.Forwards,
-			)
-			if forwardError != nil {
-				return false, errors.New("validated Forward synchronization failed")
-			}
-			if err := writer.WriteResponse(
-				protocol.MessageSyncConfigurationResult,
-				envelope.RequestID,
-				protocol.SyncConfigurationResult{
-					Revision: request.Revision,
-					Status:   protocol.ConfigurationSyncStatusApplied,
-					Proxies:  proxyResult.Proxies,
-					Forwards: forwardResults,
-				},
-			); err != nil {
+			forwardTransaction.Commit()
+			s.cacheConfigurationSync(clientID, sessionID, envelope.RequestID, request, result)
+			if err := finishConfiguration(envelope.RequestID, result); err != nil {
 				return false, err
-			}
-			s.proxyRegistry.Activate(clientID, sessionID)
-			if initialProxySynchronizationRequired {
-				if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
-					return false, errors.New("initialized client session is no longer current")
-				}
-				if err := connection.SetDeadline(time.Time{}); err != nil {
-					return false, fmt.Errorf("clear initial configuration deadline: %w", err)
-				}
-				initialProxySynchronizationRequired = false
-			}
-			if onProxySynchronizationApplied != nil {
-				onProxySynchronizationApplied()
 			}
 		case protocol.MessageRequestForwardLink:
 			var request protocol.RequestForwardLink

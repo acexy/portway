@@ -11,6 +11,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
+	forwardregistry "github.com/acexy/portway/internal/forward/registry"
 	"github.com/acexy/portway/internal/protocol"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/transport"
@@ -179,6 +180,25 @@ func (s *Service) applyManagedGeneration(
 	if err := exchange.prepare(ctx, preparation, status); err != nil {
 		return err
 	}
+	var forwardTransaction *forwardregistry.SyncTransaction
+	if s.forwardRegistry != nil {
+		var forwardError *protocol.ForwardError
+		forwardTransaction, forwardError = s.forwardRegistry.BeginSync(
+			clientID,
+			sessionID,
+			exchange.controlWriter(),
+			authenticationContext,
+			config.DefaultForwardPermissionLimits().MaxActiveLinks,
+			declarations.Forwards,
+		)
+		if forwardError != nil {
+			return fmt.Errorf(
+				"prepare managed Forward configuration: %s: %s",
+				forwardError.Code,
+				forwardError.Message,
+			)
+		}
+	}
 	if deactivate {
 		s.proxyRegistry.Deactivate(clientID, sessionID)
 	}
@@ -189,6 +209,9 @@ func (s *Service) applyManagedGeneration(
 		proxyregistry.SyncRequest{Revision: declarations.Revision, Proxies: declarations.Proxies},
 	)
 	if result.Status != proxyregistry.SyncStatusApplied {
+		if forwardTransaction != nil {
+			forwardTransaction.Rollback()
+		}
 		if deactivate {
 			s.proxyRegistry.Activate(clientID, sessionID)
 		}
@@ -202,15 +225,9 @@ func (s *Service) applyManagedGeneration(
 		return errors.New("apply managed proxy configuration: rejected")
 	}
 	forwardResults := []protocol.ForwardResult{}
-	if s.forwardRegistry != nil {
-		var forwardError *protocol.ForwardError
-		forwardResults, forwardError = s.forwardRegistry.Sync(
-			clientID, sessionID, exchange.controlWriter(), authenticationContext,
-			config.DefaultForwardPermissionLimits().MaxActiveLinks, declarations.Forwards,
-		)
-		if forwardError != nil {
-			return fmt.Errorf("apply managed Forward configuration: %s: %s", forwardError.Code, forwardError.Message)
-		}
+	if forwardTransaction != nil {
+		forwardResults = append(forwardResults, forwardTransaction.Results()...)
+		forwardTransaction.Commit()
 	}
 	if err := exchange.activate(ctx, protocol.ManagedConfigActivate{
 		Revision: status.Revision, Digest: status.Digest, Forwards: forwardResults,

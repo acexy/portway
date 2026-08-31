@@ -92,26 +92,30 @@ func (broker *Broker) SnapshotStats() Stats {
 
 // Broker owns pending and active logical data links.
 type Broker struct {
-	mutex          sync.Mutex
-	pending        map[string]*brokerPendingLink
-	active         map[string]*brokerActiveLink
-	pendingClients map[string]int
-	pendingProxies map[string]int
-	activeClients  map[string]int
-	activeProxies  map[string]int
-	closed         bool
-	closeOnce      sync.Once
+	mutex             sync.Mutex
+	pending           map[string]*brokerPendingLink
+	active            map[string]*brokerActiveLink
+	pendingClients    map[string]int
+	pendingProxies    map[string]int
+	activeClients     map[string]int
+	activeProxies     map[string]int
+	pendingDirections map[string]int
+	activeDirections  map[string]int
+	closed            bool
+	closeOnce         sync.Once
 }
 
 // NewBroker creates a link broker.
 func NewBroker(ctx context.Context) *Broker {
 	broker := &Broker{
-		pending:        make(map[string]*brokerPendingLink),
-		active:         make(map[string]*brokerActiveLink),
-		pendingClients: make(map[string]int),
-		pendingProxies: make(map[string]int),
-		activeClients:  make(map[string]int),
-		activeProxies:  make(map[string]int),
+		pending:           make(map[string]*brokerPendingLink),
+		active:            make(map[string]*brokerActiveLink),
+		pendingClients:    make(map[string]int),
+		pendingProxies:    make(map[string]int),
+		activeClients:     make(map[string]int),
+		activeProxies:     make(map[string]int),
+		pendingDirections: make(map[string]int),
+		activeDirections:  make(map[string]int),
 	}
 	context.AfterFunc(ctx, broker.Close)
 	return broker
@@ -549,10 +553,13 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 	pendingProxy := broker.pendingProxies[proxyKey]
 	activeClient := broker.activeClients[target.ClientID]
 	activeProxy := broker.activeProxies[proxyKey]
+	directionKey := brokerDirectionKey(target)
+	pendingDirection := broker.pendingDirections[directionKey]
+	activeDirection := broker.activeDirections[directionKey]
 	return pendingClient >= maxPendingPerClient ||
 		pendingProxy >= maxPendingPerProxy ||
 		(target.MaxActiveLinks > 0 &&
-			pendingClient+activeClient >= target.MaxActiveLinks) ||
+			pendingDirection+activeDirection >= target.MaxActiveLinks) ||
 		pendingClient+activeClient >= maxActivePerClient ||
 		pendingProxy+activeProxy >= maxActivePerProxy
 }
@@ -560,25 +567,33 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 func (broker *Broker) incrementPendingLocked(target Target) {
 	broker.pendingClients[target.ClientID]++
 	broker.pendingProxies[brokerProxyKey(target)]++
+	broker.pendingDirections[brokerDirectionKey(target)]++
 }
 
 func (broker *Broker) decrementPendingLocked(target Target) {
 	decrementBrokerCount(broker.pendingClients, target.ClientID)
 	decrementBrokerCount(broker.pendingProxies, brokerProxyKey(target))
+	decrementBrokerCount(broker.pendingDirections, brokerDirectionKey(target))
 }
 
 func (broker *Broker) incrementActiveLocked(target Target) {
 	broker.activeClients[target.ClientID]++
 	broker.activeProxies[brokerProxyKey(target)]++
+	broker.activeDirections[brokerDirectionKey(target)]++
 }
 
 func (broker *Broker) decrementActiveLocked(target Target) {
 	decrementBrokerCount(broker.activeClients, target.ClientID)
 	decrementBrokerCount(broker.activeProxies, brokerProxyKey(target))
+	decrementBrokerCount(broker.activeDirections, brokerDirectionKey(target))
 }
 
 func brokerProxyKey(target Target) string {
 	return target.ClientID + "\x00" + target.ProxyName
+}
+
+func brokerDirectionKey(target Target) string {
+	return target.ClientID + "\x00" + string(normalizeLinkDirection(target.Direction))
 }
 
 func decrementBrokerCount(counts map[string]int, key string) {

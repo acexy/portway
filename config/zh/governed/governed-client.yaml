@@ -30,6 +30,7 @@ permissions:
         - app.example.com
         - "*.customer.example.com"
     # 可选 Proxy 资源上限。省略字段使用面向生产的安全默认值；显式 0 非法。
+    # max_active_links 只统计 Proxy Link，程序级硬上限仍同时约束两个方向。
     limits:
       max_total: 20
       max_tcp: 10
@@ -53,6 +54,7 @@ permissions:
             - start: 53
               end: 53
     # 可选 Forward 资源上限。省略字段使用面向生产的安全默认值；显式 0 非法。
+    # max_active_links 只统计 Forward Link，程序级硬上限仍同时约束两个方向。
     limits:
       max_total: 5
       max_tcp: 4

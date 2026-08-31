@@ -91,51 +91,19 @@ func (registry *Registry) Sync(
 	maxActiveLinks int,
 	declarations []protocol.ForwardDeclaration,
 ) ([]protocol.ForwardResult, *protocol.ForwardError) {
-	if validationError := registry.Validate(authenticationContext, declarations); validationError != nil {
-		return nil, validationError
+	transaction, forwardError := registry.BeginSync(
+		clientID,
+		sessionID,
+		writer,
+		authenticationContext,
+		maxActiveLinks,
+		declarations,
+	)
+	if forwardError != nil {
+		return nil, forwardError
 	}
-
-	registry.mutex.Lock()
-	if registry.closed {
-		registry.mutex.Unlock()
-		return nil, forwardError(protocol.ForwardErrorSessionInactive, "", "Forward Registry is closed")
-	}
-	old := make([]*binding, 0)
-	for key, existing := range registry.bindings {
-		if existing.clientID == clientID && existing.sessionID == sessionID {
-			old = append(old, existing)
-			delete(registry.bindings, key)
-		}
-	}
-	results := make([]protocol.ForwardResult, 0, len(declarations))
-	for _, declaration := range declarations {
-		bindingID, err := newBindingID()
-		if err != nil {
-			for _, previous := range old {
-				registry.bindings[bindingKey(previous.clientID, previous.sessionID, previous.declaration.Name)] = previous
-			}
-			registry.mutex.Unlock()
-			return nil, forwardError(protocol.ForwardErrorInvalidRequest, declaration.Name, "generate Forward Binding")
-		}
-		_, active := registry.policy(authenticationContext, declaration)
-		current := &binding{
-			clientID: clientID, sessionID: sessionID, bindingID: bindingID,
-			declaration: declaration, writer: writer,
-			authentication: authenticationContext, maxActiveLinks: maxActiveLinks, active: active,
-		}
-		registry.bindings[bindingKey(clientID, sessionID, declaration.Name)] = current
-		result := protocol.ForwardResult{
-			Name: declaration.Name, Type: declaration.Type, BindingID: bindingID, Active: active,
-		}
-		if declaration.Type == protocol.ForwardTypeUDP {
-			result.UDP = protocolUDPConfig(registry.udpConfig())
-		}
-		results = append(results, result)
-	}
-	registry.mutex.Unlock()
-	for _, previous := range old {
-		registry.broker.CancelBinding(previous.bindingID)
-	}
+	results := append([]protocol.ForwardResult(nil), transaction.Results()...)
+	transaction.Commit()
 	return results, nil
 }
 

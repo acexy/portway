@@ -43,7 +43,8 @@ permissions:
         - app.example.com
         - "*.customer.example.com"
     # Optional Proxy-specific ceilings. Omitted fields use production-safe
-    # defaults; explicit zero values are invalid.
+    # defaults; explicit zero values are invalid. max_active_links counts only
+    # Proxy Links; a separate program hard limit still covers both directions.
     limits:
       max_total: 20
       max_tcp: 10
@@ -68,7 +69,8 @@ permissions:
               end: 53
     limits:
       # Optional Forward-specific ceilings. Omitted fields use production-safe
-      # defaults; explicit zero values are invalid.
+      # defaults; explicit zero values are invalid. max_active_links counts only
+      # Forward Links; a separate program hard limit still covers both directions.
       max_total: 5
       max_tcp: 4
       max_udp: 1
