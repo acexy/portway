@@ -3,14 +3,16 @@
 
 authentication:
   client_id: governed-client
-# 必须包含大于 32 个 UTF-8 字符且保持唯一；推荐使用自动生成的 256-bit 随机值。
-# 禁止提交生产 Token。热加载修改本记录 Token 时，只断开本 ClientID 的活动及
-# 恢复窗口 Session；其他认证记录保持在线。
+  # 必须包含大于 32 个 UTF-8 字符且保持全局唯一；推荐使用自动生成的 256-bit
+  # 随机值。禁止提交生产 Token。热加载修改本记录 Token 时，只断开本 ClientID。
   token: PORTWAY_TOKEN_REQUIRED
 
+# 必填。限制本客户端声明的完整 Proxy 和 Forward 配置；任一条目越权时服务端
+# 拒绝完整声明集合，不会静默删除个别条目。权限变化支持热加载，只吊销当前
+# Governed ClientID；客户端重连后重新提交完整期望集合。
 permissions:
   proxies:
-    # 协议规则节点存在即表示允许该协议。
+    # 协议规则节点存在即表示允许该协议。仅允许 Forward 时可省略整个 proxies。
     tcp:
       remote_port_ranges:
         - start: 20000
@@ -27,6 +29,7 @@ permissions:
       domains:
         - app.example.com
         - "*.customer.example.com"
+    # 可选 Proxy 资源上限。省略字段使用面向生产的安全默认值；显式 0 非法。
     limits:
       max_total: 20
       max_tcp: 10
@@ -49,6 +52,7 @@ permissions:
           port_ranges:
             - start: 53
               end: 53
+    # 可选 Forward 资源上限。省略字段使用面向生产的安全默认值；显式 0 非法。
     limits:
       max_total: 5
       max_tcp: 4

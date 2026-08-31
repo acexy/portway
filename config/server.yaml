@@ -11,13 +11,6 @@
 # Use trace for detailed per-session protocol diagnostics, including heartbeats.
 log_level: info
 
-# Optional. Local operations HTTP listener for /healthz, /readyz, and /metrics.
-# Defaults to empty, which disables it. Bind this to loopback or a protected
-# management network; the endpoints do not implement application authentication.
-# Changing this value requires restarting portwayd.
-operations:
-  listen_address: ""
-
 # Optional. Underlying client-server transport settings.
 # The server starts only the selected transport.
 transport:
@@ -43,6 +36,51 @@ transport:
     # Private key for cert_file. Keep this file readable only by Portway.
     key_file: /path/to/server.key
 
+# Optional authentication entries. TCP and QUIC use the same immutable
+# authentication snapshot. All configured Tokens and ClientIDs must be globally
+# unique across shared, governed, and managed entries. The Shared Token and both
+# client directories are hot-reloaded as one atomic snapshot. Token changes
+# revoke only the affected authentication record: Shared changes disconnect all
+# Shared clients, while Governed or Managed changes disconnect only that ClientID.
+# Unchanged records retain their Sessions. Managed configuration changes use
+# the online Prepare/Activate rollout instead of revoking the Session.
+authentication:
+  # Optional. When present but empty, generate a cryptographically random
+  # 32-byte Token at startup and log it once. Later configuration scans reuse
+  # that effective Token instead of silently generating another value. Save the
+  # logged Token here before restarting the server, or the restart generates a
+  # different value. Configure an explicit new value to rotate it. Omit the
+  # field to disable Shared authentication when either client directory is
+  # configured.
+  shared_token: ""
+
+  # Optional. Every *.yaml file defines one ClientID, unique Token, Proxy and
+  # Forward permission boundaries, and resource limits. Omitted limit fields
+  # use production-safe defaults; explicit values must remain within their
+  # documented program hard limits. File names are operator-facing labels and
+  # do not need to match ClientID. A Token or permission change disconnects only
+  # the corresponding Governed ClientID; the client reconnects and resubmits
+  # its complete desired Proxy and Forward sets.
+  # The http permission separately allows public_schemes and domains for
+  # type=http declarations; listeners and HTTPS certificates remain global.
+  # Relative paths are resolved from the main server configuration directory.
+  # See config/governed/governed-client.yaml for a complete record example.
+  # governed_clients_path: "./governed"
+
+  # Optional. Every *.yaml file defines one ClientID, unique Token, optional
+  # Forward permission boundary, revision, and complete server-owned Proxy and
+  # Forward configuration. A client may have at most 128 managed proxies across
+  # TCP, UDP, and HTTP. Across all Managed files, TCP ports, UDP ports, and HTTP
+  # domains must each be globally unique.
+  # A Token change disconnects only the corresponding Managed ClientID;
+  # client configuration-only changes retain online rollout.
+  # Managed type=http entries explicitly select public_schemes. Every selected
+  # listener must be enabled globally; HTTPS certificates are configured above,
+  # while each managed local target still speaks HTTP.
+  # Relative paths are resolved from the main server configuration directory.
+  # See config/managed/managed-client.yaml for a complete record example.
+  # managed_clients_path: "./managed"
+
 # Optional. Public proxy listener settings.
 proxies:
   # Optional. IP used by public TCP and UDP proxy listeners.
@@ -54,7 +92,8 @@ proxies:
   # Defaults apply even when both public listeners are empty. Changing an
   # effective value currently requires restarting portwayd.
   http:
-    # Optional. Public HTTP listener. Empty disables HTTP.
+    # Optional. Public HTTP listener. Empty disables HTTP. It must not duplicate
+    # the transport, HTTPS, or operations TCP listener address.
     listen_address: ""
     # Optional. Defaults to 0s, which disables the Portway deadline.
     # Maximum non-zero value: 60s.
@@ -129,7 +168,8 @@ proxies:
   # and the complete list are hot-reloadable as one atomic snapshot; invalid
   # updates keep the previous snapshot active. QUIC certificates are independent.
   https:
-    # Optional. Public HTTPS listener. Empty disables HTTPS.
+    # Optional. Public HTTPS listener. Empty disables HTTPS. It must not
+    # duplicate the transport, HTTP, or operations TCP listener address.
     listen_address: ""
     certificates:
       - domains:
@@ -224,8 +264,8 @@ forwards:
 # Optional. Server-wide source IP security controls.
 security:
   # Optional. IPv4/IPv6 deny-list file. Defaults to empty, which disables
-  # source IP filtering. Relative paths are resolved from the working
-  # directory. The configured file must exist and be valid at startup.
+  # source IP filtering. Relative paths are resolved from the main server
+  # configuration file's directory. The file must exist and be valid at startup.
   # Each non-comment line may contain one IP address or CIDR prefix.
   # ip_deny_file: "./ip_block.txt"
 
@@ -241,42 +281,10 @@ security:
   # Never enable this when clients can bypass the trusted upstream proxy.
   http_client_ip_header: ""
 
-# Optional authentication entries. TCP and QUIC use the same immutable
-# authentication snapshot. All configured Tokens and ClientIDs must be globally
-# unique across shared, governed, and managed entries. The Shared Token and both
-# client directories are hot-reloaded as one atomic snapshot. Token changes
-# revoke only the affected authentication record: Shared changes disconnect all
-# Shared clients, while Governed or Managed changes disconnect only that ClientID.
-# Unchanged records retain their Sessions. Managed configuration-only changes
-# continue to use online rollout.
-authentication:
-  # Optional. When present but empty, generate a cryptographically random
-  # 32-byte Token at startup and log it once. Later configuration scans reuse
-  # that effective Token instead of silently generating another value. Save the
-  # logged Token here before restarting the server, or the restart generates a
-  # different value. Configure an explicit new value to rotate it. Omit to disable shared
-  # authentication when either client directory is configured.
-  shared_token: ""
-
-  # Optional. Every *.yaml file defines one ClientID, unique Token, proxy type
-  # allowlist, public port/domain policy, and resource limits. Omitted limit
-  # fields use production-safe defaults; explicit values must remain within
-  # their documented program hard limits. File names are operator-facing labels
-  # and do not need to match ClientID. A Token change disconnects only the
-  # corresponding Governed ClientID.
-  # The http permission separately allows public_schemes and domains for
-  # type=http declarations; listeners and HTTPS certificates remain global.
-  # See config/governed/governed-client.yaml for a complete record example.
-  # governed_clients_path: "./governed"
-
-  # Optional. Every *.yaml file defines one ClientID, unique Token, revision,
-  # and complete server-owned proxy configuration. A client may have at most
-  # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
-  # TCP ports, UDP ports, and HTTP domains must each be globally unique.
-  # A Token change disconnects only the corresponding Managed ClientID;
-  # proxy configuration-only changes retain online rollout.
-  # Managed type=http entries explicitly select public_schemes. Every selected
-  # listener must be enabled globally; HTTPS certificates are configured above,
-  # while each managed local target still speaks HTTP.
-  # See config/managed/managed-client.yaml for a complete record example.
-  # managed_clients_path: "./managed"
+# Optional. Local operations HTTP listener for /healthz, /readyz, and /metrics.
+# Defaults to empty, which disables it. Bind this to loopback or a protected
+# management network; the endpoints do not implement application authentication.
+# The address must not duplicate any transport, HTTP, or HTTPS listener.
+# Changing this value requires restarting portwayd.
+operations:
+  listen_address: ""

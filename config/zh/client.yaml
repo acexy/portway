@@ -29,8 +29,9 @@ authentication:
   # 不要使用人工构造字符串。禁止提交真实 Token。
   token: PORTWAY_TOKEN_REQUIRED
 
-# Shared/Governed 必须至少配置一项；Managed 必须留空，由服务端下发并锁定。
-# 同一 ClientID 下所有代理名称必须唯一。
+# Shared/Governed 自行维护完整 Proxy 集合；`proxies` 与 `forwards` 两个集合合计
+# 至少配置一项。Managed 必须将两个集合都留空，由服务端下发并锁定。
+# 同一 ClientID 下所有 Proxy 和 Forward 名称必须全局唯一。
 proxies:
   - name: ssh
     # 必填。表示 portwayd 与 portway 之间承载的端到端代理语义，而非公网入口
@@ -51,12 +52,12 @@ proxies:
   # 服务端至少启用一个 HTTP/HTTPS Listener；使用 HTTPS 时证书映射还必须覆盖该域名。
   - name: web
     type: http
-    # type=http 时可选；留空或省略默认 [http]。显式值可为 http、https 且不得
-    # 重复。TCP/UDP 禁止配置。
     local:
       ip: 127.0.0.1
       port: 8080
     public:
+      # type=http 时可选；留空或省略默认 [http]。显式值可为 http、https 且不得
+      # 重复。TCP/UDP 禁止配置。
       schemes:
         - https
       domain: app.example.com
@@ -70,6 +71,8 @@ proxies:
     public:
       port: 5353
 
+# Shared/Governed 自行维护完整 Forward 集合；`proxies` 与 `forwards` 两个集合
+# 合计至少配置一项。Managed 必须将两个集合都留空，由服务端下发并锁定。
 # Forward 在 portway 客户端接收流量，经认证隧道访问 portwayd 所在网络中的
 # IP:端口。Shared/Governed 客户端自行维护完整集合；Managed 客户端禁止本地
 # 配置，由服务端下发。同一客户端的 Proxy 和 Forward 名称必须全局唯一。

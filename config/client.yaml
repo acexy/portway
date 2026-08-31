@@ -53,10 +53,10 @@ authentication:
   # Never commit a real Token to version control.
   token: PORTWAY_TOKEN_REQUIRED
 
-# Required and non-empty for Shared and Governed clients. Managed clients must
-# leave this empty because the server supplies and locks the complete proxy
-# configuration.
-# Proxy names must be unique within this ClientID across all proxy types.
+# Shared and Governed clients own this complete desired Proxy set. At least one
+# Proxy or Forward is required across both collections. Managed clients must
+# leave both collections empty because the server supplies and locks them.
+# Names must be unique across all Proxies and Forwards for this ClientID.
 proxies:
   # * Required for every proxy. Unique name using lowercase letters, digits,
   # underscores, or hyphens; length 1-64. The first character must be a
@@ -89,13 +89,13 @@ proxies:
   # additionally requires a certificate mapping that covers this exact domain.
   - name: web
     type: http
-    # Optional when type=http. Defaults to [http] when empty or omitted.
-    # Explicit values must be unique and may be http or https.
-    # Not allowed for tcp or udp.
     local:
       ip: 127.0.0.1
       port: 8080
     public:
+      # Optional when type=http. Defaults to [http] when empty or omitted.
+      # Explicit values must be unique and may be http or https.
+      # Not allowed for tcp or udp.
       schemes:
         - https
       # * Required when type=http. Canonical lowercase DNS name.
@@ -111,12 +111,15 @@ proxies:
     public:
       port: 5353
 
+# Shared and Governed clients own this complete desired Forward set. At least
+# one Proxy or Forward is required across both collections. Managed clients
+# must leave both collections empty because the server supplies and locks them.
 # A Forward accepts traffic on portway and carries it through the authenticated
 # tunnel to an IP:port reachable from portwayd. Shared and Governed clients own
 # this complete set. Managed clients must not configure it locally because the
 # server supplies it. The client reads its YAML only at process startup; local
 # configuration changes, including Forward changes, require a client restart.
-# Names are unique across proxies and forwards for the same client.
+# Names are unique across Proxies and Forwards for the same client.
 forwards:
   - name: database
     # * Required. Allowed values: tcp, udp.

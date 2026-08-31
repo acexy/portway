@@ -11,15 +11,21 @@
 authentication:
   # * Required. Server-owned identity returned to the authenticated client.
   client_id: governed-client
-  # * Required. Independent Token configured by the client.
+  # * Required. Independent Token configured by the client. It must contain
+  # more than 32 UTF-8 characters and remain globally unique. Prefer an
+  # automatically generated 256-bit value and never commit a production Token.
+  # Hot-reloading this Token disconnects only this ClientID.
   token: PORTWAY_TOKEN_REQUIRED
 
-# * Required. Limits the proxy configuration declared by this client.
-# The server rejects the complete proxy set when any declaration is outside
-# these permissions; it never silently removes individual proxies.
+# * Required. Limits the complete Proxy and Forward configuration declared by
+# this client. The server rejects a complete declaration set when any entry is
+# outside these permissions; it never silently removes individual entries.
+# Permission changes are hot-reloadable and revoke only this Governed ClientID;
+# after reconnecting, the client resubmits its complete desired sets.
 permissions:
   proxies:
-    # A protocol is allowed only when its rule node is present.
+    # A protocol is allowed only when its rule node is present. Omit the entire
+    # proxies node when this client is allowed to declare Forwards only.
     tcp:
       remote_port_ranges:
         - start: 20000
@@ -36,7 +42,8 @@ permissions:
       domains:
         - app.example.com
         - "*.customer.example.com"
-    # Optional proxy-specific ceilings.
+    # Optional Proxy-specific ceilings. Omitted fields use production-safe
+    # defaults; explicit zero values are invalid.
     limits:
       max_total: 20
       max_tcp: 10
@@ -45,10 +52,8 @@ permissions:
       max_active_links: 100
 
   # Governed clients receive no Forward permission unless rules are present.
-  # Every rule must be a complete
-  # subset of one server-wide forwards.rules entry; ranges are never clipped or
-  # combined across global rules. Forward permission changes are hot-reloadable
-  # and revoke the affected Governed Session and its connections.
+  # Every rule must be a complete subset of one server-wide forwards.rules
+  # entry; ranges are never clipped or combined across global rules.
   forwards:
     rules:
       - ip_range: 10.20.0.0/16
@@ -62,6 +67,8 @@ permissions:
             - start: 53
               end: 53
     limits:
+      # Optional Forward-specific ceilings. Omitted fields use production-safe
+      # defaults; explicit zero values are invalid.
       max_total: 5
       max_tcp: 4
       max_udp: 1

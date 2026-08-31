@@ -3,16 +3,15 @@
 
 authentication:
   client_id: managed-client
-# 必须包含大于 32 个 UTF-8 字符且保持唯一；推荐使用自动生成的 256-bit 随机值。
-# 禁止提交生产 Token。热加载修改本记录 Token 时，只断开本 ClientID 的活动及
-# 恢复窗口 Session；其他认证记录保持在线。
-# 仅代理配置变化时仍使用在线切换。
+  # 必须包含大于 32 个 UTF-8 字符且保持全局唯一；推荐使用自动生成的 256-bit
+  # 随机值。禁止提交生产 Token。热加载修改本记录 Token 时，只断开本 ClientID。
   token: PORTWAY_TOKEN_REQUIRED
 
 # Managed Forward 可选权限边界。Managed Forward 始终受全局 forwards.rules 约束；
 # 此可选规则只能进一步收紧，不能扩张。省略时仅使用全局边界；只有本记录包含
-# configuration.forwards 时才允许配置。规则和 Forward 均支持热加载，并通过
-# Managed Prepare/Activate 在线切换。
+# configuration.forwards 时才允许配置。只修改权限会随服务端原子快照热加载，
+# 不要求增加 configuration.revision。若收紧后的规则不再允许任一已配置目标，
+# 服务端会拒绝完整候选，而不是静默删除该 Forward。
 permissions:
   forwards:
     rules:
@@ -22,8 +21,12 @@ permissions:
             - start: 5432
               end: 5432
 
+# 必填。服务端所有的完整客户端配置。Managed 客户端禁止在 client.yaml 中配置
+# 本地 proxies 或 forwards；认证后由服务端下发两个完整集合，客户端不能覆盖。
 configuration:
-  # 必填。正整数；每次修改配置都必须递增，不能以相同 revision 修改内容。
+  # 必填。大于 0 的单调递增整数。每次修改 configuration.proxies 或
+  # configuration.forwards 都必须递增；相同 revision 对应不同内容或降低 revision
+  # 会拒绝完整热加载候选。只修改 permissions 不要求递增。
   revision: 1
 
   # 可选，默认空。TCP/UDP/HTTP 合计硬上限 128；HTTPS 复用 type=http，
@@ -57,17 +60,18 @@ configuration:
     # 并始终以明文 HTTP 回源 Managed 客户端的本地目标。
     - name: web
       type: http
-      # HTTP 可选；留空或省略默认 [http]。显式值可为 http、https 且不得重复；
-      # 每个所选入口都必须全局启用。TCP/UDP 禁止配置。
       local:
         ip: 127.0.0.1
         port: 8080
       public:
+        # HTTP 可选；留空或省略默认 [http]。显式值可为 http、https 且不得重复；
+        # 每个所选入口都必须全局启用。TCP/UDP 禁止配置。
         schemes:
           - https
         domain: app.example.com
 
-  # Managed Forward 完整集合。客户端禁止在 client.yaml 中配置本地 forwards。
+  # 可选，默认空。Managed Forward 完整期望集合。客户端禁止在 client.yaml 中
+  # 配置本地 forwards。
   # listen_ip/listen_port 只在客户端使用；target_ip/target_port 同时受全局规则和
   # 可选 Managed 规则审批。修改或删除条目使用 Prepare/Activate，并自动断开
   # 受影响连接。
