@@ -21,8 +21,8 @@ import (
 
 const forwardTargetDialTimeout = 5 * time.Second
 
-// Authorizer validates a concrete target against the current configuration.
-type Authorizer func(authentication.Context, protocol.ForwardDeclaration) bool
+// Policy evaluates whether a declaration remains configured and currently active.
+type Policy func(authentication.Context, protocol.ForwardDeclaration) (configured bool, active bool)
 
 type binding struct {
 	clientID       string
@@ -32,6 +32,7 @@ type binding struct {
 	writer         *control.Writer
 	authentication authentication.Context
 	maxActiveLinks int
+	active         bool
 }
 
 // Registry owns active Forward Bindings.
@@ -39,16 +40,16 @@ type Registry struct {
 	mutex      sync.RWMutex
 	bindings   map[string]*binding
 	broker     *link.Broker
-	authorizer Authorizer
+	policy     Policy
 	closed     bool
 }
 
 // New creates a Forward Registry.
-func New(broker *link.Broker, authorizer Authorizer) *Registry {
+func New(broker *link.Broker, policy Policy) *Registry {
 	return &Registry{
 		bindings:   make(map[string]*binding),
 		broker:     broker,
-		authorizer: authorizer,
+		policy:     policy,
 	}
 }
 
@@ -87,14 +88,15 @@ func (registry *Registry) Sync(
 			registry.mutex.Unlock()
 			return nil, forwardError(protocol.ProxyErrorInvalidRequest, declaration.Name, "generate Forward Binding")
 		}
+		_, active := registry.policy(authenticationContext, declaration)
 		current := &binding{
 			clientID: clientID, sessionID: sessionID, bindingID: bindingID,
 			declaration: declaration, writer: writer,
-			authentication: authenticationContext, maxActiveLinks: maxActiveLinks,
+			authentication: authenticationContext, maxActiveLinks: maxActiveLinks, active: active,
 		}
 		registry.bindings[bindingKey(clientID, sessionID, declaration.Name)] = current
 		results = append(results, protocol.ForwardResult{
-			Name: declaration.Name, Type: declaration.Type, BindingID: bindingID,
+			Name: declaration.Name, Type: declaration.Type, BindingID: bindingID, Active: active,
 		})
 	}
 	registry.mutex.Unlock()
@@ -123,7 +125,8 @@ func (registry *Registry) Validate(
 			return forwardError(protocol.ProxyErrorInvalidProxy, declaration.Name, "duplicate Forward name")
 		}
 		names[declaration.Name] = struct{}{}
-		if !registry.authorizer(authenticationContext, declaration) {
+		configured, _ := registry.policy(authenticationContext, declaration)
+		if !configured {
 			return forwardError(protocol.ProxyErrorForwardTargetNotAllowed, declaration.Name, "Forward target is not allowed")
 		}
 	}
@@ -138,14 +141,15 @@ func (registry *Registry) Offer(
 ) protocol.ForwardLinkOffer {
 	registry.mutex.RLock()
 	current := registry.bindings[bindingKey(clientID, sessionID, request.Name)]
-	if current == nil || current.bindingID != request.BindingID ||
+	if current == nil || !current.active || current.bindingID != request.BindingID ||
 		current.declaration.Type != request.Type {
 		registry.mutex.RUnlock()
 		return rejectedOffer(request, protocol.ProxyErrorForwardBindingInvalid, "Forward Binding is invalid")
 	}
 	bindingSnapshot := *current
 	registry.mutex.RUnlock()
-	if !registry.authorizer(bindingSnapshot.authentication, bindingSnapshot.declaration) {
+	_, active := registry.policy(bindingSnapshot.authentication, bindingSnapshot.declaration)
+	if !active {
 		return rejectedOffer(request, protocol.ProxyErrorForwardTargetNotAllowed, "Forward target is not allowed")
 	}
 	offer, err := registry.broker.OfferStream(link.Target{
@@ -178,7 +182,8 @@ func (registry *Registry) Offer(
 
 func (registry *Registry) handlerFactory(current binding) link.StreamHandlerFactory {
 	authorize := func() bool {
-		return registry.authorizer(current.authentication, current.declaration)
+		_, active := registry.policy(current.authentication, current.declaration)
+		return active
 	}
 	address := net.JoinHostPort(
 		current.declaration.TargetIP,
@@ -219,14 +224,19 @@ func (registry *Registry) ApplyPolicy(
 ) {
 	registry.mutex.Lock()
 	affected := make([]*binding, 0)
-	revoked := make([]*binding, 0)
-	for key, current := range registry.bindings {
-		allowed := registry.authorizer(current.authentication, current.declaration)
-		if !allowed {
-			delete(registry.bindings, key)
-			revoked = append(revoked, current)
+	deactivated := make([]*binding, 0)
+	activated := make([]*binding, 0)
+	for _, current := range registry.bindings {
+		_, active := registry.policy(current.authentication, current.declaration)
+		if current.active && !active {
+			current.active = false
+			deactivated = append(deactivated, current)
 		}
-		if affectedPolicy(current.authentication, current.declaration) || !allowed {
+		if !current.active && active {
+			current.active = true
+			activated = append(activated, current)
+		}
+		if affectedPolicy(current.authentication, current.declaration) || !active {
 			affected = append(affected, current)
 		}
 	}
@@ -234,13 +244,19 @@ func (registry *Registry) ApplyPolicy(
 	for _, current := range affected {
 		registry.broker.CancelBinding(current.bindingID)
 	}
-	for _, current := range revoked {
+	for _, current := range deactivated {
 		_ = current.writer.Write(protocol.MessageForwardBindingRevoked, protocol.ForwardBindingRevoked{
 			Name:       current.declaration.Name,
 			Type:       current.declaration.Type,
 			BindingID:  current.bindingID,
 			Generation: generation,
 			Reason:     "policy_changed",
+		})
+	}
+	for _, current := range activated {
+		_ = current.writer.Write(protocol.MessageForwardBindingActivated, protocol.ForwardBindingActivated{
+			Name: current.declaration.Name, Type: current.declaration.Type,
+			BindingID: current.bindingID, Generation: generation,
 		})
 	}
 }

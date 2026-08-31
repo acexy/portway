@@ -192,9 +192,14 @@ proxies:
 # hot-reloadable as one candidate snapshot. A successful reload automatically
 # closes affected Forward connections; invalid candidates preserve the previous
 # snapshot. Existing Proxy connections are not affected by unrelated changes.
+# Disabling the global switch leaves Governed permissions and Managed desired
+# configurations intact but dormant. Online clients close only their Forward
+# listeners and links, remain connected, and automatically restore authorized
+# Forward listeners from the latest rules when the switch is enabled again.
 forwards:
   # Optional. Defaults to false. Rules may be retained while disabled so the
   # feature can be enabled later by hot reload without redesigning the policy.
+  # Client-specific Forward rules and configurations may also remain present.
   enabled: false
   # Required and non-empty whenever the forwards section is configured.
   rules:

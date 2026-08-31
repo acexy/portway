@@ -22,14 +22,12 @@ func (s *Service) negotiateCapabilities(clientCapabilities []protocol.Capability
 		protocol.CapabilityJSONControl: {},
 	}
 	forwardConfiguration := s.configuration.snapshot().Forwards
-	if forwardConfiguration.Enabled {
-		for _, rule := range forwardConfiguration.Rules {
-			if len(rule.TCP.PortRanges) != 0 {
-				supported[protocol.CapabilityTCPForward] = struct{}{}
-			}
-			if len(rule.UDP.PortRanges) != 0 {
-				supported[protocol.CapabilityUDPForward] = struct{}{}
-			}
+	for _, rule := range forwardConfiguration.Rules {
+		if len(rule.TCP.PortRanges) != 0 {
+			supported[protocol.CapabilityTCPForward] = struct{}{}
+		}
+		if len(rule.UDP.PortRanges) != 0 {
+			supported[protocol.CapabilityUDPForward] = struct{}{}
 		}
 	}
 	negotiated := coll.SliceFilter(
@@ -108,28 +106,29 @@ func clientForwardRules(
 	}
 }
 
-func (s *Service) forwardTargetAllowed(
+func (s *Service) forwardPolicy(
 	authenticationContext authentication.Context,
 	declaration protocol.ForwardDeclaration,
-) bool {
+) (bool, bool) {
 	configuration := s.configuration.snapshot()
-	if !configuration.Forwards.Enabled || !config.ForwardTargetAllowed(
+	configured := config.ForwardTargetAllowed(
 		configuration.Forwards.Rules,
 		declaration.Type,
 		declaration.TargetIP,
 		declaration.TargetPort,
-	) {
-		return false
+	)
+	if !configured {
+		return false, false
 	}
 	switch authenticationContext.Mode {
 	case authentication.ModeShared:
-		return true
+		return true, configuration.Forwards.Enabled
 	case authentication.ModeGoverned:
 		client, exists := configuration.GovernedClients[authenticationContext.ClientID]
 		if !exists {
-			return false
+			return false, false
 		}
-		return config.ForwardTargetAllowed(
+		configured = config.ForwardTargetAllowed(
 			client.Permissions.Forwards.Rules,
 			declaration.Type,
 			declaration.TargetIP,
@@ -138,21 +137,22 @@ func (s *Service) forwardTargetAllowed(
 	case authentication.ModeManaged:
 		client, exists := configuration.ManagedClients[authenticationContext.ClientID]
 		if !exists {
-			return false
+			return false, false
 		}
 		rules := client.Permissions.Forwards.Rules
 		if len(rules) == 0 {
-			return true
+			return true, configuration.Forwards.Enabled
 		}
-		return config.ForwardTargetAllowed(
+		configured = config.ForwardTargetAllowed(
 			rules,
 			declaration.Type,
 			declaration.TargetIP,
 			declaration.TargetPort,
 		)
 	default:
-		return false
+		return false, false
 	}
+	return configured, configured && configuration.Forwards.Enabled
 }
 
 func (s *Service) validateGovernedProxies(

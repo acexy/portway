@@ -189,7 +189,9 @@ func (s *Service) runControlSession(
 			if err := forwardRuntime.applyBindings(result.Forwards); err != nil {
 				return "", false, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 			}
-			forwardRuntime.start()
+			if err := forwardRuntime.start(); err != nil {
+				return "", false, transport.Permanent(err)
+			}
 		}
 	case protocol.ManagementModeManaged:
 		if err := validateLocalProxiesForManagementMode(

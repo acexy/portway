@@ -117,8 +117,12 @@ proxies:
 # IPv4/IPv6 地址分别使用 /32、/128；目标不支持主机名。
 # 所有 forwards 字段和客户端 Forward 权限均可作为完整候选快照热加载。成功发布
 # 后自动断开受影响的 Forward 连接；非法候选保留上一代快照；无关 Proxy 不受影响。
+# 全局关闭时，Governed 权限和 Managed 期望配置可以原样保留但暂不生效；在线
+# 客户端只关闭 Forward 监听和连接，不退出、不影响 Proxy。重新开启后，在线
+# 客户端按最新全局规则自动恢复仍获授权的 Forward。
 forwards:
-  # 可选，默认 false。关闭时可以保留规则作为未生效的预配置，之后可热加载开启。
+  # 可选，默认 false。关闭时可以保留全局规则及客户端 Forward 配置，之后热加载
+  # 开启时自动按最新规则恢复。
   enabled: false
   # 配置 forwards 段时必须存在且非空。
   rules:

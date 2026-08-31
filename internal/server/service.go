@@ -116,7 +116,7 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
-	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardTargetAllowed)
+	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy)
 	defer s.forwardRegistry.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,

@@ -74,7 +74,9 @@ client port.
 
 Forward is disabled when `server.yaml` omits `forwards` or sets `enabled: false`.
 When the section is present, it must contain explicit IP/CIDR and TCP/UDP port
-rules. Enabling it makes those rules the global allowlist:
+rules. Client declarations remain dormant while disabled, so clients stay
+online without Forward listeners and automatically restore authorized listeners
+when the feature is enabled again. Enabling it makes those rules the global allowlist:
 
 ```yaml
 forwards:

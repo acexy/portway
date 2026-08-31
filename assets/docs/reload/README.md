@@ -53,6 +53,7 @@ The current implementation reloads:
 - Governed and Managed directory paths and contents;
 - Governed permissions and quotas;
 - complete Managed client configurations.
+- `forwards.enabled`, global Forward rules, and client Forward permissions.
 
 Changing authentication state has immediate runtime effects:
 
@@ -65,6 +66,11 @@ Changing authentication state has immediate runtime effects:
   it reconnects under the new policy;
 - a Managed configuration-only change still uses online rollout and does not
   disconnect unrelated clients.
+
+Disabling `forwards.enabled` keeps all client declarations and permissions as
+dormant state. Online and newly started clients remain connected, close only
+Forward listeners and links, and log `forward_disabled`. Re-enabling restores
+still-authorized listeners in the same Session from the latest rules.
 
 ## Settings that require restart
 

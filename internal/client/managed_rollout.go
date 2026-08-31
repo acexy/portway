@@ -80,7 +80,9 @@ func (s *Service) receiveManagedConfiguration(
 	if err := forwardRuntime.applyBindings(activation.Forwards); err != nil {
 		return nil, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 	}
-	forwardRuntime.start()
+	if err := forwardRuntime.start(); err != nil {
+		return nil, transport.Permanent(err)
+	}
 	s.setRuntimeProxies(proxies)
 	s.managedMutex.Lock()
 	s.managedStatus = status

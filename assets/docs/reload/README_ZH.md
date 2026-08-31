@@ -48,6 +48,7 @@ Binding 和代理行为均保持不变。
 - Governed/Managed 目录路径及内容；
 - Governed 权限和配额；
 - Managed 客户端完整配置。
+- `forwards.enabled`、全局 Forward 规则和客户端 Forward 权限。
 
 认证变化会立即影响运行时：
 
@@ -57,6 +58,10 @@ Binding 和代理行为均保持不变。
   Token；
 - 修改 Governed 权限会关闭该客户端的 Session 和资源，使其按新策略重连；
 - 仅修改 Managed 配置仍使用在线切换，不会下线无关客户端。
+
+关闭 `forwards.enabled` 时，客户端声明和权限作为休眠状态保留。在线及关闭期间
+启动的客户端均保持连接，只关闭 Forward 监听和连接，并记录 `forward_disabled`；
+重新开启后在同一 Session 内按最新规则自动恢复仍获授权的监听。
 
 ## 必须重启的配置
 

@@ -502,13 +502,6 @@ func applyGovernedPermissionDefaults(permissions *GovernedPermissions) {
 
 func validateForwardConfiguration(configuration ServerConfig) error {
 	for clientID, client := range configuration.GovernedClients {
-		if !configuration.Forwards.Enabled &&
-			len(client.Permissions.Forwards.Rules) != 0 {
-			return fmt.Errorf(
-				"governed client %q configures Forward while forwards.enabled is false",
-				clientID,
-			)
-		}
 		if err := validateForwardRuleSubset(
 			configuration.Forwards.Rules,
 			client.Permissions.Forwards.Rules,
@@ -517,14 +510,6 @@ func validateForwardConfiguration(configuration ServerConfig) error {
 		}
 	}
 	for clientID, client := range configuration.ManagedClients {
-		if !configuration.Forwards.Enabled &&
-			(len(client.Permissions.Forwards.Rules) != 0 ||
-				len(client.Configuration.Forwards) != 0) {
-			return fmt.Errorf(
-				"managed client %q configures Forward while forwards.enabled is false",
-				clientID,
-			)
-		}
 		if err := validateForwardRuleSubset(
 			configuration.Forwards.Rules,
 			client.Permissions.Forwards.Rules,

@@ -97,8 +97,10 @@ const (
 	MessageCancelForwardLink MessageType = "cancel_forward_link"
 	// MessageForwardLinkFailed reports Forward Link setup failure.
 	MessageForwardLinkFailed MessageType = "forward_link_failed"
-	// MessageForwardBindingRevoked removes one Forward Binding after reload.
+	// MessageForwardBindingRevoked deactivates one Forward Binding after reload.
 	MessageForwardBindingRevoked MessageType = "forward_binding_revoked"
+	// MessageForwardBindingActivated restores one dormant Forward Binding after reload.
+	MessageForwardBindingActivated MessageType = "forward_binding_activated"
 )
 
 // SessionErrorCode identifies a stable session registration or recovery failure.

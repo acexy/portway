@@ -104,6 +104,17 @@ func (s *Service) runControlLoop(
 					return classifyControlProtocolError(err)
 				}
 				forwardRuntime.revoke(revocation)
+			case protocol.MessageForwardBindingActivated:
+				if forwardRuntime == nil {
+					return fmt.Errorf("%w: unexpected Forward activation", transport.ErrProtocol)
+				}
+				var activation protocol.ForwardBindingActivated
+				if err := protocol.DecodePayload(envelope, &activation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if err := forwardRuntime.activate(activation); err != nil {
+					return fmt.Errorf("activate Forward: %w", err)
+				}
 			case protocol.MessageCancelForwardLink:
 				if forwardRuntime == nil {
 					return fmt.Errorf("%w: unexpected Forward cancellation", transport.ErrProtocol)
@@ -243,7 +254,9 @@ func (s *Service) runControlLoop(
 				if err := pendingManagedForwardRuntime.applyBindings(activation.Forwards); err != nil {
 					return fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 				}
-				pendingManagedForwardRuntime.start()
+				if err := pendingManagedForwardRuntime.start(); err != nil {
+					return transport.Permanent(err)
+				}
 				if forwardRuntime != nil {
 					forwardRuntime.close()
 				}

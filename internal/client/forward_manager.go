@@ -21,6 +21,7 @@ type forwardRuntime struct {
 	context       context.Context
 	configuration config.ForwardConfig
 	bindingID     string
+	active        bool
 	tcp           *forwardtcp.Listener
 	udp           *forwardudp.Endpoint
 	cancel        context.CancelFunc
@@ -39,6 +40,7 @@ type forwardManager struct {
 	offers    map[string]chan protocol.ForwardLinkOffer
 	links     map[string]context.CancelFunc
 	waitGroup sync.WaitGroup
+	started   bool
 }
 
 func newForwardManager(
@@ -64,23 +66,6 @@ func newForwardManager(
 		runtime := &forwardRuntime{
 			context: runtimeContext, configuration: configuration, cancel: runtimeCancel,
 		}
-		if configuration.Type == protocol.ForwardTypeTCP {
-			address := net.JoinHostPort(configuration.Listen.IP, fmt.Sprint(configuration.Listen.Port))
-			listener, err := forwardtcp.Listen(runtimeContext, address)
-			if err != nil {
-				manager.close()
-				return nil, fmt.Errorf("prepare TCP Forward %q: %w", configuration.Name, err)
-			}
-			runtime.tcp = listener
-		} else if configuration.Type == protocol.ForwardTypeUDP {
-			address := net.JoinHostPort(configuration.Listen.IP, fmt.Sprint(configuration.Listen.Port))
-			packet, err := forwardudp.Listen(runtimeContext, address, 8192, 64)
-			if err != nil {
-				manager.close()
-				return nil, fmt.Errorf("prepare UDP Forward %q: %w", configuration.Name, err)
-			}
-			runtime.udp = packet
-		}
 		manager.runtimes[configuration.Name] = runtime
 	}
 	return manager, nil
@@ -98,38 +83,74 @@ func (manager *forwardManager) applyBindings(results []protocol.ForwardResult) e
 			return errors.New("Forward binding result does not match local configuration")
 		}
 		runtime.bindingID = result.BindingID
+		runtime.active = result.Active
 	}
 	return nil
 }
 
-func (manager *forwardManager) start() {
+func (manager *forwardManager) start() error {
 	manager.mutex.Lock()
+	manager.started = true
 	runtimes := make([]*forwardRuntime, 0, len(manager.runtimes))
 	for _, runtime := range manager.runtimes {
-		runtimes = append(runtimes, runtime)
+		if runtime.active {
+			if err := manager.prepareRuntime(runtime); err != nil {
+				manager.mutex.Unlock()
+				return err
+			}
+			runtimes = append(runtimes, runtime)
+		} else {
+			manager.logger.InfoWithFields("Forward disabled by server policy", map[string]any{
+				"event": "forward_disabled", "forward_name": runtime.configuration.Name,
+			})
+		}
 	}
 	manager.mutex.Unlock()
 	for _, runtime := range runtimes {
-		if runtime.tcp != nil {
-			manager.waitGroup.Go(func() {
-				err := runtime.tcp.Serve(func(visitor net.Conn) {
-					manager.waitGroup.Go(func() { manager.serveTCP(runtime, visitor) })
-				})
-				if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
-					manager.logger.Error("TCP Forward listener failed", err)
-				}
-			})
+		manager.serveRuntime(runtime)
+	}
+	return nil
+}
+
+func (manager *forwardManager) prepareRuntime(runtime *forwardRuntime) error {
+	address := net.JoinHostPort(runtime.configuration.Listen.IP, fmt.Sprint(runtime.configuration.Listen.Port))
+	if runtime.configuration.Type == protocol.ForwardTypeTCP {
+		listener, err := forwardtcp.Listen(runtime.context, address)
+		if err != nil {
+			return fmt.Errorf("prepare TCP Forward %q: %w", runtime.configuration.Name, err)
 		}
-		if runtime.udp != nil {
-			manager.waitGroup.Go(func() {
-				err := runtime.udp.Serve(func(association *forwardudp.Association) {
-					manager.serveUDPAssociation(runtime, association)
-				})
-				if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
-					manager.logger.Error("UDP Forward listener failed", err)
-				}
+		runtime.tcp = listener
+		return nil
+	}
+	packet, err := forwardudp.Listen(runtime.context, address, 8192, 64)
+	if err != nil {
+		return fmt.Errorf("prepare UDP Forward %q: %w", runtime.configuration.Name, err)
+	}
+	runtime.udp = packet
+	return nil
+}
+
+func (manager *forwardManager) serveRuntime(runtime *forwardRuntime) {
+	runtimeSnapshot := *runtime
+	if runtimeSnapshot.tcp != nil {
+		manager.waitGroup.Go(func() {
+			err := runtimeSnapshot.tcp.Serve(func(visitor net.Conn) {
+				manager.waitGroup.Go(func() { manager.serveTCP(&runtimeSnapshot, visitor) })
 			})
-		}
+			if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
+				manager.logger.Error("TCP Forward listener failed", err)
+			}
+		})
+	}
+	if runtimeSnapshot.udp != nil {
+		manager.waitGroup.Go(func() {
+			err := runtimeSnapshot.udp.Serve(func(association *forwardudp.Association) {
+				manager.serveUDPAssociation(&runtimeSnapshot, association)
+			})
+			if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
+				manager.logger.Error("UDP Forward listener failed", err)
+			}
+		})
 	}
 }
 
@@ -301,11 +322,13 @@ func (manager *forwardManager) cancelLink(linkID string) {
 func (manager *forwardManager) revoke(revocation protocol.ForwardBindingRevoked) {
 	manager.mutex.Lock()
 	runtime := manager.runtimes[revocation.Name]
-	if runtime != nil && runtime.bindingID == revocation.BindingID {
-		delete(manager.runtimes, revocation.Name)
+	matched := runtime != nil && runtime.bindingID == revocation.BindingID
+	if matched {
+		runtime.active = false
+		runtime.bindingID = ""
 	}
 	manager.mutex.Unlock()
-	if runtime != nil && runtime.bindingID == revocation.BindingID {
+	if matched {
 		runtime.cancel()
 		if runtime.tcp != nil {
 			runtime.tcp.Close()
@@ -313,7 +336,45 @@ func (manager *forwardManager) revoke(revocation protocol.ForwardBindingRevoked)
 		if runtime.udp != nil {
 			runtime.udp.Close()
 		}
+		runtime.tcp = nil
+		runtime.udp = nil
+		manager.logger.InfoWithFields("Forward disabled by server policy", map[string]any{
+			"event": "forward_disabled", "forward_name": revocation.Name,
+			"generation": revocation.Generation, "reason": revocation.Reason,
+		})
 	}
+}
+
+func (manager *forwardManager) activate(activation protocol.ForwardBindingActivated) error {
+	manager.mutex.Lock()
+	runtime := manager.runtimes[activation.Name]
+	if runtime == nil || runtime.configuration.Type != activation.Type || activation.BindingID == "" {
+		manager.mutex.Unlock()
+		return errors.New("Forward activation does not match local configuration")
+	}
+	if runtime.active && runtime.bindingID == activation.BindingID {
+		manager.mutex.Unlock()
+		return nil
+	}
+	runtime.context, runtime.cancel = context.WithCancel(manager.context)
+	runtime.bindingID = activation.BindingID
+	runtime.active = true
+	if err := manager.prepareRuntime(runtime); err != nil {
+		runtime.active = false
+		runtime.bindingID = ""
+		manager.mutex.Unlock()
+		return err
+	}
+	started := manager.started
+	manager.mutex.Unlock()
+	if started {
+		manager.serveRuntime(runtime)
+	}
+	manager.logger.InfoWithFields("Forward enabled by server policy", map[string]any{
+		"event": "forward_enabled", "forward_name": activation.Name,
+		"generation": activation.Generation,
+	})
+	return nil
 }
 
 func (manager *forwardManager) reportForwardFailure(linkID string, code protocol.LinkErrorCode) {

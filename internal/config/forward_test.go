@@ -229,3 +229,39 @@ authentication:
 		t.Fatalf("expected Managed Forward target rejection, got %v", err)
 	}
 }
+
+func TestDisabledForwardKeepsGovernedAndManagedConfigurationDormant(t *testing.T) {
+	configuration := DefaultServer()
+	configuration.Forwards = ForwardServerConfig{
+		Configured: true,
+		Enabled:    false,
+		Rules: []ForwardIPRule{{
+			IPRange: "127.0.0.1/32",
+			TCP: ForwardPortPermission{PortRanges: []PortRange{{Start: 5432, End: 5432}}},
+		}},
+	}
+	configuration.GovernedClients = map[string]GovernedClientConfig{
+		"governed": {
+			Authentication: ClientAuthenticationConfig{ClientID: "governed", Token: "governed-token-with-more-than-thirty-two-characters"},
+			Permissions: GovernedPermissions{
+				Proxies: GovernedProxyPermissions{Limits: DefaultProxyPermissionLimits()},
+				Forwards: GovernedForwardPermissions{
+					Rules: configuration.Forwards.Rules, Limits: DefaultForwardPermissionLimits(),
+				},
+			},
+		},
+	}
+	configuration.ManagedClients = map[string]ManagedClientConfig{
+		"managed": {
+			Authentication: ClientAuthenticationConfig{ClientID: "managed", Token: "managed-token-with-more-than-thirty-two-characters"},
+			Configuration: ManagedConfiguration{Revision: 1, Forwards: []ForwardConfig{{
+				Name: "database", Type: protocol.ForwardTypeTCP,
+				Listen: EndpointConfig{IP: "127.0.0.1", Port: 15432},
+				Target: EndpointConfig{IP: "127.0.0.1", Port: 5432},
+			}}},
+		},
+	}
+	if err := validateForwardConfiguration(configuration); err != nil {
+		t.Fatalf("disabled Forward rejected dormant client configuration: %v", err)
+	}
+}

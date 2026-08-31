@@ -25,11 +25,12 @@ type SyncConfiguration struct {
 	Forwards []ForwardDeclaration `json:"forwards"`
 }
 
-// ForwardResult identifies one active Forward Binding.
+// ForwardResult identifies one Forward Binding and its current policy state.
 type ForwardResult struct {
 	Name      string      `json:"name"`
 	Type      ForwardType `json:"type"`
 	BindingID string      `json:"binding_id"`
+	Active    bool        `json:"active"`
 }
 
 // SyncConfigurationResult reports an atomic configuration result.
@@ -72,11 +73,19 @@ type ForwardLinkFailed struct {
 	Code   LinkErrorCode `json:"code"`
 }
 
-// ForwardBindingRevoked removes one client-side Forward endpoint.
+// ForwardBindingRevoked deactivates one client-side Forward endpoint.
 type ForwardBindingRevoked struct {
 	Name       string      `json:"name"`
 	Type       ForwardType `json:"type"`
 	BindingID  string      `json:"binding_id"`
 	Generation uint64      `json:"generation"`
 	Reason     string      `json:"reason"`
+}
+
+// ForwardBindingActivated restores one client-side Forward endpoint.
+type ForwardBindingActivated struct {
+	Name       string      `json:"name"`
+	Type       ForwardType `json:"type"`
+	BindingID  string      `json:"binding_id"`
+	Generation uint64      `json:"generation"`
 }

@@ -69,7 +69,9 @@ Forward 适合访问管理接口、数据库、DNS 等需要保留在服务端�
 ## Forward 安全边界
 
 `server.yaml` 未配置 `forwards`，或配置 `enabled: false` 时，Forward 均为关闭
-状态。显式配置该节点时必须提供 IP/CIDR 与 TCP/UDP 端口规则；启用后，这些规则
+状态。关闭时客户端声明保持休眠，客户端进程和 Proxy 正常运行且不创建 Forward
+监听；重新开启后自动恢复仍获授权的监听。显式配置该节点时必须提供 IP/CIDR 与
+TCP/UDP 端口规则；启用后，这些规则
 构成服务端全局 Allowlist：
 
 ```yaml
