@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,23 @@ func TestRunVersionPrintsServerVersion(t *testing.T) {
 	expected := "version: development\ncore-protocol: 1\n"
 	if stdout.String() != expected {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
+	}
+}
+
+func TestRunServerRequiresExactlyOneConfigurationFile(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"run"},
+		{"run", "server.yaml", "extra.yaml"},
+		{"run", "--config", "server.yaml"},
+	} {
+		var stderr bytes.Buffer
+		exitCode := run(arguments, io.Discard, &stderr)
+		if exitCode != 2 {
+			t.Fatalf("run(%v) exit code = %d, want 2", arguments, exitCode)
+		}
+		if !strings.Contains(stderr.String(), "exactly one configuration file is required") {
+			t.Fatalf("run(%v) stderr = %q", arguments, stderr.String())
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,5 +87,22 @@ func TestRunRejectsUnknownClientCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unknown command "unknown"`) {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunClientRequiresExactlyOneConfigurationFile(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"run"},
+		{"run", "client.yaml", "extra.yaml"},
+		{"run", "--config", "client.yaml"},
+	} {
+		var stderr bytes.Buffer
+		exitCode := run(arguments, io.Discard, &stderr)
+		if exitCode != 2 {
+			t.Fatalf("run(%v) exit code = %d, want 2", arguments, exitCode)
+		}
+		if !strings.Contains(stderr.String(), "exactly one configuration file is required") {
+			t.Fatalf("run(%v) stderr = %q", arguments, stderr.String())
+		}
 	}
 }

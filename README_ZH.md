@@ -8,48 +8,68 @@
   一款面向长期可靠网络访问的轻量级双向隧道系统。
 </p>
 
-Portway 支持两个方向的网络连接：Proxy 模式通过公共服务端暴露客户端侧服务；
-Forward 模式则在客户端提供 Listener，经隧道访问服务端所在网络中经过授权的
-TCP/UDP 服务。它将控制平面与隧道流量分离，支持 TCP 和 QUIC 作为底层
-客户端-服务端传输协议，并围绕显式资源归属、有界资源管理和安全默认配置进行设计。
+Portway 在 `portway` 与 `portwayd` 之间建立认证隧道，并支持两个流量方向：
 
-## 亮点
+- **Proxy 模式（服务端到客户端）：** 通过 `portwayd` 的 TCP/UDP 端口或
+  HTTP/HTTPS 域名入口，暴露 `portway` 可访问的服务。
+- **Forward 模式（客户端到服务端）：** 在 `portway` 上创建本地 TCP/UDP
+  Listener，访问 `portwayd` 所在网络中明确授权的 IP 和端口。
 
-- TCP、UDP 和基于域名的 HTTP/HTTPS 反向代理
-- 通过客户端 TCP/UDP Forward Listener 安全访问服务端侧网络
-- 可选 TCP 或 QUIC 作为客户端-服务端传输协议
-- 认证加密的客户端-服务端连接
-- 原子化代理注册与有界会话恢复
-- HTTP/HTTPS 流式传输和 Upgrade 支持，具备连接复用能力
-- 服务端 HTTPS TLS 终止与证书原子热更新
-- 基于独立规则文件监视的 IPv4/IPv6 来源 IP 阻断策略
-- 严格的 YAML 配置和故障关闭（fail-closed）校验
-- 小巧的客户端和服务端二进制文件，命令行接口风格一致
-- **灵活的客户端配置治理：**
-  - 面向可信客户端群组的共享配置
-  - 受策略约束的客户端配置
-  - 完全由服务端管理的客户端配置
-- **故障关闭的服务端主配置热加载：**
-  - 完整配置代际的原子校验与发布
-  - Token 按认证记录精确吊销、策略变化时选择性吊销，以及 Managed 配置在线切换
-  - 校验失败时自动保留上一份有效快照
+两种模式既可独立使用，也可复用同一连接同时运行。Portway 将控制流量与隧道数据
+分离，支持 TCP 和 QUIC 作为客户端-服务端传输，并通过显式资源归属、有界资源、
+严格校验和安全默认配置满足长期运行需求。
+
+## 功能特性
+
+**双向流量能力**
+
+- 通过服务端公共 Listener 代理客户端侧 TCP 和 UDP 服务。
+- 按域名代理 HTTP 或 HTTPS，支持服务端 TLS 终止、流式传输、Upgrade、连接复用
+  和证书原子热更新。
+- 将客户端侧 TCP/UDP Listener 转发到服务端网络，并由服务端 Allowlist 按 CIDR、
+  协议和端口限制所有目标。
+- 在同一个认证客户端会话中同时运行 Proxy 和 Forward 条目。
+
+**传输与安全**
+
+- 可选 TCP 或 QUIC 作为底层客户端-服务端传输。
+- 对控制连接和数据连接执行认证与加密，不提供明文回退。
+- 严格校验 YAML 和协议数据，限制队列与会话资源，并以故障关闭方式发布配置。
+- 通过独立监视的 IPv4/IPv6 deny-list 阻断来源 IP。
+
+**运维与治理**
+
+- 原子注册完整的 Proxy 和 Forward 集合，并在有界窗口内恢复中断会话。
+- 提供小巧的客户端和服务端二进制文件，命令行接口风格一致。
+- 支持可信客户端群组共享配置、受策略约束的客户端配置和服务端完全托管配置。
+- 原子热加载服务端配置，包括 Token 吊销、策略选择性吊销、Managed 配置下发、
+  Forward 策略和 HTTPS 证书；无效更新继续保留上一份有效状态。
 
 Portway 的两种流量模式覆盖私有网络连接的两个方向。请参阅
 [Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)，了解流量图、配置示例和安全边界。
 
 ## 快速开始
 
-以下示例将客户端的本地 SSH 服务暴露在 Portway 服务端的 TCP 端口 `22022` 上。
+以下示例使用 Shared 认证模式。请将
+`REPLACE_WITH_SAME_RANDOM_TOKEN_OVER_32_CHARS` 替换为密码学安全生成的 Token，
+并在两个配置文件中使用相同值。Token 必须包含大于 32 个 UTF-8 字符。两种场景
+均应先启动 `portwayd`，再启动 `portway`。
+
+### 场景一：通过服务端暴露客户端侧服务
+
+当服务只能由 `portway` 访问，而用户需要通过公网或集中部署的 `portwayd` 主机
+连接时，使用 Proxy 模式。以下示例将客户端 SSH 服务发布为
+`SERVER_IP:22022`。
 
 创建 `server.yaml`：
 
 ```yaml
 transport:
   type: tcp
-  listen_address: 127.0.0.1:7000
+  listen_address: 0.0.0.0:7000
 
 authentication:
-  shared_token: REPLACE_TOKEN
+  shared_token: REPLACE_WITH_SAME_RANDOM_TOKEN_OVER_32_CHARS
 ```
 
 创建 `client.yaml`：
@@ -57,10 +77,10 @@ authentication:
 ```yaml
 transport:
   type: tcp
-  server_address: 127.0.0.1:7000
+  server_address: SERVER_IP:7000
 
 authentication:
-  token: REPLACE_TOKEN
+  token: REPLACE_WITH_SAME_RANDOM_TOKEN_OVER_32_CHARS
 
 proxies:
   - name: ssh
@@ -69,19 +89,91 @@ proxies:
     public: {port: 22022}
 ```
 
-在两端使用相同的 Token。Token 必须包含大于 32 个 UTF-8 字符，并强烈建议使用
-密码学安全随机值。然后启动服务端和客户端：
+使用配置文件路径启动两个进程：
 
 ```bash
-portwayd run --config server.yaml
-portway run --config client.yaml
+portwayd run server.yaml
+portway run client.yaml
 ```
 
-本地 SSH 服务现在可以通过以下地址访问：
+用户现在可以通过服务端访问客户端侧 SSH 服务：
 
 ```text
-127.0.0.1:22022
+SERVER_IP:22022
 ```
+
+流量路径如下：
+
+```text
+访问者 -> portwayd:22022 -> 认证隧道 -> portway -> 127.0.0.1:22
+```
+
+### 场景二：从客户端访问服务端侧网络
+
+当服务可由 `portwayd` 访问，而 `portway` 旁的用户或应用需要一个本地入口时，
+使用 Forward 模式。以下示例仅在客户端回环地址 `127.0.0.1:15432` 暴露服务端侧
+数据库 `10.20.1.15:5432`。
+
+创建 `server.yaml`。Forward 默认关闭，因此需要启用它，并明确允许目标网段、
+协议和端口：
+
+```yaml
+transport:
+  type: tcp
+  listen_address: 0.0.0.0:7000
+
+authentication:
+  shared_token: REPLACE_WITH_SAME_RANDOM_TOKEN_OVER_32_CHARS
+
+forwards:
+  enabled: true
+  rules:
+    - ip_range: 10.20.1.0/24
+      tcp:
+        port_ranges:
+          - start: 5432
+            end: 5432
+```
+
+创建 `client.yaml`：
+
+```yaml
+transport:
+  type: tcp
+  server_address: SERVER_IP:7000
+
+authentication:
+  token: REPLACE_WITH_SAME_RANDOM_TOKEN_OVER_32_CHARS
+
+forwards:
+  - name: database
+    type: tcp
+    listen: {ip: 127.0.0.1, port: 15432}
+    target: {ip: 10.20.1.15, port: 5432}
+```
+
+启动两个进程：
+
+```bash
+portwayd run server.yaml
+portway run client.yaml
+```
+
+客户端主机上的应用现在可以通过以下地址连接服务端侧数据库：
+
+```text
+127.0.0.1:15432
+```
+
+流量方向与 Proxy 模式相反：
+
+```text
+本地应用 -> portway:15432 -> 认证隧道 -> portwayd -> 10.20.1.15:5432
+```
+
+Forward 目标只接受 IP 地址。每个目标必须完整匹配一条服务端规则，不会组合不同
+规则中的范围。除非确实需要其他主机访问，否则应将客户端 Listener 绑定到回环
+地址。Forward 支持 TCP 和 UDP；基于域名的 HTTP/HTTPS 路由属于 Proxy 模式。
 
 ## HTTP 与 HTTPS 代理
 
@@ -198,11 +290,11 @@ transport:
 ## 命令
 
 ```text
-portway run [--config FILE]
+portway run FILE
 portway gen config [full]
 portway version
 
-portwayd run [--config FILE]
+portwayd run FILE
 portwayd gen config [full]
 portwayd gen cert [options]
 portwayd version
@@ -239,7 +331,7 @@ brew install acexy/tap/portway acexy/tap/portwayd
 Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要自行准备对应的
 `client.yaml` 或 `server.yaml`。
 
-## 公开文档
+## 技术文档
 
 - [Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)
 - [技术概览](assets/docs/technical/README_ZH.md)
@@ -251,7 +343,7 @@ Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要
 - 完整中文注释配置示例：
   [客户端](config/zh/client.yaml) 和 [服务端](config/zh/server.yaml)
 
-公开文档有意描述稳定的行为和安全性属性，而非作为完整的线协议规范。
+技术文档描述稳定的行为和安全性属性，而非作为完整的线协议规范。
 
 ## 许可证
 

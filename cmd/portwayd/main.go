@@ -30,14 +30,8 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 		Commands: []cli.Command{
 			{
 				Name:    "run",
-				Usage:   "run [--config FILE]",
+				Usage:   "run FILE",
 				Summary: "Start the Portway server",
-				Options: []cli.Option{
-					{
-						Usage:       "--config FILE",
-						Description: "Server YAML configuration (default: server.yaml)",
-					},
-				},
 				Execute: runServerCommand,
 			},
 			{
@@ -117,30 +111,15 @@ func runServerCommand(
 	_ io.Writer,
 	stderr io.Writer,
 ) int {
-	flags := flag.NewFlagSet("portwayd run", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	configPath := flags.String(
-		"config",
-		"server.yaml",
-		"path to the server YAML configuration file",
-	)
-	if err := flags.Parse(arguments); err != nil {
+	if len(arguments) != 1 {
+		_, _ = io.WriteString(stderr, "portwayd run: exactly one configuration file is required\n")
 		return 2
 	}
-	if flags.NArg() != 0 {
-		_, _ = fmt.Fprintf(stderr, "portwayd run: unexpected arguments: %v\n", flags.Args())
-		return 2
-	}
-	configured := false
-	flags.Visit(func(currentFlag *flag.Flag) {
-		if currentFlag.Name == "config" {
-			configured = true
-		}
-	})
+	configPath := arguments[0]
 
 	log := logging.New("server")
 
-	configuration, err := config.LoadServer(*configPath, !configured)
+	configuration, err := config.LoadServer(configPath, false)
 	if err != nil {
 		log.Error("failed to load server configuration", err)
 		return 1
@@ -151,7 +130,7 @@ func runServerCommand(
 	}
 	log.InfoWithFields("server configuration loaded", map[string]any{
 		"event":                 "configuration_loaded",
-		"config_file":           *configPath,
+		"config_file":           configPath,
 		"log_level":             configuration.LogLevel,
 		"transport":             configuration.Transport.Type,
 		"governed_clients_path": configuration.Authentication.GovernedClientsPath,
