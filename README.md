@@ -96,8 +96,11 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local: {ip: 127.0.0.1, port: 22}
-    public: {port: 22022}
+    local:
+      ip: 127.0.0.1
+      port: 22
+    public:
+      port: 22022
 ```
 
 Start both processes with their configuration paths:
@@ -160,8 +163,12 @@ authentication:
 forwards:
   - name: database
     type: tcp
-    listen: {ip: 127.0.0.1, port: 15432}
-    target: {ip: 10.20.1.15, port: 5432}
+    listen:
+      ip: 127.0.0.1
+      port: 15432
+    target:
+      ip: 10.20.1.15
+      port: 5432
 ```
 
 Start both processes:
@@ -202,7 +209,8 @@ proxies:
   https:
     listen_address: 127.0.0.1:8443
     certificates:
-      - domains: [app.example.com]
+      - domains:
+          - app.example.com
         cert_file: /path/to/https-server.crt
         key_file: /path/to/https-server.key
 ```
@@ -213,9 +221,13 @@ Register a domain on the client:
 proxies:
   - name: web
     type: http
-    local: {ip: 127.0.0.1, port: 8080}
+    local:
+      ip: 127.0.0.1
+      port: 8080
     public:
-      schemes: [https, http]
+      schemes:
+        - https
+        - http
       domain: app.example.com
 ```
 
@@ -244,8 +256,11 @@ Register a public UDP port and a local UDP service on the client:
 proxies:
   - name: dns
     type: udp
-    local: {ip: 127.0.0.1, port: 53}
-    public: {port: 5353}
+    local:
+      ip: 127.0.0.1
+      port: 53
+    public:
+      port: 5353
 ```
 
 Portway preserves datagram boundaries and gives each public visitor association

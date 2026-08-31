@@ -85,8 +85,11 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local: {ip: 127.0.0.1, port: 22}
-    public: {port: 22022}
+    local:
+      ip: 127.0.0.1
+      port: 22
+    public:
+      port: 22022
 ```
 
 使用配置文件路径启动两个进程：
@@ -148,8 +151,12 @@ authentication:
 forwards:
   - name: database
     type: tcp
-    listen: {ip: 127.0.0.1, port: 15432}
-    target: {ip: 10.20.1.15, port: 5432}
+    listen:
+      ip: 127.0.0.1
+      port: 15432
+    target:
+      ip: 10.20.1.15
+      port: 5432
 ```
 
 启动两个进程：
@@ -187,7 +194,8 @@ proxies:
   https:
     listen_address: 127.0.0.1:8443
     certificates:
-      - domains: [app.example.com]
+      - domains:
+          - app.example.com
         cert_file: /path/to/https-server.crt
         key_file: /path/to/https-server.key
 ```
@@ -198,9 +206,13 @@ proxies:
 proxies:
   - name: web
     type: http
-    local: {ip: 127.0.0.1, port: 8080}
+    local:
+      ip: 127.0.0.1
+      port: 8080
     public:
-      schemes: [https, http]
+      schemes:
+        - https
+        - http
       domain: app.example.com
 ```
 
@@ -225,8 +237,11 @@ proxies:
 proxies:
   - name: dns
     type: udp
-    local: {ip: 127.0.0.1, port: 53}
-    public: {port: 5353}
+    local:
+      ip: 127.0.0.1
+      port: 53
+    public:
+      port: 5353
 ```
 
 Portway 保留数据报边界，并为每个公网访问者关联提供独立的认证数据链路。
