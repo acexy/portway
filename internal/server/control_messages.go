@@ -252,7 +252,7 @@ func (s *Service) serveControlMessages(
 			maxActiveForwardLinks := 0
 			if authenticationMode == authentication.ModeGoverned {
 				governed, _ := s.configuration.governedClient(clientID)
-				maxActiveForwardLinks = governed.Permissions.Limits.MaxActiveForwardLinks
+				maxActiveForwardLinks = governed.Permissions.Forwards.Limits.MaxActiveLinks
 			}
 			forwardResults, forwardError := s.forwardRegistry.Sync(
 				clientID,

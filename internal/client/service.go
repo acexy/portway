@@ -77,9 +77,9 @@ type Service struct {
 // NewService creates a client service.
 func NewService(logger *logging.Logger, configuration config.ClientConfig) *Service {
 	return &Service{
-		logger:          logger.WithField("client_id", configuration.ClientID),
+		logger:          logger.WithField("client_id", configuration.Authentication.ClientID),
 		configuration:   configuration,
-		runtimeClientID: configuration.ClientID,
+		runtimeClientID: configuration.Authentication.ClientID,
 		runtimeProxies:  append([]config.ProxyConfig(nil), configuration.Proxies...),
 		runtimeForwards: append([]config.ForwardConfig(nil), configuration.Forwards...),
 	}

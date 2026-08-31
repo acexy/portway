@@ -42,6 +42,8 @@ var httpHeaderNamePattern = regexp.MustCompile(
 
 // ClientAuthenticationConfig configures the client credential.
 type ClientAuthenticationConfig struct {
+	// ClientID identifies the authenticated client. Shared clients may omit it.
+	ClientID string `yaml:"client_id"`
 	// Token selects and proves the server-owned authentication record.
 	Token string `yaml:"token"`
 }
@@ -79,8 +81,8 @@ type ForwardIPRule struct {
 	UDP     ForwardPortPermission `yaml:"udp"`
 }
 
-// ForwardPermissions narrows the server-wide Forward target allowlist.
-type ForwardPermissions struct {
+// ForwardRules narrows the server-wide Forward target allowlist.
+type ForwardRules struct {
 	Rules []ForwardIPRule `yaml:"rules"`
 }
 
@@ -90,40 +92,52 @@ type HTTPPermission struct {
 	Domains       []string                    `yaml:"domains"`
 }
 
-// PermissionLimits configures per-client resource ceilings.
-type PermissionLimits struct {
-	MaxProxies            int `yaml:"max_proxies"`
-	MaxTCPProxies         int `yaml:"max_tcp_proxies"`
-	MaxUDPProxies         int `yaml:"max_udp_proxies"`
-	MaxHTTPProxies        int `yaml:"max_http_proxies"`
-	MaxActiveLinks        int `yaml:"max_active_links"`
-	MaxForwards           int `yaml:"max_forwards"`
-	MaxTCPForwards        int `yaml:"max_tcp_forwards"`
-	MaxUDPForwards        int `yaml:"max_udp_forwards"`
-	MaxActiveForwardLinks int `yaml:"max_active_forward_links"`
+// ProxyPermissionLimits configures per-client Proxy resource ceilings.
+type ProxyPermissionLimits struct {
+	MaxTotal       int `yaml:"max_total"`
+	MaxTCP         int `yaml:"max_tcp"`
+	MaxUDP         int `yaml:"max_udp"`
+	MaxHTTP        int `yaml:"max_http"`
+	MaxActiveLinks int `yaml:"max_active_links"`
 }
 
-// GovernedPermissions restricts one client's proxy declarations.
+// ForwardPermissionLimits configures per-client Forward resource ceilings.
+type ForwardPermissionLimits struct {
+	MaxTotal       int `yaml:"max_total"`
+	MaxTCP         int `yaml:"max_tcp"`
+	MaxUDP         int `yaml:"max_udp"`
+	MaxActiveLinks int `yaml:"max_active_links"`
+}
+
+// GovernedProxyPermissions restricts client-declared public Proxies.
+type GovernedProxyPermissions struct {
+	TCP    *ProxyPermission      `yaml:"tcp"`
+	UDP    *ProxyPermission      `yaml:"udp"`
+	HTTP   *HTTPPermission       `yaml:"http"`
+	Limits ProxyPermissionLimits `yaml:"limits"`
+}
+
+// GovernedForwardPermissions restricts client-declared Forwards.
+type GovernedForwardPermissions struct {
+	Rules  []ForwardIPRule        `yaml:"rules"`
+	Limits ForwardPermissionLimits `yaml:"limits"`
+}
+
+// GovernedPermissions separates both traffic directions.
 type GovernedPermissions struct {
-	ProxyTypes   []protocol.ProxyType   `yaml:"proxy_types"`
-	TCP          ProxyPermission        `yaml:"tcp"`
-	UDP          ProxyPermission        `yaml:"udp"`
-	HTTP         HTTPPermission         `yaml:"http"`
-	Limits       PermissionLimits       `yaml:"limits"`
-	ForwardTypes []protocol.ForwardType `yaml:"forward_types"`
-	Forwards     ForwardPermissions     `yaml:"forwards"`
+	Proxies  GovernedProxyPermissions   `yaml:"proxies"`
+	Forwards GovernedForwardPermissions `yaml:"forwards"`
 }
 
 // ManagedPermissions optionally narrows server-owned Forward targets.
 type ManagedPermissions struct {
-	Forwards ForwardPermissions `yaml:"forwards"`
+	Forwards ForwardRules `yaml:"forwards"`
 }
 
 // GovernedClientConfig defines one independently authenticated governed client.
 type GovernedClientConfig struct {
-	ClientID    string              `yaml:"client_id"`
-	Token       string              `yaml:"token"`
-	Permissions GovernedPermissions `yaml:"permissions"`
+	Authentication ClientAuthenticationConfig `yaml:"authentication"`
+	Permissions    GovernedPermissions         `yaml:"permissions"`
 }
 
 // ManagedConfiguration is the complete server-owned client proxy generation.
@@ -135,10 +149,9 @@ type ManagedConfiguration struct {
 
 // ManagedClientConfig defines one independently authenticated managed client.
 type ManagedClientConfig struct {
-	ClientID      string               `yaml:"client_id"`
-	Token         string               `yaml:"token"`
-	Permissions   ManagedPermissions   `yaml:"permissions"`
-	Configuration ManagedConfiguration `yaml:"configuration"`
+	Authentication ClientAuthenticationConfig `yaml:"authentication"`
+	Permissions    ManagedPermissions          `yaml:"permissions"`
+	Configuration  ManagedConfiguration        `yaml:"configuration"`
 }
 
 // QUICClientTransportConfig configures the client side of the QUIC transport.
@@ -167,20 +180,29 @@ type ServerTransportConfig struct {
 	QUIC          QUICServerTransportConfig `yaml:"quic"`
 }
 
-// ProxyConfig describes one client-side proxy.
+// EndpointConfig identifies one client-side IP endpoint.
+type EndpointConfig struct {
+	IP   string `yaml:"ip"`
+	Port uint16 `yaml:"port"`
+}
+
+// ProxyPublicConfig identifies one public Proxy endpoint or HTTP route.
+type ProxyPublicConfig struct {
+	Port    uint16                      `yaml:"port"`
+	Domain  string                      `yaml:"domain"`
+	Schemes []protocol.HTTPPublicScheme `yaml:"schemes"`
+}
+
+// ProxyConfig describes one client-side Proxy.
 type ProxyConfig struct {
-	Name          string                      `yaml:"name"`
-	Type          protocol.ProxyType          `yaml:"type"`
-	LocalIP       string                      `yaml:"local_ip"`
-	LocalPort     uint16                      `yaml:"local_port"`
-	RemotePort    uint16                      `yaml:"remote_port"`
-	Domain        string                      `yaml:"domain"`
-	PublicSchemes []protocol.HTTPPublicScheme `yaml:"public_schemes"`
+	Name   string             `yaml:"name"`
+	Type   protocol.ProxyType `yaml:"type"`
+	Local  EndpointConfig     `yaml:"local"`
+	Public ProxyPublicConfig  `yaml:"public"`
 }
 
 // ClientConfig contains the complete client configuration.
 type ClientConfig struct {
-	ClientID       string                     `yaml:"client_id"`
 	Transport      ClientTransportConfig      `yaml:"transport"`
 	LogLevel       LogLevel                   `yaml:"log_level"`
 	Authentication ClientAuthenticationConfig `yaml:"authentication"`
@@ -190,19 +212,10 @@ type ClientConfig struct {
 
 // ForwardConfig describes one client-side listener and server-side target.
 type ForwardConfig struct {
-	Name       string               `yaml:"name"`
-	Type       protocol.ForwardType `yaml:"type"`
-	ListenIP   string               `yaml:"listen_ip"`
-	ListenPort uint16               `yaml:"listen_port"`
-	TargetIP   string               `yaml:"target_ip"`
-	TargetPort uint16               `yaml:"target_port"`
-}
-
-// TunnelConfig configures public proxy listeners owned by the server.
-type TunnelConfig struct {
-	BindIP             string `yaml:"bind_ip"`
-	HTTPListenAddress  string `yaml:"http_listen_address"`
-	HTTPSListenAddress string `yaml:"https_listen_address"`
+	Name   string               `yaml:"name"`
+	Type   protocol.ForwardType `yaml:"type"`
+	Listen EndpointConfig       `yaml:"listen"`
+	Target EndpointConfig       `yaml:"target"`
 }
 
 // HTTPSCertificateConfig maps SNI names to one public HTTPS certificate pair.
@@ -214,7 +227,23 @@ type HTTPSCertificateConfig struct {
 
 // HTTPSConfig configures the public HTTPS SNI certificate set.
 type HTTPSConfig struct {
-	Certificates []HTTPSCertificateConfig `yaml:"certificates"`
+	ListenAddress string                   `yaml:"listen_address"`
+	Certificates  []HTTPSCertificateConfig `yaml:"certificates"`
+}
+
+// HTTPProxyConfig configures the public HTTP listener and shared HTTP runtime.
+// Its runtime limits also apply to TLS-terminated HTTPS traffic.
+type HTTPProxyConfig struct {
+	ListenAddress string `yaml:"listen_address"`
+	HTTPConfig    `yaml:",inline"`
+}
+
+// ServerProxyConfig groups every server-owned public Proxy runtime setting.
+type ServerProxyConfig struct {
+	BindIP string          `yaml:"bind_ip"`
+	HTTP   HTTPProxyConfig `yaml:"http"`
+	HTTPS  HTTPSConfig     `yaml:"https"`
+	UDP    UDPConfig       `yaml:"udp"`
 }
 
 // SecurityConfig configures server-side source filtering.
@@ -231,10 +260,7 @@ type OperationsConfig struct {
 // ServerConfig contains the complete server configuration.
 type ServerConfig struct {
 	Transport      ServerTransportConfig      `yaml:"transport"`
-	Tunnel         TunnelConfig               `yaml:"tunnel"`
-	HTTP           HTTPConfig                 `yaml:"http"`
-	HTTPS          HTTPSConfig                `yaml:"https"`
-	UDP            UDPConfig                  `yaml:"udp"`
+	Proxies        ServerProxyConfig           `yaml:"proxies"`
 	Security       SecurityConfig             `yaml:"security"`
 	Operations     OperationsConfig           `yaml:"operations"`
 	Forwards       ForwardServerConfig        `yaml:"forwards"`

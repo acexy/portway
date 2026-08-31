@@ -11,7 +11,6 @@ import (
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
-	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -38,8 +37,10 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 			Type:          transport.TypeTCP,
 			ListenAddress: serverAddress.String(),
 		},
-		Tunnel: config.TunnelConfig{
+		Proxies: config.ServerProxyConfig{
 			BindIP: "127.0.0.1",
+			HTTP:  config.DefaultServer().Proxies.HTTP,
+			UDP:   config.DefaultServer().Proxies.UDP,
 		},
 		LogLevel: config.LogLevelInfo,
 		Authentication: config.ServerAuthenticationConfig{
@@ -53,22 +54,21 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)
 	clientService := client.NewService(logging.New("test-client"), config.ClientConfig{
-		ClientID: "end-to-end-client",
 		Transport: config.ClientTransportConfig{
 			Type:          transport.TypeTCP,
 			ServerAddress: serverAddress.String(),
 		},
 		LogLevel: config.LogLevelInfo,
 		Authentication: config.ClientAuthenticationConfig{
-			Token: token,
+			ClientID: "end-to-end-client",
+			Token:    token,
 		},
 		Proxies: []config.ProxyConfig{
 			{
-				Name:       "echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoAddress.Port),
-				RemotePort: proxyPort,
+				Name:   "echo",
+				Type:   "tcp",
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+				Public: config.ProxyPublicConfig{Port: proxyPort},
 			},
 		},
 	})
@@ -132,34 +132,32 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 
 	serverConfiguration := config.DefaultServer()
 	serverConfiguration.Transport.ListenAddress = serverAddress.String()
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
 	serverConfiguration.Authentication.SharedToken = &sharedToken
 	serverConfiguration.GovernedClients = map[string]config.GovernedClientConfig{
 		"governed-authority": {
-			ClientID: "governed-authority",
-			Token:    governedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "governed-authority", Token: governedToken},
 			Permissions: config.GovernedPermissions{
-				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
-				TCP: config.ProxyPermission{RemotePortRanges: []config.PortRange{{
-					Start: uint16(governedProxyAddress.Port),
-					End:   uint16(governedProxyAddress.Port),
-				}}},
-				Limits: config.PermissionLimits{MaxProxies: 1},
+				Proxies: config.GovernedProxyPermissions{
+					TCP: &config.ProxyPermission{RemotePortRanges: []config.PortRange{{
+						Start: uint16(governedProxyAddress.Port),
+						End:   uint16(governedProxyAddress.Port),
+					}}},
+					Limits: config.ProxyPermissionLimits{MaxTotal: 1},
+				},
 			},
 		},
 	}
 	serverConfiguration.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed-authority": {
-			ClientID: "managed-authority",
-			Token:    managedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-authority", Token: managedToken},
 			Configuration: config.ManagedConfiguration{
 				Revision: 1,
 				Proxies: []config.ProxyConfig{{
-					Name:       "managed-echo",
-					Type:       "tcp",
-					LocalIP:    "127.0.0.1",
-					LocalPort:  uint16(echoAddress.Port),
-					RemotePort: uint16(managedProxyAddress.Port),
+					Name:   "managed-echo",
+					Type:   "tcp",
+					Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+					Public: config.ProxyPublicConfig{Port: uint16(managedProxyAddress.Port)},
 				}},
 			},
 		},
@@ -191,7 +189,7 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 		proxies []config.ProxyConfig,
 	) config.ClientConfig {
 		configuration := config.DefaultClient()
-		configuration.ClientID = clientID
+		configuration.Authentication.ClientID = clientID
 		configuration.Transport.ServerAddress = serverAddress.String()
 		configuration.Authentication.Token = token
 		configuration.Proxies = proxies
@@ -203,22 +201,20 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 			"shared-instance",
 			sharedToken,
 			[]config.ProxyConfig{{
-				Name:       "shared-echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoAddress.Port),
-				RemotePort: uint16(sharedProxyAddress.Port),
+				Name:   "shared-echo",
+				Type:   "tcp",
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+				Public: config.ProxyPublicConfig{Port: uint16(sharedProxyAddress.Port)},
 			}},
 		)),
 		startClient(clientConfiguration(
 			"governed-authority",
 			governedToken,
 			[]config.ProxyConfig{{
-				Name:       "governed-echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoAddress.Port),
-				RemotePort: uint16(governedProxyAddress.Port),
+				Name:   "governed-echo",
+				Type:   "tcp",
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+				Public: config.ProxyPublicConfig{Port: uint16(governedProxyAddress.Port)},
 			}},
 		)),
 		startClient(clientConfiguration(

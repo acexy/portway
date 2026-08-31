@@ -72,9 +72,8 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local: {ip: 127.0.0.1, port: 22}
+    public: {port: 22022}
 ```
 
 Use the same Token on both sides. It must contain more than 32 UTF-8 characters;
@@ -95,18 +94,18 @@ The local SSH service is now available at:
 ## HTTP and HTTPS proxy
 
 Enable either or both public HTTP and HTTPS listeners on the server. HTTPS is
-disabled when `https_listen_address` is empty:
+disabled when `proxies.https.listen_address` is empty:
 
 ```yaml
-tunnel:
-  http_listen_address: 127.0.0.1:8080
-  https_listen_address: 127.0.0.1:8443
-
-https:
-  certificates:
-    - domains: [app.example.com]
-      cert_file: /path/to/https-server.crt
-      key_file: /path/to/https-server.key
+proxies:
+  http:
+    listen_address: 127.0.0.1:8080
+  https:
+    listen_address: 127.0.0.1:8443
+    certificates:
+      - domains: [app.example.com]
+        cert_file: /path/to/https-server.crt
+        key_file: /path/to/https-server.key
 ```
 
 Register a domain on the client:
@@ -115,18 +114,16 @@ Register a domain on the client:
 proxies:
   - name: web
     type: http
-    public_schemes:
-      - https
-      - http
-    domain: app.example.com
-    local_ip: 127.0.0.1
-    local_port: 8080
+    local: {ip: 127.0.0.1, port: 8080}
+    public:
+      schemes: [https, http]
+      domain: app.example.com
 ```
 
 `type` selects the proxy semantics carried between `portwayd` and `portway`;
-`public_schemes` explicitly selects the public HTTP/HTTPS listeners. Every
+`public.schemes` explicitly selects the public HTTP/HTTPS listeners. Every
 selected listener must be enabled or the complete registration is rejected.
-When omitted or empty, `public_schemes` defaults to HTTP only.
+When omitted or empty, `public.schemes` defaults to HTTP only.
 The public `Host` is matched to an authenticated client registration. Portwayd
 terminates public HTTPS and forwards HTTP through the authenticated tunnel, so
 the local application receives a normal HTTP request. Visitor-supplied
@@ -148,9 +145,8 @@ Register a public UDP port and a local UDP service on the client:
 proxies:
   - name: dns
     type: udp
-    local_ip: 127.0.0.1
-    local_port: 53
-    remote_port: 5353
+    local: {ip: 127.0.0.1, port: 53}
+    public: {port: 5353}
 ```
 
 Portway preserves datagram boundaries and gives each public visitor association

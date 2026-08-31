@@ -45,9 +45,11 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local:
+      ip: 127.0.0.1
+      port: 22
+    public:
+      port: 22022
 `
 
 const clientTokenPlaceholder = "PORTWAY_TOKEN_REQUIRED"

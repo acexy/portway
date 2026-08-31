@@ -16,34 +16,34 @@ log_level: info
 transport:
   type: tcp
   listen_address: 127.0.0.1:7000
-tunnel:
+proxies:
   bind_ip: 127.0.0.1
-  http_listen_address: 127.0.0.1:8080
-  https_listen_address: 127.0.0.1:8443
-https:
-  certificates:
-    - domains: [app.example.com]
-      cert_file: server.crt
-      key_file: server.key
-http:
-  read_header_timeout: 12s
-  request_body_timeout: 2m
-  public_idle_timeout: 90s
-  graceful_shutdown_timeout: 40s
-  idle_connection_timeout: 0s
-  response_header_timeout: 45s
-  upgrade_idle_timeout: 15m
-  max_request_body_bytes: 1048576
-  max_header_bytes: 32768
-  max_concurrent_requests: 1000
-  max_concurrent_requests_per_client: 200
-  max_concurrent_requests_per_domain: 100
-  max_idle_connections: 300
-  max_idle_connections_per_domain: 20
-  max_upgrade_connections: 200
-  max_upgrade_connections_per_client: 40
-  max_upgrade_connections_per_domain: 20
-  max_concurrent_http2_streams: 64
+  http:
+    listen_address: 127.0.0.1:8080
+    read_header_timeout: 12s
+    request_body_timeout: 2m
+    public_idle_timeout: 90s
+    graceful_shutdown_timeout: 40s
+    idle_connection_timeout: 0s
+    response_header_timeout: 45s
+    upgrade_idle_timeout: 15m
+    max_request_body_bytes: 1048576
+    max_header_bytes: 32768
+    max_concurrent_requests: 1000
+    max_concurrent_requests_per_client: 200
+    max_concurrent_requests_per_domain: 100
+    max_idle_connections: 300
+    max_idle_connections_per_domain: 20
+    max_upgrade_connections: 200
+    max_upgrade_connections_per_client: 40
+    max_upgrade_connections_per_domain: 20
+    max_concurrent_http2_streams: 64
+  https:
+    listen_address: 127.0.0.1:8443
+    certificates:
+      - domains: [app.example.com]
+        cert_file: server.crt
+        key_file: server.key
 authentication:
   shared_token: cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA
 `)
@@ -54,31 +54,46 @@ authentication:
 	if err != nil {
 		t.Fatalf("load HTTP server settings: %v", err)
 	}
-	if configuration.HTTP.ReadHeaderTimeout != 12*time.Second ||
-		configuration.HTTP.RequestBodyTimeout != 2*time.Minute ||
-		configuration.HTTP.PublicIdleTimeout != 90*time.Second ||
-		configuration.HTTP.ResponseHeaderTimeout != 45*time.Second ||
-		configuration.HTTP.UpgradeIdleTimeout != 15*time.Minute ||
-		configuration.HTTP.MaxRequestBodyBytes != 1048576 ||
-		configuration.HTTP.MaxConcurrentHTTP2Streams != 64 ||
-		configuration.Tunnel.BindIP != "127.0.0.1" ||
-		configuration.Tunnel.HTTPListenAddress != "127.0.0.1:8080" ||
-		configuration.Tunnel.HTTPSListenAddress != "127.0.0.1:8443" ||
-		len(configuration.HTTPS.Certificates) != 1 ||
-		configuration.HTTPS.Certificates[0].Domains[0] != "app.example.com" ||
-		configuration.HTTPS.Certificates[0].CertFile != "server.crt" ||
-		configuration.HTTPS.Certificates[0].KeyFile != "server.key" {
-		t.Fatalf("unexpected HTTP settings: %+v", configuration.HTTP)
+	if configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout != 12*time.Second ||
+		configuration.Proxies.HTTP.HTTPConfig.RequestBodyTimeout != 2*time.Minute ||
+		configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout != 90*time.Second ||
+		configuration.Proxies.HTTP.HTTPConfig.ResponseHeaderTimeout != 45*time.Second ||
+		configuration.Proxies.HTTP.HTTPConfig.UpgradeIdleTimeout != 15*time.Minute ||
+		configuration.Proxies.HTTP.HTTPConfig.MaxRequestBodyBytes != 1048576 ||
+		configuration.Proxies.HTTP.HTTPConfig.MaxConcurrentHTTP2Streams != 64 ||
+		configuration.Proxies.BindIP != "127.0.0.1" ||
+		configuration.Proxies.HTTP.ListenAddress != "127.0.0.1:8080" ||
+		configuration.Proxies.HTTPS.ListenAddress != "127.0.0.1:8443" ||
+		len(configuration.Proxies.HTTPS.Certificates) != 1 ||
+		configuration.Proxies.HTTPS.Certificates[0].Domains[0] != "app.example.com" ||
+		configuration.Proxies.HTTPS.Certificates[0].CertFile != "server.crt" ||
+		configuration.Proxies.HTTPS.Certificates[0].KeyFile != "server.key" {
+		t.Fatalf("unexpected HTTP settings: %+v", configuration.Proxies.HTTP.HTTPConfig)
+	}
+}
+
+func TestLoadServerRejectsLegacyProxyLayout(t *testing.T) {
+	for _, legacyField := range []string{"tunnel", "http", "https", "udp"} {
+		t.Run(legacyField, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "server.yaml")
+			content := []byte(legacyField + ": {}\n")
+			if err := os.WriteFile(path, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadServer(path, false); err == nil {
+				t.Fatalf("legacy top-level field %q was accepted", legacyField)
+			}
+		})
 	}
 }
 
 func TestValidateServerRequiresHTTPSCertificatePair(t *testing.T) {
 	configuration := DefaultServer()
-	configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
+	configuration.Proxies.HTTPS.ListenAddress = "127.0.0.1:8443"
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTPS listener without certificate pair was accepted")
 	}
-	configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
+	configuration.Proxies.HTTPS.Certificates = []HTTPSCertificateConfig{{
 		Domains:  []string{"app.example.com"},
 		CertFile: "server.crt",
 		KeyFile:  "server.key",
@@ -86,7 +101,7 @@ func TestValidateServerRequiresHTTPSCertificatePair(t *testing.T) {
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("valid HTTPS configuration was rejected: %v", err)
 	}
-	configuration.HTTPS.Certificates[0].KeyFile = ""
+	configuration.Proxies.HTTPS.Certificates[0].KeyFile = ""
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTPS certificate without private key was accepted")
 	}
@@ -126,8 +141,8 @@ func TestValidateServerRejectsInvalidHTTPSCertificateMappings(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			configuration := DefaultServer()
-			configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
-			configuration.HTTPS.Certificates = testCase.certificates
+			configuration.Proxies.HTTPS.ListenAddress = "127.0.0.1:8443"
+			configuration.Proxies.HTTPS.Certificates = testCase.certificates
 			if err := validateServer(configuration); err == nil {
 				t.Fatal("invalid HTTPS certificate mapping was accepted")
 			}
@@ -137,8 +152,8 @@ func TestValidateServerRejectsInvalidHTTPSCertificateMappings(t *testing.T) {
 
 func TestValidateServerRejectsPublicTCPListenerConflicts(t *testing.T) {
 	configuration := DefaultServer()
-	configuration.Tunnel.HTTPSListenAddress = configuration.Transport.ListenAddress
-	configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
+	configuration.Proxies.HTTPS.ListenAddress = configuration.Transport.ListenAddress
+	configuration.Proxies.HTTPS.Certificates = []HTTPSCertificateConfig{{
 		Domains:  []string{"app.example.com"},
 		CertFile: "server.crt",
 		KeyFile:  "server.key",
@@ -147,8 +162,8 @@ func TestValidateServerRejectsPublicTCPListenerConflicts(t *testing.T) {
 		t.Fatal("HTTPS and transport listener conflict was accepted")
 	}
 
-	configuration.Tunnel.HTTPSListenAddress = "127.0.0.1:8080"
-	configuration.Tunnel.HTTPListenAddress = "127.0.0.1:8080"
+	configuration.Proxies.HTTPS.ListenAddress = "127.0.0.1:8080"
+	configuration.Proxies.HTTP.ListenAddress = "127.0.0.1:8080"
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP and HTTPS listener conflict was accepted")
 	}
@@ -175,7 +190,7 @@ func TestValidateClientRejectsInvalidHTTPPublicSchemes(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			configuration := validHTTPClientConfiguration()
-			configuration.Proxies[0].PublicSchemes = testCase.schemes
+			configuration.Proxies[0].Public.Schemes = testCase.schemes
 			if err := validateClient(configuration); err == nil {
 				t.Fatal("invalid HTTP public schemes were accepted")
 			}
@@ -185,24 +200,26 @@ func TestValidateClientRejectsInvalidHTTPPublicSchemes(t *testing.T) {
 
 func TestValidateClientDefaultsHTTPPublicSchemes(t *testing.T) {
 	configuration := validHTTPClientConfiguration()
-	configuration.Proxies[0].PublicSchemes = nil
+	configuration.Proxies[0].Public.Schemes = nil
 	if err := validateClient(configuration); err != nil {
 		t.Fatalf("default HTTP public scheme was rejected: %v", err)
 	}
-	if len(configuration.Proxies[0].PublicSchemes) != 1 ||
-		configuration.Proxies[0].PublicSchemes[0] != protocol.HTTPPublicSchemeHTTP {
-		t.Fatalf("public schemes = %v, want [http]", configuration.Proxies[0].PublicSchemes)
+	if len(configuration.Proxies[0].Public.Schemes) != 1 ||
+		configuration.Proxies[0].Public.Schemes[0] != protocol.HTTPPublicSchemeHTTP {
+		t.Fatalf("public schemes = %v, want [http]", configuration.Proxies[0].Public.Schemes)
 	}
 }
 
 func TestValidateClientRejectsPublicSchemesForTCP(t *testing.T) {
 	configuration := DefaultClient()
-	configuration.ClientID = "tcp-client"
+	configuration.Authentication.ClientID = "tcp-client"
 	configuration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	configuration.Proxies = []ProxyConfig{{
-		Name: "ssh", Type: "tcp", LocalIP: "127.0.0.1",
-		LocalPort: 22, RemotePort: 22022,
-		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+		Name: "ssh", Type: "tcp",
+		Local: EndpointConfig{IP: "127.0.0.1", Port: 22},
+		Public: ProxyPublicConfig{
+			Port: 22022, Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+		},
 	}}
 	if err := validateClient(configuration); err == nil {
 		t.Fatal("TCP proxy with public schemes was accepted")
@@ -222,7 +239,7 @@ func TestValidateClientRejectsNonCanonicalHTTPDomain(t *testing.T) {
 	for _, domain := range invalidDomains {
 		t.Run(domain, func(t *testing.T) {
 			configuration := validHTTPClientConfiguration()
-			configuration.Proxies[0].Domain = domain
+			configuration.Proxies[0].Public.Domain = domain
 			if err := validateClient(configuration); err == nil {
 				t.Fatalf("invalid HTTP domain %q was accepted", domain)
 			}
@@ -233,8 +250,9 @@ func TestValidateClientRejectsNonCanonicalHTTPDomain(t *testing.T) {
 func TestValidateClientUsesOneProxyNameNamespace(t *testing.T) {
 	configuration := validHTTPClientConfiguration()
 	configuration.Proxies = append(configuration.Proxies, ProxyConfig{
-		Name: "web", Type: "tcp", LocalIP: "127.0.0.1",
-		LocalPort: 22, RemotePort: 22022,
+		Name: "web", Type: "tcp",
+		Local: EndpointConfig{IP: "127.0.0.1", Port: 22},
+		Public: ProxyPublicConfig{Port: 22022},
 	})
 	if err := validateClient(configuration); err == nil {
 		t.Fatal("duplicate proxy name across HTTP and TCP was accepted")
@@ -243,39 +261,39 @@ func TestValidateClientUsesOneProxyNameNamespace(t *testing.T) {
 
 func TestValidateServerAcceptsDefaultHTTPSettings(t *testing.T) {
 	configuration := DefaultServer()
-	if configuration.Tunnel.HTTPListenAddress != "" {
+	if configuration.Proxies.HTTP.ListenAddress != "" {
 		t.Fatalf(
 			"default HTTP listener must be disabled, got %q",
-			configuration.Tunnel.HTTPListenAddress,
+			configuration.Proxies.HTTP.ListenAddress,
 		)
 	}
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("default HTTP settings were rejected: %v", err)
 	}
-	if configuration.HTTP.ReadHeaderTimeout != 0 ||
-		configuration.HTTP.RequestBodyTimeout != 0 ||
-		configuration.HTTP.PublicIdleTimeout != 0 ||
-		configuration.HTTP.IdleConnectionTimeout != 0 ||
-		configuration.HTTP.ResponseHeaderTimeout != 0 ||
-		configuration.HTTP.UpgradeIdleTimeout != 0 ||
-		configuration.HTTP.MaxRequestBodyBytes != 0 {
-		t.Fatalf("HTTP protocol boundaries must default to disabled: %+v", configuration.HTTP)
+	if configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout != 0 ||
+		configuration.Proxies.HTTP.HTTPConfig.RequestBodyTimeout != 0 ||
+		configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout != 0 ||
+		configuration.Proxies.HTTP.HTTPConfig.IdleConnectionTimeout != 0 ||
+		configuration.Proxies.HTTP.HTTPConfig.ResponseHeaderTimeout != 0 ||
+		configuration.Proxies.HTTP.HTTPConfig.UpgradeIdleTimeout != 0 ||
+		configuration.Proxies.HTTP.HTTPConfig.MaxRequestBodyBytes != 0 {
+		t.Fatalf("HTTP protocol boundaries must default to disabled: %+v", configuration.Proxies.HTTP.HTTPConfig)
 	}
 }
 
 func TestValidateServerRejectsHTTPHardLimitOverflow(t *testing.T) {
 	configuration := DefaultServer()
-	configuration.HTTP.MaxHeaderBytes = httpHardMaxHeaderBytes + 1
+	configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes = httpHardMaxHeaderBytes + 1
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP setting above the hard limit was accepted")
 	}
 	configuration = DefaultServer()
-	configuration.HTTP.UpgradeIdleTimeout = httpHardMaxUpgradeIdleTimeout + time.Second
+	configuration.Proxies.HTTP.HTTPConfig.UpgradeIdleTimeout = httpHardMaxUpgradeIdleTimeout + time.Second
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP Upgrade timeout above the hard limit was accepted")
 	}
 	configuration = DefaultServer()
-	configuration.HTTP.MaxRequestBodyBytes = httpHardMaxRequestBodyBytes + 1
+	configuration.Proxies.HTTP.HTTPConfig.MaxRequestBodyBytes = httpHardMaxRequestBodyBytes + 1
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP request body limit above the hard limit was accepted")
 	}
@@ -283,13 +301,13 @@ func TestValidateServerRejectsHTTPHardLimitOverflow(t *testing.T) {
 
 func TestValidateServerAllowsDisabledBusinessTimeouts(t *testing.T) {
 	configuration := DefaultServer()
-	configuration.HTTP.ReadHeaderTimeout = 0
-	configuration.HTTP.RequestBodyTimeout = 0
-	configuration.HTTP.PublicIdleTimeout = 0
-	configuration.HTTP.IdleConnectionTimeout = 0
-	configuration.HTTP.ResponseHeaderTimeout = 0
-	configuration.HTTP.UpgradeIdleTimeout = 0
-	configuration.HTTP.MaxRequestBodyBytes = 0
+	configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout = 0
+	configuration.Proxies.HTTP.HTTPConfig.RequestBodyTimeout = 0
+	configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout = 0
+	configuration.Proxies.HTTP.HTTPConfig.IdleConnectionTimeout = 0
+	configuration.Proxies.HTTP.HTTPConfig.ResponseHeaderTimeout = 0
+	configuration.Proxies.HTTP.HTTPConfig.UpgradeIdleTimeout = 0
+	configuration.Proxies.HTTP.HTTPConfig.MaxRequestBodyBytes = 0
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("disabled HTTP business timeouts were rejected: %v", err)
 	}
@@ -297,7 +315,7 @@ func TestValidateServerAllowsDisabledBusinessTimeouts(t *testing.T) {
 
 func TestValidateServerRejectsInvalidSafetyTimeout(t *testing.T) {
 	configuration := DefaultServer()
-	configuration.HTTP.GracefulShutdownTimeout = 3 * time.Minute
+	configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout = 3 * time.Minute
 	if err := validateServer(configuration); err == nil {
 		t.Fatal("HTTP safety timeout above the hard limit was accepted")
 	}
@@ -305,12 +323,15 @@ func TestValidateServerRejectsInvalidSafetyTimeout(t *testing.T) {
 
 func validHTTPClientConfiguration() ClientConfig {
 	configuration := DefaultClient()
-	configuration.ClientID = "http-client"
+	configuration.Authentication.ClientID = "http-client"
 	configuration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	configuration.Proxies = []ProxyConfig{{
-		Name: "web", Type: "http", Domain: "app.example.com",
-		LocalIP: "127.0.0.1", LocalPort: 8080,
-		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+		Name: "web", Type: "http",
+		Local: EndpointConfig{IP: "127.0.0.1", Port: 8080},
+		Public: ProxyPublicConfig{
+			Domain: "app.example.com",
+			Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+		},
 	}}
 	return configuration
 }

@@ -43,9 +43,8 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local: {ip: 127.0.0.1, port: 22}
+    public: {port: 22022}
 ```
 
 Shared 客户端自行声明完整代理集合。客户端生成或配置的 ClientID 用于标识运行时
@@ -68,47 +67,40 @@ authentication:
 创建 `governed/customer-a.yaml`：
 
 ```yaml
-client_id: customer-a
-token: REPLACE_TOKEN
+authentication:
+  client_id: customer-a
+  token: REPLACE_TOKEN
 
 permissions:
-  proxy_types: [tcp, http]
-
-  tcp:
-    remote_port_ranges:
-      - start: 20000
-        end: 20999
-
-  http:
-    public_schemes: [https]
-    domains:
-      - app.customer-a.example.com
-      - "*.customer-a.example.com"
-
-  limits:
-    max_proxies: 20
-    max_tcp_proxies: 10
-    max_udp_proxies: 5
-    max_http_proxies: 10
-    max_active_links: 100
+  proxies:
+    tcp:
+      remote_port_ranges:
+        - start: 20000
+          end: 20999
+    http:
+      public_schemes: [https]
+      domains: [app.customer-a.example.com, "*.customer-a.example.com"]
+    limits:
+      max_total: 20
+      max_tcp: 10
+      max_udp: 5
+      max_http: 10
+      max_active_links: 100
 ```
 
 文件名只是面向操作者的标签，不要求与 `client_id` 一致。客户端配置匹配的
 ClientID、该记录的 Token 和期望代理：
 
 ```yaml
-client_id: customer-a
-
 authentication:
+  client_id: customer-a
   token: REPLACE_TOKEN
 
 proxies:
   - name: app
     type: http
-    public_schemes: [https]
-    domain: app.customer-a.example.com
-    local_ip: 127.0.0.1
-    local_port: 8080
+    local: {ip: 127.0.0.1, port: 8080}
+    public: {schemes: [https], domain: app.customer-a.example.com}
 ```
 
 Token Proof 通过后，服务端必须在注册 Session 前确认客户端声明的 ClientID
@@ -117,19 +109,19 @@ Token Proof 通过后，服务端必须在注册 Session 前确认客户端声�
 校验完整代理集合。任意一项越权都会拒绝整批更新并关闭被拒绝的控制会话，
 服务端不会静默发布部分代理。
 
-`proxy_types` 中列出的每种类型都必须配置非空的对应规则：TCP 和 UDP 至少包含
+`permissions.proxies` 中存在的每种协议节点都必须配置非空规则：TCP 和 UDP 至少包含
 一个 `remote_port_ranges` 区间，HTTP 至少包含一个域名；`public_schemes` 留空或
-省略时默认只授权 HTTP。未列入 `proxy_types` 的类型必须省略对应规则或保持为空。配置多个区间可以
+省略时默认只授权 HTTP。省略协议节点即禁止该协议。配置多个区间可以
 分配互不连续
 的公网端口段，而不必授权这些区间之间原本不应开放的端口。
 
 Governed 配额字段缺省时使用生产安全默认值：代理总数 20、TCP 代理 10、UDP
 代理 5、HTTP 代理 10，以及 Pending 与 Active Link 合计 100。显式配置值必须
 大于零。每客户端代理数量的程序硬上限为 128，Active Link 的程序硬上限为
-512；各类型代理上限不得超过 `max_proxies`。
+512；各类型代理上限不得超过 `max_total`。
 
-Governed 控制的是公网暴露范围。当前客户端代理声明不会发送 `local_ip` 和
-`local_port`，因此服务端不能限制客户端实际访问的私网目标。
+Governed 控制的是公网暴露范围。客户端代理声明不会发送 `local`，因此服务端
+不能限制客户端实际访问的私网目标。
 
 ## Managed 客户端
 
@@ -145,25 +137,24 @@ authentication:
 创建 `managed/internal-node.yaml`：
 
 ```yaml
-client_id: internal-node
-token: REPLACE_TOKEN
+authentication:
+  client_id: internal-node
+  token: REPLACE_TOKEN
 
 configuration:
   revision: 1
   proxies:
     - name: ssh
       type: tcp
-      local_ip: 127.0.0.1
-      local_port: 22
-      remote_port: 22022
+      local: {ip: 127.0.0.1, port: 22}
+      public: {port: 22022}
 ```
 
 Managed 客户端配置匹配的 ClientID 和 Token，不能在本地定义 `proxies`：
 
 ```yaml
-client_id: internal-node
-
 authentication:
+  client_id: internal-node
   token: REPLACE_TOKEN
 ```
 

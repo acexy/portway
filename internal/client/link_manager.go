@@ -155,8 +155,8 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		)
 		defer cancelLocalDial()
 		address := net.JoinHostPort(
-			proxyConfiguration.LocalIP,
-			fmt.Sprintf("%d", proxyConfiguration.LocalPort),
+			proxyConfiguration.Local.IP,
+			fmt.Sprintf("%d", proxyConfiguration.Local.Port),
 		)
 		connection, err := (&net.Dialer{}).DialContext(localDialContext, "tcp", address)
 		results <- dialResult{
@@ -305,8 +305,8 @@ func (manager *linkManager) runUDP(
 		return
 	}
 	address := net.JoinHostPort(
-		proxyConfiguration.LocalIP,
-		fmt.Sprintf("%d", proxyConfiguration.LocalPort),
+		proxyConfiguration.Local.IP,
+		fmt.Sprintf("%d", proxyConfiguration.Local.Port),
 	)
 	type udpDialResult struct {
 		dataConnection  transport.Stream

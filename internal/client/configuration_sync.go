@@ -23,14 +23,14 @@ func (s *Service) syncConfiguration(
 	proxies := coll.SliceCollect(s.runtimeProxySnapshot(), func(proxy config.ProxyConfig) protocol.ProxyDeclaration {
 		return protocol.ProxyDeclaration{
 			Name: proxy.Name, Type: proxy.Type,
-			RemotePort: proxy.RemotePort, Domain: proxy.Domain,
-			PublicSchemes: append([]protocol.HTTPPublicScheme(nil), proxy.PublicSchemes...),
+			RemotePort: proxy.Public.Port, Domain: proxy.Public.Domain,
+			PublicSchemes: append([]protocol.HTTPPublicScheme(nil), proxy.Public.Schemes...),
 		}
 	})
 	forwards := coll.SliceCollect(s.runtimeForwardSnapshot(), func(forward config.ForwardConfig) protocol.ForwardDeclaration {
 		return protocol.ForwardDeclaration{
 			Name: forward.Name, Type: forward.Type,
-			TargetIP: forward.TargetIP, TargetPort: forward.TargetPort,
+			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port,
 		}
 	})
 	if proxies == nil {

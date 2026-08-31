@@ -10,25 +10,20 @@ import (
 
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
+	forwardtcp "github.com/acexy/portway/internal/forward/tcp"
+	forwardudp "github.com/acexy/portway/internal/forward/udp"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
-	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
-	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 	"github.com/acexy/portway/internal/transport"
 )
 
 type forwardRuntime struct {
+	context       context.Context
 	configuration config.ForwardConfig
 	bindingID     string
-	listener      net.Listener
-	packet        net.PacketConn
-	associations  map[string]*udpForwardAssociation
+	tcp           *forwardtcp.Listener
+	udp           *forwardudp.Endpoint
 	cancel        context.CancelFunc
-}
-
-type udpForwardAssociation struct {
-	address net.Addr
-	queue   chan []byte
 }
 
 type forwardManager struct {
@@ -66,24 +61,25 @@ func newForwardManager(
 	}
 	for _, configuration := range configurations {
 		runtimeContext, runtimeCancel := context.WithCancel(ctx)
-		runtime := &forwardRuntime{configuration: configuration, cancel: runtimeCancel}
+		runtime := &forwardRuntime{
+			context: runtimeContext, configuration: configuration, cancel: runtimeCancel,
+		}
 		if configuration.Type == protocol.ForwardTypeTCP {
-			address := net.JoinHostPort(configuration.ListenIP, fmt.Sprint(configuration.ListenPort))
-			listener, err := (&net.ListenConfig{}).Listen(runtimeContext, "tcp", address)
+			address := net.JoinHostPort(configuration.Listen.IP, fmt.Sprint(configuration.Listen.Port))
+			listener, err := forwardtcp.Listen(runtimeContext, address)
 			if err != nil {
 				manager.close()
 				return nil, fmt.Errorf("prepare TCP Forward %q: %w", configuration.Name, err)
 			}
-			runtime.listener = listener
+			runtime.tcp = listener
 		} else if configuration.Type == protocol.ForwardTypeUDP {
-			address := net.JoinHostPort(configuration.ListenIP, fmt.Sprint(configuration.ListenPort))
-			packet, err := (&net.ListenConfig{}).ListenPacket(runtimeContext, "udp", address)
+			address := net.JoinHostPort(configuration.Listen.IP, fmt.Sprint(configuration.Listen.Port))
+			packet, err := forwardudp.Listen(runtimeContext, address, 8192, 64)
 			if err != nil {
 				manager.close()
 				return nil, fmt.Errorf("prepare UDP Forward %q: %w", configuration.Name, err)
 			}
-			runtime.packet = packet
-			runtime.associations = make(map[string]*udpForwardAssociation)
+			runtime.udp = packet
 		}
 		manager.runtimes[configuration.Name] = runtime
 	}
@@ -114,64 +110,38 @@ func (manager *forwardManager) start() {
 	}
 	manager.mutex.Unlock()
 	for _, runtime := range runtimes {
-		if runtime.listener == nil {
-			if runtime.packet != nil {
-				manager.waitGroup.Go(func() { manager.serveUDP(runtime) })
-			}
-		} else {
-			manager.waitGroup.Go(func() { manager.acceptTCP(runtime) })
+		if runtime.tcp != nil {
+			manager.waitGroup.Go(func() {
+				err := runtime.tcp.Serve(func(visitor net.Conn) {
+					manager.waitGroup.Go(func() { manager.serveTCP(runtime, visitor) })
+				})
+				if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
+					manager.logger.Error("TCP Forward listener failed", err)
+				}
+			})
+		}
+		if runtime.udp != nil {
+			manager.waitGroup.Go(func() {
+				err := runtime.udp.Serve(func(association *forwardudp.Association) {
+					manager.serveUDPAssociation(runtime, association)
+				})
+				if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
+					manager.logger.Error("UDP Forward listener failed", err)
+				}
+			})
 		}
 	}
 }
 
-func (manager *forwardManager) serveUDP(runtime *forwardRuntime) {
-	buffer := make([]byte, 8193)
-	for {
-		length, address, err := runtime.packet.ReadFrom(buffer)
-		if err != nil {
-			if manager.context.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return
-			}
-			manager.logger.Error("UDP Forward listener failed", err)
-			return
-		}
-		if length > 8192 {
-			continue
-		}
-		key := address.String()
-		manager.mutex.Lock()
-		association := runtime.associations[key]
-		if association == nil {
-			association = &udpForwardAssociation{address: address, queue: make(chan []byte, 64)}
-			runtime.associations[key] = association
-			manager.waitGroup.Go(func() { manager.runUDPAssociation(runtime, key, association) })
-		}
-		manager.mutex.Unlock()
-		payload := append([]byte(nil), buffer[:length]...)
-		select {
-		case association.queue <- payload:
-		default:
-		}
-	}
-}
-
-func (manager *forwardManager) runUDPAssociation(
+func (manager *forwardManager) serveUDPAssociation(
 	runtime *forwardRuntime,
-	key string,
-	association *udpForwardAssociation,
+	association *forwardudp.Association,
 ) {
-	defer func() {
-		manager.mutex.Lock()
-		if runtime.associations[key] == association {
-			delete(runtime.associations, key)
-		}
-		manager.mutex.Unlock()
-	}()
-	offer, err := manager.requestForwardOffer(runtime)
+	offer, err := manager.requestForwardOffer(association.Context, runtime)
 	if err != nil {
 		return
 	}
-	linkContext, cancelLink := context.WithCancel(manager.context)
+	linkContext, cancelLink := context.WithCancel(association.Context)
 	defer cancelLink()
 	stream, err := manager.transport.OpenDataStream(linkContext)
 	if err != nil {
@@ -183,68 +153,24 @@ func (manager *forwardManager) runUDPAssociation(
 		manager.reportForwardFailure(offer.LinkID, failure)
 		return
 	}
-	result := make(chan error, 2)
-	go func() {
-		buffer := make([]byte, 8192)
-		for {
-			payload, err := proxyudp.ReadDatagramInto(stream, buffer, 8192)
-			if err == nil {
-				_, err = runtime.packet.WriteTo(payload, association.address)
-			}
-			if err != nil {
-				result <- err
-				return
-			}
-		}
-	}()
-	go func() {
-		for {
-			select {
-			case payload := <-association.queue:
-				if err := stream.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
-					result <- err
-					return
-				}
-				if err := proxyudp.WriteDatagram(stream, payload, 8192); err != nil {
-					result <- err
-					return
-				}
-			case <-linkContext.Done():
-				result <- linkContext.Err()
-				return
-			}
-		}
-	}()
-	_ = <-result
-	_ = stream.Close()
-}
-
-func (manager *forwardManager) acceptTCP(runtime *forwardRuntime) {
-	for {
-		visitor, err := runtime.listener.Accept()
-		if err != nil {
-			if manager.context.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return
-			}
-			manager.logger.Error("TCP Forward listener failed", err)
-			return
-		}
-		manager.waitGroup.Go(func() { manager.serveTCP(runtime, visitor) })
-	}
+	_ = forwardudp.ForwardClient(
+		association.Context, stream, association.Packets, association.Write, 8192, 3*time.Second,
+	)
 }
 
 func (manager *forwardManager) serveTCP(runtime *forwardRuntime, visitor net.Conn) {
 	defer visitor.Close()
-	offer, err := manager.requestForwardOffer(runtime)
+	offer, err := manager.requestForwardOffer(runtime.context, runtime)
 	if err != nil {
 		return
 	}
 	manager.serveForwardStream(runtime, offer, func(linkContext context.Context, stream transport.Stream) {
-		_, _ = proxytcp.Forward(linkContext, visitor, stream)
+		_ = forwardtcp.Forward(linkContext, visitor, stream)
 	})
 }
 
 func (manager *forwardManager) requestForwardOffer(
+	ctx context.Context,
 	runtime *forwardRuntime,
 ) (protocol.ForwardLinkOffer, error) {
 	requestID, err := newRequestID()
@@ -275,8 +201,8 @@ func (manager *forwardManager) requestForwardOffer(
 	case offer = <-offers:
 	case <-timer.C:
 		return protocol.ForwardLinkOffer{}, errors.New("Forward Link offer timed out")
-	case <-manager.context.Done():
-		return protocol.ForwardLinkOffer{}, manager.context.Err()
+	case <-ctx.Done():
+		return protocol.ForwardLinkOffer{}, ctx.Err()
 	}
 	if offer.Error != nil || offer.LinkID == "" || offer.Ticket == "" ||
 		offer.BindingID != runtime.bindingID || offer.Type != runtime.configuration.Type {
@@ -290,7 +216,7 @@ func (manager *forwardManager) serveForwardStream(
 	offer protocol.ForwardLinkOffer,
 	handler func(context.Context, transport.Stream),
 ) {
-	linkContext, cancelLink := context.WithCancel(manager.context)
+	linkContext, cancelLink := context.WithCancel(runtime.context)
 	manager.mutex.Lock()
 	manager.links[offer.LinkID] = cancelLink
 	manager.mutex.Unlock()
@@ -381,11 +307,11 @@ func (manager *forwardManager) revoke(revocation protocol.ForwardBindingRevoked)
 	manager.mutex.Unlock()
 	if runtime != nil && runtime.bindingID == revocation.BindingID {
 		runtime.cancel()
-		if runtime.listener != nil {
-			runtime.listener.Close()
+		if runtime.tcp != nil {
+			runtime.tcp.Close()
 		}
-		if runtime.packet != nil {
-			runtime.packet.Close()
+		if runtime.udp != nil {
+			runtime.udp.Close()
 		}
 	}
 }
@@ -400,18 +326,22 @@ func (manager *forwardManager) reportForwardFailure(linkID string, code protocol
 func (manager *forwardManager) close() {
 	manager.cancel()
 	manager.mutex.Lock()
+	runtimes := make([]*forwardRuntime, 0, len(manager.runtimes))
 	for _, runtime := range manager.runtimes {
-		runtime.cancel()
-		if runtime.listener != nil {
-			runtime.listener.Close()
-		}
-		if runtime.packet != nil {
-			runtime.packet.Close()
-		}
+		runtimes = append(runtimes, runtime)
 	}
 	for _, cancel := range manager.links {
 		cancel()
 	}
 	manager.mutex.Unlock()
+	for _, runtime := range runtimes {
+		runtime.cancel()
+		if runtime.tcp != nil {
+			runtime.tcp.Close()
+		}
+		if runtime.udp != nil {
+			runtime.udp.Close()
+		}
+	}
 	manager.waitGroup.Wait()
 }

@@ -44,20 +44,144 @@ transport:
     key_file: /path/to/server.key
 
 # Optional. Public proxy listener settings.
-tunnel:
+proxies:
   # Optional. IP used by public TCP and UDP proxy listeners.
   # Defaults to 0.0.0.0. Must be an IP address, not a hostname.
   bind_ip: 0.0.0.0
 
-  # Optional. Public HTTP proxy listener.
-  # Defaults to empty, which disables HTTP proxy registration and serving.
-  # When configured, it must differ from transport.listen_address.
-  http_listen_address: ""
+  # Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
+  # These values are shared by public HTTP and TLS-terminated HTTPS requests.
+  # Defaults apply even when both public listeners are empty. Changing an
+  # effective value currently requires restarting portwayd.
+  http:
+    # Optional. Public HTTP listener. Empty disables HTTP.
+    listen_address: ""
+    # Optional. Defaults to 0s, which disables the Portway deadline.
+    # Maximum non-zero value: 60s.
+    read_header_timeout: 0s
 
-  # Optional. Public HTTPS proxy listener. Portway terminates TLS and forwards
-  # requests to the client-side local service over HTTP. Defaults to empty,
-  # which disables HTTPS. It must differ from all other TCP listeners.
-  https_listen_address: ""
+    # Optional. Maximum duration for receiving a complete request body.
+    # Defaults to 0s, which disables the Portway deadline. Maximum: 10m.
+    request_body_timeout: 0s
+
+    # Optional. Public HTTP/HTTPS keep-alive idle timeout. Defaults to 0s,
+    # which uses Go's unlimited server default. Maximum: 10m.
+    public_idle_timeout: 0s
+
+    # Optional. Maximum graceful HTTP shutdown period. Defaults to 30s.
+    # Valid range: greater than 0s and at most 2m.
+    graceful_shutdown_timeout: 30s
+
+    # Optional. Defaults to 0s. Zero means no Portway idle timeout.
+    # Maximum non-zero value: 10m.
+    idle_connection_timeout: 0s
+
+    # Optional. Defaults to 0s. Zero allows streaming responses without a
+    # Portway response-header deadline. Maximum non-zero value: 10m.
+    response_header_timeout: 0s
+
+    # Optional. Full-duplex inactivity timeout after an HTTP Upgrade. Successful
+    # reads or writes refresh it. Defaults to 0s; maximum non-zero value: 24h.
+    upgrade_idle_timeout: 0s
+
+    # Optional. Maximum request body size. Defaults to 0, which is unlimited.
+    # Hard maximum when enabled: 1073741824 bytes (1 GiB).
+    max_request_body_bytes: 0
+
+    # Optional capacity settings. Defaults are shown below. Every effective value
+    # must be greater than zero and no greater than its documented hard maximum.
+    # Per-client and per-domain values must not exceed their global value.
+
+    # Hard maximum: 1048576 bytes.
+    max_header_bytes: 65536
+
+    # Hard maximum: 16384.
+    max_concurrent_requests: 4096
+
+    # Hard maximum: 2048.
+    max_concurrent_requests_per_client: 512
+
+    # Hard maximum: 1024.
+    max_concurrent_requests_per_domain: 256
+
+    # Global cap across all active and idle backend Links. Hard maximum: 4096.
+    max_idle_connections: 1024
+
+    # Per-domain idle pool cap. Hard maximum: 128.
+    max_idle_connections_per_domain: 32
+
+    # Hard maximum: 4096.
+    max_upgrade_connections: 1024
+
+    # Hard maximum: 512.
+    max_upgrade_connections_per_client: 128
+
+    # Hard maximum: 256.
+    max_upgrade_connections_per_domain: 64
+
+    # Hard maximum: 256.
+    max_concurrent_http2_streams: 128
+
+  # Optional. Public HTTPS SNI certificate set. At least one entry is required
+  # when proxies.https.listen_address is configured. Exact names take precedence
+  # over single-label wildcards. Every declared name must be covered by the
+  # certificate SAN. Missing or unknown SNI is rejected. File contents, paths,
+  # and the complete list are hot-reloadable as one atomic snapshot; invalid
+  # updates keep the previous snapshot active. QUIC certificates are independent.
+  https:
+    # Optional. Public HTTPS listener. Empty disables HTTPS.
+    listen_address: ""
+    certificates:
+      - domains:
+          - app.example.com
+          - "*.apps.example.com"
+        cert_file: /path/to/app-example-com.crt
+        # Keep private keys readable only by Portway.
+        key_file: /path/to/app-example-com.key
+
+      - domains:
+          - service.example.net
+        cert_file: /path/to/service-example-net.crt
+        key_file: /path/to/service-example-net.key
+
+  # Optional. UDP association, queue, rate, and memory safety limits.
+  # Defaults shown below apply even when no UDP proxy is registered.
+  # Every effective value must remain within its compiled hard boundary.
+  udp:
+    # Optional. Association inactivity period. Defaults to 60s.
+    # Valid range: 5s to 10m.
+    association_idle_timeout: 60s
+
+    # Optional. Maximum blocked Data Link frame write. Defaults to 3s.
+    # Valid range: 100ms to 30s. A timeout closes only that association.
+    link_write_timeout: 3s
+
+    # Optional. Maximum UDP payload. Defaults to 8192 bytes; protocol hard maximum: 65507.
+    # Startup rejects values above a detected platform UDP Socket limit.
+    max_datagram_size: 8192
+
+    # Optional association capacity. Hard maxima: 4096, 512, 256, 1024.
+    max_associations: 4096
+    max_associations_per_client: 512
+    max_associations_per_proxy: 256
+    max_associations_per_source_ip: 64
+
+    # Optional pending association capacity. Hard maxima: 1024, 128, 64.
+    max_pending_associations: 1024
+    max_pending_associations_per_client: 128
+    max_pending_associations_per_proxy: 64
+
+    # Optional new-association rates per second. Hard maxima: 10000, 2000, 1000.
+    max_new_associations_per_second: 1000
+    max_new_associations_per_second_per_client: 200
+    max_new_associations_per_second_per_proxy: 100
+
+    # Optional bounded queue limits. Hard maxima: 256 datagrams, 4 MiB per
+    # association, and 512 MiB globally. Queue saturation drops the newest
+    # datagram and never blocks the public UDP socket read loop.
+    max_queued_datagrams_per_association: 32
+    max_queued_bytes_per_association: 262144
+    max_queued_bytes: 67108864
 
 # Forward is disabled by default. When enabled, rules are mandatory and form a
 # server-wide allowlist that Shared, Governed, and Managed clients cannot bypass.
@@ -91,136 +215,6 @@ forwards:
         port_ranges:
           - start: 8000
             end: 8999
-
-# Optional. Public HTTPS SNI certificate set. At least one entry is required
-# when tunnel.https_listen_address is configured. Exact names take precedence
-# over single-label wildcards. Every declared name must be covered by the
-# certificate SAN. Missing or unknown SNI is rejected. File contents, paths,
-# and the complete list are hot-reloadable as one atomic snapshot; invalid
-# updates keep the previous snapshot active. QUIC certificates are independent.
-https:
-  certificates:
-    - domains:
-        - app.example.com
-        - "*.apps.example.com"
-      cert_file: /path/to/app-example-com.crt
-      # Keep private keys readable only by Portway.
-      key_file: /path/to/app-example-com.key
-
-    - domains:
-        - service.example.net
-      cert_file: /path/to/service-example-net.crt
-      key_file: /path/to/service-example-net.key
-
-# Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
-# These values are shared by public HTTP and TLS-terminated HTTPS requests.
-# Defaults apply even when both public listeners are empty. Changing an
-# effective value currently requires restarting portwayd.
-http:
-  # Optional. Defaults to 0s, which disables the Portway deadline.
-  # Maximum non-zero value: 60s.
-  read_header_timeout: 0s
-
-  # Optional. Maximum duration for receiving a complete request body.
-  # Defaults to 0s, which disables the Portway deadline. Maximum: 10m.
-  request_body_timeout: 0s
-
-  # Optional. Public HTTP/HTTPS keep-alive idle timeout. Defaults to 0s,
-  # which uses Go's unlimited server default. Maximum: 10m.
-  public_idle_timeout: 0s
-
-  # Optional. Maximum graceful HTTP shutdown period. Defaults to 30s.
-  # Valid range: greater than 0s and at most 2m.
-  graceful_shutdown_timeout: 30s
-
-  # Optional. Defaults to 0s. Zero means no Portway idle timeout.
-  # Maximum non-zero value: 10m.
-  idle_connection_timeout: 0s
-
-  # Optional. Defaults to 0s. Zero allows streaming responses without a
-  # Portway response-header deadline. Maximum non-zero value: 10m.
-  response_header_timeout: 0s
-
-  # Optional. Full-duplex inactivity timeout after an HTTP Upgrade. Successful
-  # reads or writes refresh it. Defaults to 0s; maximum non-zero value: 24h.
-  upgrade_idle_timeout: 0s
-
-  # Optional. Maximum request body size. Defaults to 0, which is unlimited.
-  # Hard maximum when enabled: 1073741824 bytes (1 GiB).
-  max_request_body_bytes: 0
-
-  # Optional capacity settings. Defaults are shown below. Every effective value
-  # must be greater than zero and no greater than its documented hard maximum.
-  # Per-client and per-domain values must not exceed their global value.
-
-  # Hard maximum: 1048576 bytes.
-  max_header_bytes: 65536
-
-  # Hard maximum: 16384.
-  max_concurrent_requests: 4096
-
-  # Hard maximum: 2048.
-  max_concurrent_requests_per_client: 512
-
-  # Hard maximum: 1024.
-  max_concurrent_requests_per_domain: 256
-
-  # Global cap across all active and idle backend Links. Hard maximum: 4096.
-  max_idle_connections: 1024
-
-  # Per-domain idle pool cap. Hard maximum: 128.
-  max_idle_connections_per_domain: 32
-
-  # Hard maximum: 4096.
-  max_upgrade_connections: 1024
-
-  # Hard maximum: 512.
-  max_upgrade_connections_per_client: 128
-
-  # Hard maximum: 256.
-  max_upgrade_connections_per_domain: 64
-
-  # Hard maximum: 256.
-  max_concurrent_http2_streams: 128
-
-# Optional. UDP association, queue, rate, and memory safety limits.
-# Defaults shown below apply even when no UDP proxy is registered.
-# Every effective value must remain within its compiled hard boundary.
-udp:
-  # Optional. Association inactivity period. Defaults to 60s.
-  # Valid range: 5s to 10m.
-  association_idle_timeout: 60s
-
-  # Optional. Maximum blocked Data Link frame write. Defaults to 3s.
-  # Valid range: 100ms to 30s. A timeout closes only that association.
-  link_write_timeout: 3s
-
-  # Optional. Maximum UDP payload. Defaults to 8192 bytes; protocol hard maximum: 65507.
-  # Startup rejects values above a detected platform UDP Socket limit.
-  max_datagram_size: 8192
-
-  # Optional association capacity. Hard maxima: 4096, 512, 256, 1024.
-  max_associations: 4096
-  max_associations_per_client: 512
-  max_associations_per_proxy: 256
-  max_associations_per_source_ip: 64
-
-  # Optional pending association capacity. Hard maxima: 1024, 128, 64.
-  max_pending_associations: 1024
-  max_pending_associations_per_client: 128
-  max_pending_associations_per_proxy: 64
-
-  # Optional new-association rates per second. Hard maxima: 10000, 2000, 1000.
-  max_new_associations_per_second: 1000
-  max_new_associations_per_second_per_client: 200
-  max_new_associations_per_second_per_proxy: 100
-
-  # Optional bounded queue limits. Hard maxima: 256 datagrams, 4 MiB per
-  # association, and 512 MiB globally. Queue saturation drops the newest
-  # datagram and never blocks the public UDP socket read loop.
-  max_queued_datagrams_per_association: 32
-  max_queued_bytes_per_association: 262144
-  max_queued_bytes: 67108864
 
 # Optional. Server-wide source IP security controls.
 security:

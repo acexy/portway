@@ -183,7 +183,7 @@ func (s *Service) handleAdmittedConnection(
 	maxActiveLinks := 0
 	if inbound.Authentication.Mode == authentication.ModeGoverned {
 		governed, _ := s.configuration.governedClient(clientHello.ClientID)
-		maxActiveLinks = governed.Permissions.Limits.MaxActiveLinks
+		maxActiveLinks = governed.Permissions.Proxies.Limits.MaxActiveLinks
 	}
 	s.proxyRegistry.AttachAuthenticated(
 		clientHello.ClientID,

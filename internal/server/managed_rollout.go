@@ -205,7 +205,7 @@ func (s *Service) applyManagedGeneration(
 		var forwardError *protocol.ProxyError
 		forwardResults, forwardError = s.forwardRegistry.Sync(
 			clientID, sessionID, exchange.controlWriter(), authenticationContext,
-			config.DefaultPermissionLimits().MaxActiveForwardLinks, declarations.Forwards,
+			config.DefaultForwardPermissionLimits().MaxActiveLinks, declarations.Forwards,
 		)
 		if forwardError != nil {
 			return fmt.Errorf("apply managed Forward configuration: %s: %s", forwardError.Code, forwardError.Message)

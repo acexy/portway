@@ -126,7 +126,7 @@ func (s *Service) forwardTargetAllowed(
 		return true
 	case authentication.ModeGoverned:
 		client, exists := configuration.GovernedClients[authenticationContext.ClientID]
-		if !exists || !coll.SliceContains(client.Permissions.ForwardTypes, declaration.Type) {
+		if !exists {
 			return false
 		}
 		return config.ForwardTargetAllowed(
@@ -168,14 +168,13 @@ func (s *Service) validateGovernedProxies(
 			"governed client configuration is unavailable",
 		)
 	}
-	permissions := clientConfiguration.Permissions
-	allowedTypes := make(map[protocol.ProxyType]struct{}, len(permissions.ProxyTypes))
-	for _, proxyType := range permissions.ProxyTypes {
-		allowedTypes[proxyType] = struct{}{}
-	}
+	permissions := clientConfiguration.Permissions.Proxies
 	typeCounts := make(map[protocol.ProxyType]int)
 	for _, declaration := range request.Proxies {
-		if _, allowed := allowedTypes[declaration.Type]; !allowed {
+		allowed := (declaration.Type == protocol.ProxyTypeTCP && permissions.TCP != nil) ||
+			(declaration.Type == protocol.ProxyTypeUDP && permissions.UDP != nil) ||
+			(declaration.Type == protocol.ProxyTypeHTTP && permissions.HTTP != nil)
+		if !allowed {
 			return governedRejection(
 				request.Revision,
 				protocol.ProxyErrorProxyTypeNotAllowed,
@@ -225,13 +224,10 @@ func (s *Service) validateGovernedProxies(
 		}
 	}
 	limits := permissions.Limits
-	if (limits.MaxProxies > 0 && len(request.Proxies) > limits.MaxProxies) ||
-		(limits.MaxTCPProxies > 0 &&
-			typeCounts[protocol.ProxyTypeTCP] > limits.MaxTCPProxies) ||
-		(limits.MaxUDPProxies > 0 &&
-			typeCounts[protocol.ProxyTypeUDP] > limits.MaxUDPProxies) ||
-		(limits.MaxHTTPProxies > 0 &&
-			typeCounts[protocol.ProxyTypeHTTP] > limits.MaxHTTPProxies) {
+	if (limits.MaxTotal > 0 && len(request.Proxies) > limits.MaxTotal) ||
+		(limits.MaxTCP > 0 && typeCounts[protocol.ProxyTypeTCP] > limits.MaxTCP) ||
+		(limits.MaxUDP > 0 && typeCounts[protocol.ProxyTypeUDP] > limits.MaxUDP) ||
+		(limits.MaxHTTP > 0 && typeCounts[protocol.ProxyTypeHTTP] > limits.MaxHTTP) {
 		return governedRejection(
 			request.Revision,
 			protocol.ProxyErrorClientLimitExceeded,

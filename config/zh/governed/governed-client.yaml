@@ -1,53 +1,42 @@
 # Governed 服务端客户端记录完整示例，对应 ../../../config/governed/governed-client.yaml。
 # 文件名只是操作者标签，无需匹配 client_id。所有独立 ClientID 和 Token 必须唯一。
 
-client_id: governed-client
+authentication:
+  client_id: governed-client
 # 必须包含大于 32 个 UTF-8 字符且保持唯一；推荐使用自动生成的 256-bit 随机值。
 # 禁止提交生产 Token。热加载时新增、删除、替换或重新分配任一 Token 都会断开
 # 全部活动及恢复窗口内的客户端；凭证未变化的客户端可使用原 Token 重连。
-token: PORTWAY_TOKEN_REQUIRED
+  token: PORTWAY_TOKEN_REQUIRED
 
 permissions:
-  # 必填，至少一项。表示 portwayd 与 portway 之间的代理语义，而非公网入口
-  # scheme；可选值：tcp、udp、http，不得重复。公网 HTTP/HTTPS 在下方单独授权。
-  proxy_types:
-    - tcp
-    - udp
-    - http
+  proxies:
+    # 协议规则节点存在即表示允许该协议。
+    tcp:
+      remote_port_ranges:
+        - start: 20000
+          end: 20999
+        - start: 22000
+          end: 22099
+    udp:
+      remote_port_ranges:
+        - start: 30000
+          end: 30999
+    http:
+      public_schemes:
+        - https
+      domains:
+        - app.example.com
+        - "*.customer.example.com"
+    limits:
+      max_total: 20
+      max_tcp: 10
+      max_udp: 5
+      max_http: 10
+      max_active_links: 100
 
-  tcp:
-    # 公网 TCP 端口授权闭区间；范围 1-65535，区间不得重叠。
-    remote_port_ranges:
-      - start: 20000
-        end: 20999
-      - start: 22000
-        end: 22099
-
-  udp:
-    # 公网 UDP 端口授权闭区间；范围 1-65535，区间不得重叠。
-    remote_port_ranges:
-      - start: 30000
-        end: 30999
-
-  http:
-    # 允许 http 时可选；留空或省略默认只授权 http。显式值可为 http、https 且
-    # 不得重复；客户端只能请求这里授权且已由服务端全局启用的公网 Listener。
-    public_schemes:
-      - https
-
-    # 不得重复的精确域名或仅匹配一级子域名的 *.example.com；客户端仍注册具体域名。
-    # HTTPS 是否可用还取决于服务端 HTTPS Listener 和 SNI 证书集合；客户端具体
-    # 域名必须被证书覆盖。TLS 在 portwayd 终止，客户端本地目标仍使用明文 HTTP。
-    domains:
-      - app.example.com
-      - "*.customer.example.com"
-
-  # Governed 客户端只有显式配置 forward_types 和对应规则后才获得 Forward 权限。
+  # Governed 客户端只有显式配置规则后才获得 Forward 权限。
   # 每条规则必须完整包含于 server.yaml 的某一条 forwards.rules，禁止跨全局规则
   # 拼接或自动裁剪。权限变化支持热加载，并吊销受影响 Governed Session 及其连接。
-  forward_types:
-    - tcp
-    - udp
   forwards:
     rules:
       - ip_range: 10.20.0.0/16
@@ -60,23 +49,8 @@ permissions:
           port_ranges:
             - start: 53
               end: 53
-
-  # 可选配额。缺省使用下列默认值；显式值必须大于 0 且不超过硬上限。
-  # 各类型代理上限不得超过 max_proxies。
-  limits:
-    # 默认 20，硬上限 128。
-    max_proxies: 20
-    # 默认 10，硬上限 128。
-    max_tcp_proxies: 10
-    # 默认 5，硬上限 128。
-    max_udp_proxies: 5
-    # 默认 10，硬上限 128。
-    max_http_proxies: 10
-    # Pending 与 Active Link 合计；默认 100，硬上限 512。
-    max_active_links: 100
-
-    # Forward 配额，与程序级 Link 总上限共同生效。
-    max_forwards: 5
-    max_tcp_forwards: 4
-    max_udp_forwards: 1
-    max_active_forward_links: 20
+    limits:
+      max_total: 5
+      max_tcp: 4
+      max_udp: 1
+      max_active_links: 20

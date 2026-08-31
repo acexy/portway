@@ -69,7 +69,7 @@ func (s *Service) runControlSession(
 	)
 
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
-		ClientID:        s.configuration.ClientID,
+		ClientID:        s.configuration.Authentication.ClientID,
 		ResumeSessionID: resumeSessionID,
 		Capabilities: []protocol.Capability{
 			protocol.CapabilityTCP,
@@ -109,11 +109,11 @@ func (s *Service) runControlSession(
 	}
 	if serverHello.ManagementMode == "" ||
 		serverHello.ManagementMode == protocol.ManagementModeShared {
-		if serverHello.ClientID != s.configuration.ClientID {
+		if serverHello.ClientID != s.configuration.Authentication.ClientID {
 			return "", false, fmt.Errorf(
 				"%w: server returned unexpected client ID: expected %q, got %q",
 				transport.ErrProtocol,
-				s.configuration.ClientID,
+				s.configuration.Authentication.ClientID,
 				serverHello.ClientID,
 			)
 		}
@@ -124,7 +124,7 @@ func (s *Service) runControlSession(
 				transport.ErrProtocol,
 			)
 		}
-		if serverHello.ClientID != s.configuration.ClientID {
+		if serverHello.ClientID != s.configuration.Authentication.ClientID {
 			return "", false, fmt.Errorf(
 				"%w: server returned a client ID that does not match the configured identity",
 				transport.ErrProtocol,

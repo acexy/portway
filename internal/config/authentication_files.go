@@ -37,18 +37,18 @@ func BuildAuthenticationSnapshot(configuration ServerConfig) (*authentication.Sn
 		records = append(records, authentication.Record{
 			Context: authentication.Context{
 				Mode:     authentication.ModeGoverned,
-				ClientID: client.ClientID,
+				ClientID: client.Authentication.ClientID,
 			},
-			Token: client.Token,
+			Token: client.Authentication.Token,
 		})
 	}
 	for _, client := range configuration.ManagedClients {
 		records = append(records, authentication.Record{
 			Context: authentication.Context{
 				Mode:     authentication.ModeManaged,
-				ClientID: client.ClientID,
+				ClientID: client.Authentication.ClientID,
 			},
-			Token: client.Token,
+			Token: client.Authentication.Token,
 		})
 	}
 	return authentication.NewSnapshot(records)
@@ -102,23 +102,29 @@ func loadGovernedClients(path string) (map[string]GovernedClientConfig, error) {
 	for _, file := range files {
 		client := GovernedClientConfig{
 			Permissions: GovernedPermissions{
-				Limits: DefaultPermissionLimits(),
+				Proxies: GovernedProxyPermissions{
+					Limits: DefaultProxyPermissionLimits(),
+				},
+				Forwards: GovernedForwardPermissions{
+					Limits: DefaultForwardPermissionLimits(),
+				},
 			},
 		}
 		if err := loadAuthenticationYAML(file, &client); err != nil {
 			return nil, err
 		}
 		applyGovernedPermissionDefaults(&client.Permissions)
-		if err := validateAuthenticationClientFile(file, client.ClientID, client.Token); err != nil {
+		clientID := client.Authentication.ClientID
+		if err := validateAuthenticationClientFile(file, clientID, client.Authentication.Token); err != nil {
 			return nil, err
 		}
 		if err := validateGovernedPermissions(client.Permissions); err != nil {
-			return nil, fmt.Errorf("validate governed client %q: %w", client.ClientID, err)
+			return nil, fmt.Errorf("validate governed client %q: %w", clientID, err)
 		}
-		if _, duplicate := clients[client.ClientID]; duplicate {
-			return nil, fmt.Errorf("client_id %q is duplicated", client.ClientID)
+		if _, duplicate := clients[clientID]; duplicate {
+			return nil, fmt.Errorf("client_id %q is duplicated", clientID)
 		}
-		clients[client.ClientID] = client
+		clients[clientID] = client
 	}
 	return clients, nil
 }
@@ -137,35 +143,36 @@ func loadManagedClients(path string) (map[string]ManagedClientConfig, error) {
 		if err := loadAuthenticationYAML(file, &client); err != nil {
 			return nil, err
 		}
-		if err := validateAuthenticationClientFile(file, client.ClientID, client.Token); err != nil {
+		clientID := client.Authentication.ClientID
+		if err := validateAuthenticationClientFile(file, clientID, client.Authentication.Token); err != nil {
 			return nil, err
 		}
 		if client.Configuration.Revision == 0 {
 			return nil, fmt.Errorf(
 				"validate managed client %q: configuration.revision must be greater than zero",
-				client.ClientID,
+				clientID,
 			)
 		}
 		if err := validateManagedConfiguration(client.Configuration); err != nil {
-			return nil, fmt.Errorf("validate managed client %q: %w", client.ClientID, err)
+			return nil, fmt.Errorf("validate managed client %q: %w", clientID, err)
 		}
 		if err := validateForwardRules(
 			"permissions.forwards.rules",
 			client.Permissions.Forwards.Rules,
 		); err != nil {
-			return nil, fmt.Errorf("validate managed client %q: %w", client.ClientID, err)
+			return nil, fmt.Errorf("validate managed client %q: %w", clientID, err)
 		}
 		if len(client.Configuration.Forwards) == 0 &&
 			len(client.Permissions.Forwards.Rules) != 0 {
 			return nil, fmt.Errorf(
 				"validate managed client %q: permissions.forwards.rules must be empty without configuration.forwards",
-				client.ClientID,
+				clientID,
 			)
 		}
-		if _, duplicate := clients[client.ClientID]; duplicate {
-			return nil, fmt.Errorf("client_id %q is duplicated", client.ClientID)
+		if _, duplicate := clients[clientID]; duplicate {
+			return nil, fmt.Errorf("client_id %q is duplicated", clientID)
 		}
-		clients[client.ClientID] = client
+		clients[clientID] = client
 	}
 	if err := validateManagedClientConflicts(clients); err != nil {
 		return nil, err
@@ -324,35 +331,35 @@ func validateManagedClientConflicts(clients map[string]ManagedClientConfig) erro
 			}
 			switch proxy.Type {
 			case protocol.ProxyTypeTCP:
-				if previous, exists := tcpPorts[proxy.RemotePort]; exists {
+				if previous, exists := tcpPorts[proxy.Public.Port]; exists {
 					return managedBindingConflict(
 						"TCP remote port",
-						fmt.Sprint(proxy.RemotePort),
+						fmt.Sprint(proxy.Public.Port),
 						previous,
 						owner,
 					)
 				}
-				tcpPorts[proxy.RemotePort] = owner
+				tcpPorts[proxy.Public.Port] = owner
 			case protocol.ProxyTypeUDP:
-				if previous, exists := udpPorts[proxy.RemotePort]; exists {
+				if previous, exists := udpPorts[proxy.Public.Port]; exists {
 					return managedBindingConflict(
 						"UDP remote port",
-						fmt.Sprint(proxy.RemotePort),
+						fmt.Sprint(proxy.Public.Port),
 						previous,
 						owner,
 					)
 				}
-				udpPorts[proxy.RemotePort] = owner
+				udpPorts[proxy.Public.Port] = owner
 			case protocol.ProxyTypeHTTP:
-				if previous, exists := httpDomains[proxy.Domain]; exists {
+				if previous, exists := httpDomains[proxy.Public.Domain]; exists {
 					return managedBindingConflict(
 						"HTTP domain",
-						proxy.Domain,
+						proxy.Public.Domain,
 						previous,
 						owner,
 					)
 				}
-				httpDomains[proxy.Domain] = owner
+				httpDomains[proxy.Public.Domain] = owner
 			}
 		}
 	}
@@ -377,213 +384,126 @@ func managedBindingConflict(
 }
 
 func validateGovernedPermissions(permissions GovernedPermissions) error {
-	types := make(map[protocol.ProxyType]struct{}, len(permissions.ProxyTypes))
-	for _, proxyType := range permissions.ProxyTypes {
-		switch proxyType {
-		case protocol.ProxyTypeTCP, protocol.ProxyTypeUDP, protocol.ProxyTypeHTTP:
-		default:
-			return fmt.Errorf("permissions.proxy_types contains unsupported type %q", proxyType)
+	proxies := permissions.Proxies
+	if proxies.TCP != nil {
+		if err := validatePortRanges(
+			"permissions.proxies.tcp.remote_port_ranges",
+			proxies.TCP.RemotePortRanges,
+		); err != nil {
+			return err
 		}
-		if _, duplicate := types[proxyType]; duplicate {
-			return fmt.Errorf("permissions.proxy_types contains duplicate type %q", proxyType)
+		if len(proxies.TCP.RemotePortRanges) == 0 {
+			return errors.New("permissions.proxies.tcp.remote_port_ranges must not be empty")
 		}
-		types[proxyType] = struct{}{}
 	}
-	if err := validatePortRanges("permissions.tcp.remote_port_ranges", permissions.TCP.RemotePortRanges); err != nil {
-		return err
-	}
-	if err := validatePortRanges("permissions.udp.remote_port_ranges", permissions.UDP.RemotePortRanges); err != nil {
-		return err
-	}
-	forwardTypes := make(map[protocol.ForwardType]struct{}, len(permissions.ForwardTypes))
-	for _, forwardType := range permissions.ForwardTypes {
-		switch forwardType {
-		case protocol.ForwardTypeTCP, protocol.ForwardTypeUDP:
-		default:
-			return fmt.Errorf("permissions.forward_types contains unsupported type %q", forwardType)
+	if proxies.UDP != nil {
+		if err := validatePortRanges(
+			"permissions.proxies.udp.remote_port_ranges",
+			proxies.UDP.RemotePortRanges,
+		); err != nil {
+			return err
 		}
-		if _, duplicate := forwardTypes[forwardType]; duplicate {
-			return fmt.Errorf("permissions.forward_types contains duplicate type %q", forwardType)
+		if len(proxies.UDP.RemotePortRanges) == 0 {
+			return errors.New("permissions.proxies.udp.remote_port_ranges must not be empty")
 		}
-		forwardTypes[forwardType] = struct{}{}
 	}
 	if err := validateForwardRules("permissions.forwards.rules", permissions.Forwards.Rules); err != nil {
 		return err
 	}
-	domains := make(map[string]struct{}, len(permissions.HTTP.Domains))
-	for index, domain := range permissions.HTTP.Domains {
+	if proxies.HTTP == nil {
+		return validateGovernedLimits(permissions)
+	}
+	if len(proxies.HTTP.Domains) == 0 {
+		return errors.New("permissions.proxies.http.domains must not be empty")
+	}
+	domains := make(map[string]struct{}, len(proxies.HTTP.Domains))
+	for index, domain := range proxies.HTTP.Domains {
 		if strings.HasPrefix(domain, "*.") {
 			if err := ValidateHTTPDomain(strings.TrimPrefix(domain, "*.")); err != nil {
-				return fmt.Errorf("permissions.http.domains[%d]: invalid wildcard domain", index)
+				return fmt.Errorf("permissions.proxies.http.domains[%d]: invalid wildcard domain", index)
 			}
 		} else if err := ValidateHTTPDomain(domain); err != nil {
-			return fmt.Errorf("permissions.http.domains[%d]: %w", index, err)
+			return fmt.Errorf("permissions.proxies.http.domains[%d]: %w", index, err)
 		}
 		if _, duplicate := domains[domain]; duplicate {
-			return fmt.Errorf("permissions.http.domains contains duplicate domain %q", domain)
+			return fmt.Errorf("permissions.proxies.http.domains contains duplicate domain %q", domain)
 		}
 		domains[domain] = struct{}{}
 	}
-	if len(permissions.HTTP.PublicSchemes) > 0 {
+	if len(proxies.HTTP.PublicSchemes) > 0 {
 		if err := validateHTTPPublicSchemes(
-			permissions.HTTP.PublicSchemes,
-			"permissions.http.public_schemes",
+			proxies.HTTP.PublicSchemes,
+			"permissions.proxies.http.public_schemes",
 		); err != nil {
 			return err
 		}
 	}
-	limits := permissions.Limits
+	return validateGovernedLimits(permissions)
+}
+
+func validateGovernedLimits(permissions GovernedPermissions) error {
+	proxyLimits := permissions.Proxies.Limits
 	for _, limit := range []struct {
 		name  string
 		value int
 		max   int
 	}{
-		{"max_proxies", limits.MaxProxies, hardMaxProxiesPerClient},
-		{"max_tcp_proxies", limits.MaxTCPProxies, hardMaxProxiesPerClient},
-		{"max_udp_proxies", limits.MaxUDPProxies, hardMaxProxiesPerClient},
-		{"max_http_proxies", limits.MaxHTTPProxies, hardMaxProxiesPerClient},
-		{"max_active_links", limits.MaxActiveLinks, hardMaxActiveLinksPerClient},
-		{"max_forwards", limits.MaxForwards, hardMaxProxiesPerClient},
-		{"max_tcp_forwards", limits.MaxTCPForwards, hardMaxProxiesPerClient},
-		{"max_udp_forwards", limits.MaxUDPForwards, hardMaxProxiesPerClient},
-		{"max_active_forward_links", limits.MaxActiveForwardLinks, hardMaxActiveLinksPerClient},
+		{"max_total", proxyLimits.MaxTotal, hardMaxProxiesPerClient},
+		{"max_tcp", proxyLimits.MaxTCP, hardMaxProxiesPerClient},
+		{"max_udp", proxyLimits.MaxUDP, hardMaxProxiesPerClient},
+		{"max_http", proxyLimits.MaxHTTP, hardMaxProxiesPerClient},
+		{"max_active_links", proxyLimits.MaxActiveLinks, hardMaxActiveLinksPerClient},
 	} {
 		if limit.value <= 0 || limit.value > limit.max {
 			return fmt.Errorf(
-				"permissions.limits.%s must be greater than zero and at most %d",
+				"permissions.proxies.limits.%s must be greater than zero and at most %d",
 				limit.name,
 				limit.max,
 			)
 		}
 	}
-	if limits.MaxTCPProxies > limits.MaxProxies ||
-		limits.MaxUDPProxies > limits.MaxProxies ||
-		limits.MaxHTTPProxies > limits.MaxProxies {
-		return errors.New(
-			"permissions per-type proxy limits must not exceed max_proxies",
-		)
+	if proxyLimits.MaxTCP > proxyLimits.MaxTotal || proxyLimits.MaxUDP > proxyLimits.MaxTotal ||
+		proxyLimits.MaxHTTP > proxyLimits.MaxTotal {
+		return errors.New("permissions.proxies per-type limits must not exceed max_total")
 	}
-	if limits.MaxTCPForwards > limits.MaxForwards ||
-		limits.MaxUDPForwards > limits.MaxForwards {
-		return errors.New(
-			"permissions per-type forward limits must not exceed max_forwards",
-		)
-	}
-	if err := validateGovernedRulePresence(
-		protocol.ProxyTypeTCP,
-		types,
-		len(permissions.TCP.RemotePortRanges),
-		"permissions.tcp.remote_port_ranges",
-	); err != nil {
-		return err
-	}
-	if err := validateGovernedRulePresence(
-		protocol.ProxyTypeUDP,
-		types,
-		len(permissions.UDP.RemotePortRanges),
-		"permissions.udp.remote_port_ranges",
-	); err != nil {
-		return err
-	}
-	if err := validateGovernedRulePresence(
-		protocol.ProxyTypeHTTP,
-		types,
-		len(permissions.HTTP.Domains),
-		"permissions.http.domains",
-	); err != nil {
-		return err
-	}
-	if _, httpAllowed := types[protocol.ProxyTypeHTTP]; !httpAllowed &&
-		len(permissions.HTTP.PublicSchemes) != 0 {
-		return errors.New(
-			"permissions.http.public_schemes must be empty when http is not allowed",
-		)
-	}
-	tcpForwardRules := 0
-	udpForwardRules := 0
-	for _, rule := range permissions.Forwards.Rules {
-		if len(rule.TCP.PortRanges) != 0 {
-			tcpForwardRules++
-		}
-		if len(rule.UDP.PortRanges) != 0 {
-			udpForwardRules++
+	forwardLimits := permissions.Forwards.Limits
+	for _, limit := range []struct {
+		name  string
+		value int
+		max   int
+	}{
+		{"max_total", forwardLimits.MaxTotal, hardMaxProxiesPerClient},
+		{"max_tcp", forwardLimits.MaxTCP, hardMaxProxiesPerClient},
+		{"max_udp", forwardLimits.MaxUDP, hardMaxProxiesPerClient},
+		{"max_active_links", forwardLimits.MaxActiveLinks, hardMaxActiveLinksPerClient},
+	} {
+		if limit.value <= 0 || limit.value > limit.max {
+			return fmt.Errorf(
+				"permissions.forwards.limits.%s must be greater than zero and at most %d",
+				limit.name,
+				limit.max,
+			)
 		}
 	}
-	if err := validateGovernedForwardRulePresence(
-		protocol.ForwardTypeTCP,
-		forwardTypes,
-		tcpForwardRules,
-	); err != nil {
-		return err
-	}
-	if err := validateGovernedForwardRulePresence(
-		protocol.ForwardTypeUDP,
-		forwardTypes,
-		udpForwardRules,
-	); err != nil {
-		return err
+	if forwardLimits.MaxTCP > forwardLimits.MaxTotal || forwardLimits.MaxUDP > forwardLimits.MaxTotal {
+		return errors.New("permissions.forwards per-type limits must not exceed max_total")
 	}
 	return nil
 }
 
 func applyGovernedPermissionDefaults(permissions *GovernedPermissions) {
-	if len(permissions.HTTP.PublicSchemes) != 0 {
+	if permissions.Proxies.HTTP == nil || len(permissions.Proxies.HTTP.PublicSchemes) != 0 {
 		return
 	}
-	for _, proxyType := range permissions.ProxyTypes {
-		if proxyType == protocol.ProxyTypeHTTP {
-			permissions.HTTP.PublicSchemes = []protocol.HTTPPublicScheme{
-				protocol.HTTPPublicSchemeHTTP,
-			}
-			return
-		}
+	permissions.Proxies.HTTP.PublicSchemes = []protocol.HTTPPublicScheme{
+		protocol.HTTPPublicSchemeHTTP,
 	}
-}
-
-func validateGovernedRulePresence(
-	proxyType protocol.ProxyType,
-	allowedTypes map[protocol.ProxyType]struct{},
-	ruleCount int,
-	field string,
-) error {
-	_, allowed := allowedTypes[proxyType]
-	if allowed && ruleCount == 0 {
-		return fmt.Errorf("%s must not be empty when %s is allowed", field, proxyType)
-	}
-	if !allowed && ruleCount != 0 {
-		return fmt.Errorf("%s must be empty when %s is not allowed", field, proxyType)
-	}
-	return nil
-}
-
-func validateGovernedForwardRulePresence(
-	forwardType protocol.ForwardType,
-	allowedTypes map[protocol.ForwardType]struct{},
-	ruleCount int,
-) error {
-	_, allowed := allowedTypes[forwardType]
-	if allowed && ruleCount == 0 {
-		return fmt.Errorf(
-			"permissions.forwards.rules must contain %s ports when %s is allowed",
-			forwardType,
-			forwardType,
-		)
-	}
-	if !allowed && ruleCount != 0 {
-		return fmt.Errorf(
-			"permissions.forwards.rules must not contain %s ports when %s is not allowed",
-			forwardType,
-			forwardType,
-		)
-	}
-	return nil
 }
 
 func validateForwardConfiguration(configuration ServerConfig) error {
 	for clientID, client := range configuration.GovernedClients {
 		if !configuration.Forwards.Enabled &&
-			(len(client.Permissions.ForwardTypes) != 0 ||
-				len(client.Permissions.Forwards.Rules) != 0) {
+			len(client.Permissions.Forwards.Rules) != 0 {
 			return fmt.Errorf(
 				"governed client %q configures Forward while forwards.enabled is false",
 				clientID,
@@ -619,8 +539,8 @@ func validateForwardConfiguration(configuration ServerConfig) error {
 			if !ForwardTargetAllowed(
 				effectiveRules,
 				forward.Type,
-				forward.TargetIP,
-				forward.TargetPort,
+				forward.Target.IP,
+				forward.Target.Port,
 			) {
 				return fmt.Errorf(
 					"managed client %q configuration.forwards[%d] target is not allowed",

@@ -77,8 +77,8 @@ func (s *Service) Run(ctx context.Context) error {
 	s.logger.InfoWithFields("server started", map[string]any{
 		"event":                "server_started",
 		"listen_address":       configuration.Transport.ListenAddress,
-		"http_listen_address":  configuration.Tunnel.HTTPListenAddress,
-		"https_listen_address": configuration.Tunnel.HTTPSListenAddress,
+		"http_listen_address":  configuration.Proxies.HTTP.ListenAddress,
+		"https_listen_address": configuration.Proxies.HTTPS.ListenAddress,
 	})
 	defer s.logger.Info("server stopped")
 
@@ -121,12 +121,12 @@ func (s *Service) Run(ctx context.Context) error {
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,
 		s.logger.WithComponent("proxy_registry"),
-		configuration.Tunnel.BindIP,
+		configuration.Proxies.BindIP,
 		s.linkBroker,
-		configuration.Tunnel.HTTPListenAddress != "",
-		configuration.Tunnel.HTTPSListenAddress != "",
-		configuration.HTTP,
-		configuration.UDP,
+		configuration.Proxies.HTTP.ListenAddress != "",
+		configuration.Proxies.HTTPS.ListenAddress != "",
+		configuration.Proxies.HTTP.HTTPConfig,
+		configuration.Proxies.UDP,
 		sourceFilter,
 	)
 	if err := s.proxyRegistry.ConfigureManagedReservations(
@@ -137,16 +137,16 @@ func (s *Service) Run(ctx context.Context) error {
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
 	listenerErrors := make(chan error, 3)
-	if configuration.Tunnel.HTTPListenAddress != "" {
+	if configuration.Proxies.HTTP.ListenAddress != "" {
 		httpListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
 			"tcp",
-			configuration.Tunnel.HTTPListenAddress,
+			configuration.Proxies.HTTP.ListenAddress,
 		)
 		if listenError != nil {
 			return fmt.Errorf(
 				"listen for HTTP proxy requests on %q: %w",
-				configuration.Tunnel.HTTPListenAddress,
+				configuration.Proxies.HTTP.ListenAddress,
 				listenError,
 			)
 		}
@@ -157,7 +157,7 @@ func (s *Service) Run(ctx context.Context) error {
 			"public HTTP listener started",
 			map[string]any{
 				"event":          "http_listener_started",
-				"listen_address": configuration.Tunnel.HTTPListenAddress,
+				"listen_address": configuration.Proxies.HTTP.ListenAddress,
 			},
 		)
 		httpProtocols := new(http.Protocols)
@@ -170,9 +170,9 @@ func (s *Service) Run(ctx context.Context) error {
 				s.proxyRegistry,
 				"http_header",
 			),
-			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
-			IdleTimeout:       configuration.HTTP.PublicIdleTimeout,
-			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
+			ReadHeaderTimeout: configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout,
+			IdleTimeout:       configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout,
+			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
 			Protocols:         httpProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
 		}
@@ -186,16 +186,16 @@ func (s *Service) Run(ctx context.Context) error {
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
-				configuration.HTTP.GracefulShutdownTimeout,
+				configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout,
 			)
 			defer cancel()
 			_ = httpServer.Shutdown(shutdownContext)
 		}()
 	}
-	if configuration.Tunnel.HTTPSListenAddress != "" {
+	if configuration.Proxies.HTTPS.ListenAddress != "" {
 		s.httpsCertificates, err = newHTTPSCertificateManager(
 			s.logger.WithComponent("https_certificate"),
-			configuration.HTTPS,
+			configuration.Proxies.HTTPS,
 		)
 		if err != nil {
 			return fmt.Errorf("initialize HTTPS certificate: %w", err)
@@ -203,12 +203,12 @@ func (s *Service) Run(ctx context.Context) error {
 		httpsListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
 			"tcp",
-			configuration.Tunnel.HTTPSListenAddress,
+			configuration.Proxies.HTTPS.ListenAddress,
 		)
 		if listenError != nil {
 			return fmt.Errorf(
 				"listen for HTTPS proxy requests on %q: %w",
-				configuration.Tunnel.HTTPSListenAddress,
+				configuration.Proxies.HTTPS.ListenAddress,
 				listenError,
 			)
 		}
@@ -223,7 +223,7 @@ func (s *Service) Run(ctx context.Context) error {
 			"public HTTPS listener started",
 			map[string]any{
 				"event":          "https_listener_started",
-				"listen_address": configuration.Tunnel.HTTPSListenAddress,
+				"listen_address": configuration.Proxies.HTTPS.ListenAddress,
 			},
 		)
 		tlsConfiguration := &tls.Config{
@@ -241,9 +241,9 @@ func (s *Service) Run(ctx context.Context) error {
 				s.proxyRegistry,
 				"https_header",
 			),
-			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
-			IdleTimeout:       configuration.HTTP.PublicIdleTimeout,
-			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
+			ReadHeaderTimeout: configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout,
+			IdleTimeout:       configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout,
+			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
 			Protocols:         httpsProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
 			TLSConfig:         tlsConfiguration,
@@ -258,7 +258,7 @@ func (s *Service) Run(ctx context.Context) error {
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
-				configuration.HTTP.GracefulShutdownTimeout,
+				configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout,
 			)
 			defer cancel()
 			_ = httpsServer.Shutdown(shutdownContext)

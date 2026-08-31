@@ -31,13 +31,13 @@ func TestTCPForwardEndToEnd(t *testing.T) {
 	serverConfiguration.Authentication.SharedToken = &token
 	serverConfiguration.Forwards = loopbackForwardPolicy()
 	clientConfiguration := config.DefaultClient()
-	clientConfiguration.ClientID = "tcp-forward-client"
+	clientConfiguration.Authentication.ClientID = "tcp-forward-client"
 	clientConfiguration.Transport.ServerAddress = serverAddress.String()
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Forwards = []config.ForwardConfig{{
 		Name: "server-echo", Type: protocol.ForwardTypeTCP,
-		ListenIP: "127.0.0.1", ListenPort: uint16(listenAddress.Port),
-		TargetIP: "127.0.0.1", TargetPort: uint16(target.Addr().(*net.TCPAddr).Port),
+		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(listenAddress.Port)},
+		Target: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(target.Addr().(*net.TCPAddr).Port)},
 	}}
 
 	cancelServer, serverErrors, cancelClient, clientErrors := runForwardServices(
@@ -77,13 +77,13 @@ func TestUDPForwardEndToEnd(t *testing.T) {
 	serverConfiguration.Authentication.SharedToken = &token
 	serverConfiguration.Forwards = loopbackForwardPolicy()
 	clientConfiguration := config.DefaultClient()
-	clientConfiguration.ClientID = "udp-forward-client"
+	clientConfiguration.Authentication.ClientID = "udp-forward-client"
 	clientConfiguration.Transport.ServerAddress = serverAddress.String()
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Forwards = []config.ForwardConfig{{
 		Name: "server-dns", Type: protocol.ForwardTypeUDP,
-		ListenIP: "127.0.0.1", ListenPort: uint16(listenAddress.Port),
-		TargetIP: "127.0.0.1", TargetPort: uint16(target.LocalAddr().(*net.UDPAddr).Port),
+		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(listenAddress.Port)},
+		Target: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(target.LocalAddr().(*net.UDPAddr).Port)},
 	}}
 
 	cancelServer, serverErrors, cancelClient, clientErrors := runForwardServices(
@@ -137,34 +137,40 @@ func runRestrictedTCPForwardEndToEnd(t *testing.T, mode protocol.ManagementMode)
 	token := "restricted-forward-token-with-at-least-32-bytes"
 	forward := config.ForwardConfig{
 		Name: "restricted-echo", Type: protocol.ForwardTypeTCP,
-		ListenIP: "127.0.0.1", ListenPort: uint16(listenAddress.Port),
-		TargetIP: "127.0.0.1", TargetPort: uint16(target.Addr().(*net.TCPAddr).Port),
+		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(listenAddress.Port)},
+		Target: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(target.Addr().(*net.TCPAddr).Port)},
 	}
 	serverConfiguration := config.DefaultServer()
 	serverConfiguration.Transport.ListenAddress = serverAddress.String()
 	serverConfiguration.Authentication.SharedToken = nil
 	serverConfiguration.Forwards = loopbackForwardPolicy()
 	clientConfiguration := config.DefaultClient()
-	clientConfiguration.ClientID = "restricted-forward-client"
+	clientConfiguration.Authentication.ClientID = "restricted-forward-client"
 	clientConfiguration.Transport.ServerAddress = serverAddress.String()
 	clientConfiguration.Authentication.Token = token
 	if mode == protocol.ManagementModeGoverned {
 		serverConfiguration.GovernedClients = map[string]config.GovernedClientConfig{
-			clientConfiguration.ClientID: {
-				ClientID: clientConfiguration.ClientID, Token: token,
+			clientConfiguration.Authentication.ClientID: {
+				Authentication: config.ClientAuthenticationConfig{
+					ClientID: clientConfiguration.Authentication.ClientID, Token: token,
+				},
 				Permissions: config.GovernedPermissions{
-					ForwardTypes: []protocol.ForwardType{protocol.ForwardTypeTCP},
-					Forwards:     config.ForwardPermissions{Rules: loopbackForwardPolicy().Rules},
-					Limits:       config.DefaultPermissionLimits(),
+					Proxies: config.GovernedProxyPermissions{Limits: config.DefaultProxyPermissionLimits()},
+					Forwards: config.GovernedForwardPermissions{
+						Rules: loopbackForwardPolicy().Rules,
+						Limits: config.DefaultForwardPermissionLimits(),
+					},
 				},
 			},
 		}
 		clientConfiguration.Forwards = []config.ForwardConfig{forward}
 	} else {
 		serverConfiguration.ManagedClients = map[string]config.ManagedClientConfig{
-			clientConfiguration.ClientID: {
-				ClientID: clientConfiguration.ClientID, Token: token,
-				Permissions:   config.ManagedPermissions{Forwards: config.ForwardPermissions{Rules: loopbackForwardPolicy().Rules}},
+			clientConfiguration.Authentication.ClientID: {
+				Authentication: config.ClientAuthenticationConfig{
+					ClientID: clientConfiguration.Authentication.ClientID, Token: token,
+				},
+				Permissions:   config.ManagedPermissions{Forwards: config.ForwardRules{Rules: loopbackForwardPolicy().Rules}},
 				Configuration: config.ManagedConfiguration{Revision: 1, Proxies: []config.ProxyConfig{}, Forwards: []config.ForwardConfig{forward}},
 			},
 		}

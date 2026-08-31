@@ -6,13 +6,13 @@ import (
 )
 
 func TestEnsureClientIDKeepsConfiguredValue(t *testing.T) {
-	configuration := ClientConfig{ClientID: "home-server"}
+	configuration := ClientConfig{Authentication: ClientAuthenticationConfig{ClientID: "home-server"}}
 
 	clientID, generated, err := EnsureClientID(&configuration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if generated || clientID != "home-server" || configuration.ClientID != clientID {
+	if generated || clientID != "home-server" || configuration.Authentication.ClientID != clientID {
 		t.Fatalf(
 			"unexpected configured client ID result: id=%q generated=%t",
 			clientID,

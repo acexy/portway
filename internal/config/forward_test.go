@@ -24,12 +24,10 @@ func TestValidateClientForwardConfiguration(t *testing.T) {
 	configuration := DefaultClient()
 	configuration.Authentication.Token = "client-forward-token-with-more-than-thirty-two-characters"
 	configuration.Forwards = []ForwardConfig{{
-		Name:       "database",
-		Type:       protocol.ForwardTypeTCP,
-		ListenIP:   "127.0.0.1",
-		ListenPort: 15432,
-		TargetIP:   "10.20.1.15",
-		TargetPort: 5432,
+		Name:   "database",
+		Type:   protocol.ForwardTypeTCP,
+		Listen: EndpointConfig{IP: "127.0.0.1", Port: 15432},
+		Target: EndpointConfig{IP: "10.20.1.15", Port: 5432},
 	}}
 	if err := validateClient(configuration); err != nil {
 		t.Fatalf("validate client Forward: %v", err)
@@ -37,7 +35,8 @@ func TestValidateClientForwardConfiguration(t *testing.T) {
 
 	configuration.Proxies = []ProxyConfig{{
 		Name: "database", Type: protocol.ProxyTypeTCP,
-		LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 22022,
+		Local: EndpointConfig{IP: "127.0.0.1", Port: 22},
+		Public: ProxyPublicConfig{Port: 22022},
 	}}
 	if err := validateClient(configuration); err == nil ||
 		!strings.Contains(err.Error(), "duplicates a proxy name") {
@@ -87,11 +86,10 @@ func TestLoadServerValidatesForwardRulesAcrossAuthenticationModes(t *testing.T) 
 		t.Fatal(err)
 	}
 	writeTestConfiguration(t, filepath.Join(governedDirectory, "client.yaml"), `
-client_id: governed-client
-token: governed-forward-token-with-more-than-thirty-two-characters
+authentication:
+  client_id: governed-client
+  token: governed-forward-token-with-more-than-thirty-two-characters
 permissions:
-  proxy_types: []
-  forward_types: [tcp]
   forwards:
     rules:
       - ip_range: 10.20.0.0/16
@@ -101,8 +99,9 @@ permissions:
               end: 5432
 `)
 	writeTestConfiguration(t, filepath.Join(managedDirectory, "client.yaml"), `
-client_id: managed-client
-token: managed-forward-token-with-more-than-thirty-two-characters
+authentication:
+  client_id: managed-client
+  token: managed-forward-token-with-more-than-thirty-two-characters
 permissions:
   forwards:
     rules:
@@ -117,10 +116,12 @@ configuration:
   forwards:
     - name: dns
       type: udp
-      listen_ip: 127.0.0.1
-      listen_port: 1053
-      target_ip: 10.30.0.53
-      target_port: 53
+      listen:
+        ip: 127.0.0.1
+        port: 1053
+      target:
+        ip: 10.30.0.53
+        port: 53
 `)
 	serverPath := filepath.Join(directory, "server.yaml")
 	writeTestConfiguration(t, serverPath, `
@@ -156,11 +157,10 @@ func TestLoadServerRejectsForwardPermissionOutsideGlobalRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestConfiguration(t, filepath.Join(governedDirectory, "client.yaml"), `
-client_id: governed-client
-token: governed-forward-token-with-more-than-thirty-two-characters
+authentication:
+  client_id: governed-client
+  token: governed-forward-token-with-more-than-thirty-two-characters
 permissions:
-  proxy_types: []
-  forward_types: [tcp]
   forwards:
     rules:
       - ip_range: 10.20.0.0/16
@@ -195,18 +195,21 @@ func TestLoadServerRejectsManagedForwardOutsideEffectiveRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestConfiguration(t, filepath.Join(managedDirectory, "client.yaml"), `
-client_id: managed-client
-token: managed-forward-token-with-more-than-thirty-two-characters
+authentication:
+  client_id: managed-client
+  token: managed-forward-token-with-more-than-thirty-two-characters
 configuration:
   revision: 1
   proxies: []
   forwards:
     - name: database
       type: tcp
-      listen_ip: 127.0.0.1
-      listen_port: 15432
-      target_ip: 10.20.1.15
-      target_port: 5432
+      listen:
+        ip: 127.0.0.1
+        port: 15432
+      target:
+        ip: 10.20.1.15
+        port: 5432
 `)
 	serverPath := filepath.Join(directory, "server.yaml")
 	writeTestConfiguration(t, serverPath, `

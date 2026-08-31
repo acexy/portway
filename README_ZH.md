@@ -65,9 +65,8 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local: {ip: 127.0.0.1, port: 22}
+    public: {port: 22022}
 ```
 
 在两端使用相同的 Token。Token 必须包含大于 32 个 UTF-8 字符，并强烈建议使用
@@ -87,18 +86,18 @@ portway run --config client.yaml
 ## HTTP 与 HTTPS 代理
 
 在服务端按需启用 HTTP、HTTPS 或两个公网 Listener；
-`https_listen_address` 为空时禁用 HTTPS：
+`proxies.https.listen_address` 为空时禁用 HTTPS：
 
 ```yaml
-tunnel:
-  http_listen_address: 127.0.0.1:8080
-  https_listen_address: 127.0.0.1:8443
-
-https:
-  certificates:
-    - domains: [app.example.com]
-      cert_file: /path/to/https-server.crt
-      key_file: /path/to/https-server.key
+proxies:
+  http:
+    listen_address: 127.0.0.1:8080
+  https:
+    listen_address: 127.0.0.1:8443
+    certificates:
+      - domains: [app.example.com]
+        cert_file: /path/to/https-server.crt
+        key_file: /path/to/https-server.key
 ```
 
 在客户端注册一个域名：
@@ -107,17 +106,15 @@ https:
 proxies:
   - name: web
     type: http
-    public_schemes:
-      - https
-      - http
-    domain: app.example.com
-    local_ip: 127.0.0.1
-    local_port: 8080
+    local: {ip: 127.0.0.1, port: 8080}
+    public:
+      schemes: [https, http]
+      domain: app.example.com
 ```
 
-`type` 表示 `portwayd` 与 `portway` 之间的代理语义，`public_schemes` 显式选择
+`type` 表示 `portwayd` 与 `portway` 之间的代理语义，`public.schemes` 显式选择
 公网 HTTP/HTTPS Listener；任一所选 Listener 未启用都会拒绝整批注册。
-省略或留空 `public_schemes` 时默认仅使用 HTTP 入口。
+省略或留空 `public.schemes` 时默认仅使用 HTTP 入口。
 公共 `Host` 会被匹配到已认证的客户端注册信息。`portwayd` 终止公网 HTTPS，
 随后通过认证隧道固定回源 HTTP，因此本地应用只接收普通 HTTP 请求。Visitor
 提供的 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 和
@@ -136,9 +133,8 @@ proxies:
 proxies:
   - name: dns
     type: udp
-    local_ip: 127.0.0.1
-    local_port: 53
-    remote_port: 5353
+    local: {ip: 127.0.0.1, port: 53}
+    public: {port: 5353}
 ```
 
 Portway 保留数据报边界，并为每个公网访问者关联提供独立的认证数据链路。

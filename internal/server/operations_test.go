@@ -26,8 +26,8 @@ func TestOperationsEndpointsReportLifecycleAndLowCardinalityMetrics(t *testing.T
 		service.linkBroker,
 		false,
 		false,
-		configuration.HTTP,
-		configuration.UDP,
+		configuration.Proxies.HTTP.HTTPConfig,
+		configuration.Proxies.UDP,
 	)
 	defer service.proxyRegistry.Close()
 	service.ready.Store(true)

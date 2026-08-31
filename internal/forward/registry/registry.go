@@ -13,10 +13,10 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/control"
+	forwardtcp "github.com/acexy/portway/internal/forward/tcp"
+	forwardudp "github.com/acexy/portway/internal/forward/udp"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
-	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
-	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 )
 
 const forwardTargetDialTimeout = 5 * time.Second
@@ -177,36 +177,20 @@ func (registry *Registry) Offer(
 }
 
 func (registry *Registry) handlerFactory(current binding) link.StreamHandlerFactory {
-	return func(ctx context.Context) (link.StreamHandler, error) {
-		if !registry.authorizer(current.authentication, current.declaration) {
-			return nil, errors.New("Forward target is no longer allowed")
-		}
-		address := net.JoinHostPort(
-			current.declaration.TargetIP,
-			fmt.Sprint(current.declaration.TargetPort),
-		)
-		switch current.declaration.Type {
-		case protocol.ForwardTypeTCP:
-			dialContext, cancel := context.WithTimeout(ctx, forwardTargetDialTimeout)
-			defer cancel()
-			target, err := (&net.Dialer{}).DialContext(dialContext, "tcp", address)
-			if err != nil {
-				return nil, err
-			}
-			return func(linkContext context.Context, _ string, stream net.Conn) error {
-				defer target.Close()
-				_, forwardError := proxytcp.Forward(linkContext, stream, target)
-				return forwardError
-			}, nil
-		case protocol.ForwardTypeUDP:
-			target, err := net.Dial("udp", address)
-			if err != nil {
-				return nil, err
-			}
-			return func(linkContext context.Context, _ string, stream net.Conn) error {
-				return proxyudp.Forward(linkContext, stream, target, 8192, 3*time.Second)
-			}, nil
-		default:
+	authorize := func() bool {
+		return registry.authorizer(current.authentication, current.declaration)
+	}
+	address := net.JoinHostPort(
+		current.declaration.TargetIP,
+		fmt.Sprint(current.declaration.TargetPort),
+	)
+	switch current.declaration.Type {
+	case protocol.ForwardTypeTCP:
+		return forwardtcp.TargetHandlerFactory(address, forwardTargetDialTimeout, authorize)
+	case protocol.ForwardTypeUDP:
+		return forwardudp.TargetHandlerFactory(address, 8192, 3*time.Second, authorize)
+	default:
+		return func(context.Context) (link.StreamHandler, error) {
 			return nil, errors.New("unsupported Forward type")
 		}
 	}

@@ -102,13 +102,13 @@ func managedConfigurationPayload(
 		return protocol.ManagedProxy{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
-			LocalIP:    proxyConfiguration.LocalIP,
-			LocalPort:  proxyConfiguration.LocalPort,
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			LocalIP:    proxyConfiguration.Local.IP,
+			LocalPort:  proxyConfiguration.Local.Port,
+			RemotePort: proxyConfiguration.Public.Port,
+			Domain:     proxyConfiguration.Public.Domain,
 			PublicSchemes: append(
 				[]protocol.HTTPPublicScheme(nil),
-				proxyConfiguration.PublicSchemes...,
+				proxyConfiguration.Public.Schemes...,
 			),
 		}
 	})
@@ -116,21 +116,24 @@ func managedConfigurationPayload(
 		return protocol.ProxyDeclaration{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			RemotePort: proxyConfiguration.Public.Port,
+			Domain:     proxyConfiguration.Public.Domain,
 			PublicSchemes: append(
 				[]protocol.HTTPPublicScheme(nil),
-				proxyConfiguration.PublicSchemes...,
+				proxyConfiguration.Public.Schemes...,
 			),
 		}
 	})
 	managedForwards := coll.SliceCollect(clientConfiguration.Configuration.Forwards, func(forward config.ForwardConfig) protocol.ManagedForward {
-		return protocol.ManagedForward{Name: forward.Name, Type: forward.Type, ListenIP: forward.ListenIP,
-			ListenPort: forward.ListenPort, TargetIP: forward.TargetIP, TargetPort: forward.TargetPort}
+		return protocol.ManagedForward{
+			Name: forward.Name, Type: forward.Type,
+			ListenIP: forward.Listen.IP, ListenPort: forward.Listen.Port,
+			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port,
+		}
 	})
 	forwardDeclarations := coll.SliceCollect(clientConfiguration.Configuration.Forwards, func(forward config.ForwardConfig) protocol.ForwardDeclaration {
 		return protocol.ForwardDeclaration{Name: forward.Name, Type: forward.Type,
-			TargetIP: forward.TargetIP, TargetPort: forward.TargetPort}
+			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port}
 	})
 	if managedProxies == nil {
 		managedProxies = []protocol.ManagedProxy{}

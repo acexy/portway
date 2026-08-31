@@ -122,16 +122,13 @@ func validateManagedPreparation(
 	}
 	proxies := coll.SliceCollect(preparation.Proxies, func(managedProxy protocol.ManagedProxy) config.ProxyConfig {
 		return config.ProxyConfig{
-			Name:       managedProxy.Name,
-			Type:       managedProxy.Type,
-			LocalIP:    managedProxy.LocalIP,
-			LocalPort:  managedProxy.LocalPort,
-			RemotePort: managedProxy.RemotePort,
-			Domain:     managedProxy.Domain,
-			PublicSchemes: append(
-				[]protocol.HTTPPublicScheme(nil),
-				managedProxy.PublicSchemes...,
-			),
+			Name:  managedProxy.Name,
+			Type:  managedProxy.Type,
+			Local: config.EndpointConfig{IP: managedProxy.LocalIP, Port: managedProxy.LocalPort},
+			Public: config.ProxyPublicConfig{
+				Port: managedProxy.RemotePort, Domain: managedProxy.Domain,
+				Schemes: append([]protocol.HTTPPublicScheme(nil), managedProxy.PublicSchemes...),
+			},
 		}
 	})
 	if proxies == nil {
@@ -153,8 +150,11 @@ func validateManagedPreparation(
 
 func managedForwardConfigurations(forwards []protocol.ManagedForward) ([]config.ForwardConfig, error) {
 	configurations := coll.SliceCollect(forwards, func(forward protocol.ManagedForward) config.ForwardConfig {
-		return config.ForwardConfig{Name: forward.Name, Type: forward.Type, ListenIP: forward.ListenIP,
-			ListenPort: forward.ListenPort, TargetIP: forward.TargetIP, TargetPort: forward.TargetPort}
+		return config.ForwardConfig{
+			Name: forward.Name, Type: forward.Type,
+			Listen: config.EndpointConfig{IP: forward.ListenIP, Port: forward.ListenPort},
+			Target: config.EndpointConfig{IP: forward.TargetIP, Port: forward.TargetPort},
+		}
 	})
 	if configurations == nil {
 		configurations = []config.ForwardConfig{}

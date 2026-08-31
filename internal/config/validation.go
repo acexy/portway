@@ -16,8 +16,8 @@ func validateClient(configuration ClientConfig) error {
 	if err := validateLogLevel(configuration.LogLevel); err != nil {
 		return err
 	}
-	if configuration.ClientID != "" {
-		if err := ValidateClientID(configuration.ClientID); err != nil {
+	if configuration.Authentication.ClientID != "" {
+		if err := ValidateClientID(configuration.Authentication.ClientID); err != nil {
 			return err
 		}
 	}
@@ -65,8 +65,8 @@ func validateServer(configuration ServerConfig) error {
 		address string
 	}{
 		{"transport.listen_address", configuration.Transport.ListenAddress},
-		{"tunnel.http_listen_address", configuration.Tunnel.HTTPListenAddress},
-		{"tunnel.https_listen_address", configuration.Tunnel.HTTPSListenAddress},
+		{"proxies.http.listen_address", configuration.Proxies.HTTP.ListenAddress},
+		{"proxies.https.listen_address", configuration.Proxies.HTTPS.ListenAddress},
 		{"operations.listen_address", configuration.Operations.ListenAddress},
 	}
 	for index, listener := range listenerAddresses {
@@ -79,19 +79,19 @@ func validateServer(configuration ServerConfig) error {
 			}
 		}
 	}
-	if err := ValidateHTTPSConfig(configuration.HTTPS); err != nil {
+	if err := ValidateHTTPSConfig(configuration.Proxies.HTTPS); err != nil {
 		return err
 	}
-	if configuration.Tunnel.HTTPSListenAddress != "" &&
-		len(configuration.HTTPS.Certificates) == 0 {
+	if configuration.Proxies.HTTPS.ListenAddress != "" &&
+		len(configuration.Proxies.HTTPS.Certificates) == 0 {
 		return errors.New(
-			"https.certificates is required when tunnel.https_listen_address is configured",
+			"proxies.https.certificates is required when proxies.https.listen_address is configured",
 		)
 	}
-	if err := validateHTTPConfig(configuration.HTTP); err != nil {
+	if err := validateHTTPConfig(configuration.Proxies.HTTP.HTTPConfig); err != nil {
 		return err
 	}
-	if err := validateUDPConfig(configuration.UDP); err != nil {
+	if err := validateUDPConfig(configuration.Proxies.UDP); err != nil {
 		return err
 	}
 	if err := validateForwardServerConfig(configuration.Forwards); err != nil {
@@ -116,18 +116,18 @@ func validateServer(configuration ServerConfig) error {
 				"security.http_client_ip_header must be a valid HTTP header name",
 			)
 		}
-		if configuration.Tunnel.HTTPListenAddress == "" &&
-			configuration.Tunnel.HTTPSListenAddress == "" {
+		if configuration.Proxies.HTTP.ListenAddress == "" &&
+			configuration.Proxies.HTTPS.ListenAddress == "" {
 			return errors.New(
 				"security.http_client_ip_header requires an HTTP or HTTPS listener",
 			)
 		}
 	}
-	if configuration.Tunnel.BindIP == "" {
-		return errors.New("tunnel.bind_ip is required")
+	if configuration.Proxies.BindIP == "" {
+		return errors.New("proxies.bind_ip is required")
 	}
-	if net.ParseIP(configuration.Tunnel.BindIP) == nil {
-		return errors.New("tunnel.bind_ip must be an IP address")
+	if net.ParseIP(configuration.Proxies.BindIP) == nil {
+		return errors.New("proxies.bind_ip must be an IP address")
 	}
 	return validateServerAuthentication(configuration.Authentication)
 }
@@ -233,7 +233,10 @@ func validateManagedConfiguration(configuration ManagedConfiguration) error {
 
 func validateConfiguredPublicSchemeAvailability(configuration ServerConfig) error {
 	for clientID, client := range configuration.GovernedClients {
-		for _, scheme := range client.Permissions.HTTP.PublicSchemes {
+		if client.Permissions.Proxies.HTTP == nil {
+			continue
+		}
+		for _, scheme := range client.Permissions.Proxies.HTTP.PublicSchemes {
 			if err := validatePublicSchemeListener(
 				configuration,
 				scheme,
@@ -248,7 +251,7 @@ func validateConfiguredPublicSchemeAvailability(configuration ServerConfig) erro
 			if proxy.Type != protocol.ProxyTypeHTTP {
 				continue
 			}
-			for _, scheme := range proxy.PublicSchemes {
+			for _, scheme := range proxy.Public.Schemes {
 				if err := validatePublicSchemeListener(
 					configuration,
 					scheme,
@@ -269,11 +272,11 @@ func validatePublicSchemeListener(
 ) error {
 	switch scheme {
 	case protocol.HTTPPublicSchemeHTTP:
-		if configuration.Tunnel.HTTPListenAddress == "" {
+		if configuration.Proxies.HTTP.ListenAddress == "" {
 			return fmt.Errorf("%s requires the public HTTP listener", owner)
 		}
 	case protocol.HTTPPublicSchemeHTTPS:
-		if configuration.Tunnel.HTTPSListenAddress == "" {
+		if configuration.Proxies.HTTPS.ListenAddress == "" {
 			return fmt.Errorf("%s requires the public HTTPS listener", owner)
 		}
 	}
@@ -302,68 +305,68 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 		names[proxy.Name] = struct{}{}
 		switch proxy.Type {
 		case protocol.ProxyTypeTCP:
-			if proxy.RemotePort == 0 || proxy.Domain != "" ||
-				len(proxy.PublicSchemes) != 0 {
+			if proxy.Public.Port == 0 || proxy.Public.Domain != "" ||
+				len(proxy.Public.Schemes) != 0 {
 				return fmt.Errorf("%s[%d] has invalid %s fields", field, index, proxy.Type)
 			}
-			if _, duplicate := tcpPorts[proxy.RemotePort]; duplicate {
+			if _, duplicate := tcpPorts[proxy.Public.Port]; duplicate {
 				return fmt.Errorf(
-					"%s[%d].remote_port is duplicated for tcp",
+					"%s[%d].public.port is duplicated for tcp",
 					field,
 					index,
 				)
 			}
-			tcpPorts[proxy.RemotePort] = struct{}{}
+			tcpPorts[proxy.Public.Port] = struct{}{}
 		case protocol.ProxyTypeUDP:
-			if proxy.RemotePort == 0 || proxy.Domain != "" ||
-				len(proxy.PublicSchemes) != 0 {
+			if proxy.Public.Port == 0 || proxy.Public.Domain != "" ||
+				len(proxy.Public.Schemes) != 0 {
 				return fmt.Errorf("%s[%d] has invalid %s fields", field, index, proxy.Type)
 			}
-			if _, duplicate := udpPorts[proxy.RemotePort]; duplicate {
+			if _, duplicate := udpPorts[proxy.Public.Port]; duplicate {
 				return fmt.Errorf(
-					"%s[%d].remote_port is duplicated for udp",
+					"%s[%d].public.port is duplicated for udp",
 					field,
 					index,
 				)
 			}
-			udpPorts[proxy.RemotePort] = struct{}{}
+			udpPorts[proxy.Public.Port] = struct{}{}
 		case protocol.ProxyTypeHTTP:
-			if proxy.RemotePort != 0 {
-				return fmt.Errorf("%s[%d].remote_port is not allowed for http", field, index)
+			if proxy.Public.Port != 0 {
+				return fmt.Errorf("%s[%d].public.port is not allowed for http", field, index)
 			}
-			if err := ValidateHTTPDomain(proxy.Domain); err != nil {
-				return fmt.Errorf("%s[%d].domain: %w", field, index, err)
+			if err := ValidateHTTPDomain(proxy.Public.Domain); err != nil {
+				return fmt.Errorf("%s[%d].public.domain: %w", field, index, err)
 			}
-			if len(proxy.PublicSchemes) == 0 {
-				proxy.PublicSchemes = []protocol.HTTPPublicScheme{
+			if len(proxy.Public.Schemes) == 0 {
+				proxy.Public.Schemes = []protocol.HTTPPublicScheme{
 					protocol.HTTPPublicSchemeHTTP,
 				}
-				proxies[index].PublicSchemes = proxy.PublicSchemes
+				proxies[index].Public.Schemes = proxy.Public.Schemes
 			}
 			if err := validateHTTPPublicSchemes(
-				proxy.PublicSchemes,
-				fmt.Sprintf("%s[%d].public_schemes", field, index),
+				proxy.Public.Schemes,
+				fmt.Sprintf("%s[%d].public.schemes", field, index),
 			); err != nil {
 				return err
 			}
-			if _, duplicate := httpDomains[proxy.Domain]; duplicate {
+			if _, duplicate := httpDomains[proxy.Public.Domain]; duplicate {
 				return fmt.Errorf(
-					"%s[%d].domain is duplicated",
+					"%s[%d].public.domain is duplicated",
 					field,
 					index,
 				)
 			}
-			httpDomains[proxy.Domain] = struct{}{}
+			httpDomains[proxy.Public.Domain] = struct{}{}
 		default:
 			return fmt.Errorf("%s[%d].type must be tcp, udp, or http", field, index)
 		}
-		if proxy.LocalIP == "" {
-			proxies[index].LocalIP = "127.0.0.1"
-		} else if net.ParseIP(proxy.LocalIP) == nil {
-			return fmt.Errorf("%s[%d].local_ip must be an IP address", field, index)
+		if proxy.Local.IP == "" {
+			proxies[index].Local.IP = "127.0.0.1"
+		} else if net.ParseIP(proxy.Local.IP) == nil {
+			return fmt.Errorf("%s[%d].local.ip must be an IP address", field, index)
 		}
-		if proxy.LocalPort == 0 {
-			return fmt.Errorf("%s[%d].local_port must be between 1 and 65535", field, index)
+		if proxy.Local.Port == 0 {
+			return fmt.Errorf("%s[%d].local.port must be between 1 and 65535", field, index)
 		}
 	}
 	return nil
@@ -388,21 +391,21 @@ func validateForwards(forwards []ForwardConfig, field string) error {
 		default:
 			return fmt.Errorf("%s[%d].type must be tcp or udp", field, index)
 		}
-		listenAddress, err := netip.ParseAddr(forward.ListenIP)
-		if err != nil || listenAddress.String() != forward.ListenIP {
-			return fmt.Errorf("%s[%d].listen_ip must be a canonical IP address", field, index)
+		listenAddress, err := netip.ParseAddr(forward.Listen.IP)
+		if err != nil || listenAddress.String() != forward.Listen.IP {
+			return fmt.Errorf("%s[%d].listen.ip must be a canonical IP address", field, index)
 		}
-		if forward.ListenPort == 0 {
-			return fmt.Errorf("%s[%d].listen_port must be between 1 and 65535", field, index)
+		if forward.Listen.Port == 0 {
+			return fmt.Errorf("%s[%d].listen.port must be between 1 and 65535", field, index)
 		}
-		targetAddress, err := netip.ParseAddr(forward.TargetIP)
-		if err != nil || targetAddress.String() != forward.TargetIP {
-			return fmt.Errorf("%s[%d].target_ip must be a canonical IP address", field, index)
+		targetAddress, err := netip.ParseAddr(forward.Target.IP)
+		if err != nil || targetAddress.String() != forward.Target.IP {
+			return fmt.Errorf("%s[%d].target.ip must be a canonical IP address", field, index)
 		}
-		if forward.TargetPort == 0 {
-			return fmt.Errorf("%s[%d].target_port must be between 1 and 65535", field, index)
+		if forward.Target.Port == 0 {
+			return fmt.Errorf("%s[%d].target.port must be between 1 and 65535", field, index)
 		}
-		listener := fmt.Sprintf("%s/%s/%d", forward.Type, listenAddress, forward.ListenPort)
+		listener := fmt.Sprintf("%s/%s/%d", forward.Type, listenAddress, forward.Listen.Port)
 		if _, duplicate := listeners[listener]; duplicate {
 			return fmt.Errorf("%s[%d] duplicates a %s listener", field, index, forward.Type)
 		}

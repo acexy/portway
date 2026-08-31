@@ -27,11 +27,11 @@ func (s *Service) syncProxies(
 		return protocol.ProxyDeclaration{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			RemotePort: proxyConfiguration.Public.Port,
+			Domain:     proxyConfiguration.Public.Domain,
 			PublicSchemes: append(
 				[]protocol.HTTPPublicScheme(nil),
-				proxyConfiguration.PublicSchemes...,
+				proxyConfiguration.Public.Schemes...,
 			),
 		}
 	})

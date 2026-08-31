@@ -122,34 +122,47 @@ func (s *Service) applyConfigurationCandidateContext(
 			field: changedYAMLField("transport", current.Transport, candidate.Transport),
 		}
 	}
-	if !reflect.DeepEqual(candidate.Tunnel, current.Tunnel) {
+	if candidate.Proxies.BindIP != current.Proxies.BindIP {
 		return restartRequiredError{
-			field: changedYAMLField("tunnel", current.Tunnel, candidate.Tunnel),
+			field: "proxies.bind_ip",
 		}
 	}
-	if !reflect.DeepEqual(candidate.HTTP, current.HTTP) {
+	if candidate.Proxies.HTTP.ListenAddress != current.Proxies.HTTP.ListenAddress {
+		return restartRequiredError{field: "proxies.http.listen_address"}
+	}
+	if candidate.Proxies.HTTPS.ListenAddress != current.Proxies.HTTPS.ListenAddress {
+		return restartRequiredError{field: "proxies.https.listen_address"}
+	}
+	if !reflect.DeepEqual(candidate.Proxies.HTTP.HTTPConfig, current.Proxies.HTTP.HTTPConfig) {
 		return restartRequiredError{
-			field: changedYAMLField("http", current.HTTP, candidate.HTTP),
+			field: changedYAMLField(
+				"proxies.http",
+				current.Proxies.HTTP.HTTPConfig,
+				candidate.Proxies.HTTP.HTTPConfig,
+			),
 		}
 	}
-	httpsChanged := !reflect.DeepEqual(candidate.HTTPS, current.HTTPS)
+	httpsChanged := !reflect.DeepEqual(
+		candidate.Proxies.HTTPS.Certificates,
+		current.Proxies.HTTPS.Certificates,
+	)
 	var candidateHTTPSCertificates *httpsCertificateSnapshot
 	var candidateHTTPSDigest string
 	if httpsChanged {
 		if s.httpsCertificates == nil {
 			return restartRequiredError{
-				field: changedYAMLField("https", current.HTTPS, candidate.HTTPS),
+				field: "proxies.https.certificates",
 			}
 		}
 		var err error
-		candidateHTTPSCertificates, candidateHTTPSDigest, err = loadHTTPSCertificates(candidate.HTTPS)
+		candidateHTTPSCertificates, candidateHTTPSDigest, err = loadHTTPSCertificates(candidate.Proxies.HTTPS)
 		if err != nil {
 			return fmt.Errorf("reload HTTPS certificate: %w", err)
 		}
 	}
-	if !reflect.DeepEqual(candidate.UDP, current.UDP) {
+	if !reflect.DeepEqual(candidate.Proxies.UDP, current.Proxies.UDP) {
 		return restartRequiredError{
-			field: changedYAMLField("udp", current.UDP, candidate.UDP),
+			field: changedYAMLField("proxies.udp", current.Proxies.UDP, candidate.Proxies.UDP),
 		}
 	}
 	if !reflect.DeepEqual(candidate.Security, current.Security) {
@@ -235,7 +248,7 @@ func (s *Service) applyConfigurationCandidateContext(
 
 	if httpsChanged {
 		s.httpsCertificates.publish(
-			candidate.HTTPS,
+			candidate.Proxies.HTTPS,
 			candidateHTTPSCertificates,
 			candidateHTTPSDigest,
 		)
@@ -345,10 +358,10 @@ func authenticationTokenRecords(configuration config.ServerConfig) map[string]st
 		records[string(authentication.ModeShared)] = *configuration.Authentication.SharedToken
 	}
 	for _, client := range configuration.GovernedClients {
-		records[string(authentication.ModeGoverned)+":"+client.ClientID] = client.Token
+		records[string(authentication.ModeGoverned)+":"+client.Authentication.ClientID] = client.Authentication.Token
 	}
 	for _, client := range configuration.ManagedClients {
-		records[string(authentication.ModeManaged)+":"+client.ClientID] = client.Token
+		records[string(authentication.ModeManaged)+":"+client.Authentication.ClientID] = client.Authentication.Token
 	}
 	return records
 }
@@ -390,7 +403,7 @@ func validateManagedRevisionTransitions(
 ) error {
 	for clientID, next := range candidate.ManagedClients {
 		previous, exists := current.ManagedClients[clientID]
-		if !exists || previous.Token != next.Token ||
+		if !exists || previous.Authentication.Token != next.Authentication.Token ||
 			reflect.DeepEqual(previous.Configuration, next.Configuration) {
 			continue
 		}
@@ -501,7 +514,7 @@ func changedManagedClients(
 ) []string {
 	changed := coll.MapFilterToSlice(candidate.ManagedClients, func(clientID string, next config.ManagedClientConfig) (string, bool) {
 		previous, exists := current.ManagedClients[clientID]
-		if !exists || previous.Token != next.Token {
+		if !exists || previous.Authentication.Token != next.Authentication.Token {
 			return "", false
 		}
 		return clientID, !reflect.DeepEqual(previous.Configuration, next.Configuration)

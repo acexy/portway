@@ -249,23 +249,21 @@ func TestValidateManagedPreparationRejectsInvalidProxyPermanently(t *testing.T) 
 
 func TestRuntimeIdentityAndProxiesDoNotMutateStartupConfiguration(t *testing.T) {
 	configuration := config.DefaultClient()
-	configuration.ClientID = "startup-client"
+	configuration.Authentication.ClientID = "startup-client"
 	configuration.Proxies = []config.ProxyConfig{{
 		Name:      "startup",
 		Type:      "tcp",
-		LocalIP:   "127.0.0.1",
-		LocalPort: 1,
+		Local:     config.EndpointConfig{IP: "127.0.0.1", Port: 1},
 	}}
 	service := NewService(logging.New("test"), configuration)
 	service.setRuntimeClientID("authenticated-client")
 	service.setRuntimeProxies([]config.ProxyConfig{{
 		Name:      "managed",
 		Type:      "tcp",
-		LocalIP:   "127.0.0.1",
-		LocalPort: 2,
+		Local:     config.EndpointConfig{IP: "127.0.0.1", Port: 2},
 	}})
 
-	if service.configuration.ClientID != "startup-client" ||
+	if service.configuration.Authentication.ClientID != "startup-client" ||
 		len(service.configuration.Proxies) != 1 ||
 		service.configuration.Proxies[0].Name != "startup" {
 		t.Fatalf("runtime state mutated startup configuration: %+v", service.configuration)

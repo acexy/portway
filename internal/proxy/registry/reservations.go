@@ -30,32 +30,32 @@ func (manager *Registry) BeginManagedReservationUpdate(
 		for _, proxy := range client.Configuration.Proxies {
 			switch proxy.Type {
 			case protocol.ProxyTypeTCP:
-				if owner := tcpPorts[proxy.RemotePort]; owner != "" &&
+				if owner := tcpPorts[proxy.Public.Port]; owner != "" &&
 					owner != clientID {
 					return nil, fmt.Errorf(
 						"managed TCP remote port %q is reserved by multiple clients",
-						fmt.Sprint(proxy.RemotePort),
+						fmt.Sprint(proxy.Public.Port),
 					)
 				}
-				tcpPorts[proxy.RemotePort] = clientID
+				tcpPorts[proxy.Public.Port] = clientID
 			case protocol.ProxyTypeUDP:
-				if owner := udpPorts[proxy.RemotePort]; owner != "" &&
+				if owner := udpPorts[proxy.Public.Port]; owner != "" &&
 					owner != clientID {
 					return nil, fmt.Errorf(
 						"managed UDP remote port %q is reserved by multiple clients",
-						fmt.Sprint(proxy.RemotePort),
+						fmt.Sprint(proxy.Public.Port),
 					)
 				}
-				udpPorts[proxy.RemotePort] = clientID
+				udpPorts[proxy.Public.Port] = clientID
 			case protocol.ProxyTypeHTTP:
-				if owner := httpDomains[proxy.Domain]; owner != "" &&
+				if owner := httpDomains[proxy.Public.Domain]; owner != "" &&
 					owner != clientID {
 					return nil, fmt.Errorf(
 						"managed HTTP domain %q is reserved by multiple clients",
-						proxy.Domain,
+						proxy.Public.Domain,
 					)
 				}
-				httpDomains[proxy.Domain] = clientID
+				httpDomains[proxy.Public.Domain] = clientID
 			}
 		}
 	}

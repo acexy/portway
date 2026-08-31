@@ -70,25 +70,25 @@ func TestPerformanceSoak(t *testing.T) {
 	udpProxyAddress := reserveUDPAddress(t)
 	httpProxyAddress := reserveTCPAddress(t)
 	serverConfiguration, clientConfiguration := benchmarkTransportConfigurations(t, transportType)
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.Tunnel.HTTPListenAddress = httpProxyAddress.String()
-	clientConfiguration.ClientID = "soak-" + string(transportType)
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.HTTP.ListenAddress = httpProxyAddress.String()
+	clientConfiguration.Authentication.ClientID = "soak-" + string(transportType)
 	clientConfiguration.Proxies = []config.ProxyConfig{
 		{
-			Name: "tcp", Type: "tcp", LocalIP: "127.0.0.1",
-			LocalPort:  uint16(tcpBackend.Addr().(*net.TCPAddr).Port),
-			RemotePort: uint16(tcpProxyAddress.Port),
+			Name: "tcp", Type: "tcp",
+			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(tcpBackend.Addr().(*net.TCPAddr).Port)},
+			Public: config.ProxyPublicConfig{Port: uint16(tcpProxyAddress.Port)},
 		},
 		{
-			Name: "udp", Type: "udp", LocalIP: "127.0.0.1",
-			LocalPort:  uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port),
-			RemotePort: uint16(udpProxyAddress.Port),
+			Name: "udp", Type: "udp",
+			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port)},
+			Public: config.ProxyPublicConfig{Port: uint16(udpProxyAddress.Port)},
 		},
 		{
-			Name: "http", Type: "http", Domain: "soak.example.com",
-			LocalIP:       "127.0.0.1",
-			LocalPort:     uint16(httpBackend.Listener.Addr().(*net.TCPAddr).Port),
-			PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+			Name: "http", Type: "http",
+			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(httpBackend.Listener.Addr().(*net.TCPAddr).Port)},
+			Public: config.ProxyPublicConfig{Domain: "soak.example.com",
+				Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
 		},
 	}
 	startBenchmarkServices(t, serverConfiguration, clientConfiguration)

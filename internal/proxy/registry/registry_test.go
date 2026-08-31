@@ -25,10 +25,10 @@ func TestManagedReservationRejectsSharedClientBinding(t *testing.T) {
 	if err := manager.ConfigureManagedReservations(
 		map[string]config.ManagedClientConfig{
 			"managed-client": {
-				ClientID: "managed-client",
+				Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 				Configuration: config.ManagedConfiguration{
 					Proxies: []config.ProxyConfig{{
-						Name: "managed", Type: "tcp", RemotePort: port,
+						Name: "managed", Type: "tcp", Public: config.ProxyPublicConfig{Port: port},
 					}},
 				},
 			},
@@ -100,9 +100,9 @@ func TestManagedReservationTransactionPublishesOnlyOnCommit(t *testing.T) {
 	transaction, err := manager.BeginManagedReservationUpdate(
 		map[string]config.ManagedClientConfig{
 			"managed-a": {
-				ClientID: "managed-a",
+				Authentication: config.ClientAuthenticationConfig{ClientID: "managed-a"},
 				Configuration: config.ManagedConfiguration{Proxies: []config.ProxyConfig{{
-					Name: "ssh", Type: protocol.ProxyTypeTCP, RemotePort: 22022,
+					Name: "ssh", Type: protocol.ProxyTypeTCP, Public: config.ProxyPublicConfig{Port: 22022},
 				}}},
 			},
 		},
@@ -200,7 +200,7 @@ func TestProxySyncReturnsBoundedCachedResultForHistoricalRequest(t *testing.T) {
 }
 
 func TestHTTPClientCapacityUsesAggregateCounter(t *testing.T) {
-	configuration := config.DefaultServer().HTTP
+	configuration := config.DefaultServer().Proxies.HTTP.HTTPConfig
 	configuration.MaxConcurrentRequestsPerClient = 1
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -242,10 +242,10 @@ func TestManagedReservationAllowsOwningManagedClient(t *testing.T) {
 	port := uint16(reserveTCPAddress(t).Port)
 	clients := map[string]config.ManagedClientConfig{
 		"managed-client": {
-			ClientID: "managed-client",
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 			Configuration: config.ManagedConfiguration{
 				Proxies: []config.ProxyConfig{{
-					Name: "managed", Type: "tcp", RemotePort: port,
+					Name: "managed", Type: "tcp", Public: config.ProxyPublicConfig{Port: port},
 				}},
 			},
 		},
@@ -302,10 +302,10 @@ func TestManagedReservationRejectsHotReloadOverActiveSharedBinding(t *testing.T)
 	err := manager.ConfigureManagedReservations(
 		map[string]config.ManagedClientConfig{
 			"managed-client": {
-				ClientID: "managed-client",
+				Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 				Configuration: config.ManagedConfiguration{
 					Proxies: []config.ProxyConfig{{
-						Name: "managed", Type: "tcp", RemotePort: port,
+						Name: "managed", Type: "tcp", Public: config.ProxyPublicConfig{Port: port},
 					}},
 				},
 			},
@@ -622,7 +622,7 @@ func newTestTCPProxyManager(t testing.TB) *Registry {
 		"127.0.0.1",
 		link.NewBroker(ctx),
 		false,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 	)
 	t.Cleanup(func() {
 		cancel()

@@ -63,10 +63,10 @@ func TestServerSecurityHTTPClientIPHeaderValidation(t *testing.T) {
 			configuration := DefaultServer()
 			configuration.Security.HTTPClientIPHeader = testCase.header
 			configuration.Security.IPDenyFile = testCase.denyFile
-			configuration.Tunnel.HTTPListenAddress = testCase.httpAddress
-			configuration.Tunnel.HTTPSListenAddress = testCase.httpsAddress
+			configuration.Proxies.HTTP.ListenAddress = testCase.httpAddress
+			configuration.Proxies.HTTPS.ListenAddress = testCase.httpsAddress
 			if testCase.httpsAddress != "" {
-				configuration.HTTPS.Certificates = []HTTPSCertificateConfig{{
+				configuration.Proxies.HTTPS.Certificates = []HTTPSCertificateConfig{{
 					Domains:  []string{"app.example.com"},
 					CertFile: "server.crt",
 					KeyFile:  "server.key",

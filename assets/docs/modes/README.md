@@ -24,15 +24,14 @@ Client-side local service
 
 The listener belongs to `portwayd`. TCP and UDP proxies use a public server
 port; HTTP/HTTPS proxies use a domain. The client declares the local destination
-through `local_ip` and `local_port`.
+through the nested `local` endpoint.
 
 ```yaml
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local: {ip: 127.0.0.1, port: 22}
+    public: {port: 22022}
 ```
 
 Use Proxy when an application on the client network must be reachable through
@@ -56,17 +55,15 @@ Approved server-side target
 
 The listener belongs to `portway`. Forward supports TCP and UDP and preserves
 their byte-stream or datagram semantics. The client listener is configured with
-`listen_ip` and `listen_port`; `target_ip` and `target_port` identify the service
+`listen`; `target` identifies the service
 reachable from the server.
 
 ```yaml
 forwards:
   - name: database
     type: tcp
-    listen_ip: 127.0.0.1
-    listen_port: 15432
-    target_ip: 10.20.1.15
-    target_port: 5432
+    listen: {ip: 127.0.0.1, port: 15432}
+    target: {ip: 10.20.1.15, port: 5432}
 ```
 
 Use Forward for administration, databases, DNS, or other services that should

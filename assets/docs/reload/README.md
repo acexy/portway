@@ -72,15 +72,15 @@ The following are validated but not applied online:
 
 - `transport.type` and `transport.listen_address`;
 - QUIC certificate and private-key settings;
-- `tunnel.bind_ip`, `tunnel.http_listen_address`, and
-  `tunnel.https_listen_address`;
+- `proxies.bind_ip`, `proxies.http.listen_address`, and
+  `proxies.https.listen_address`;
 - HTTP, UDP, security, and other runtime-component limits.
 
 If any of these fields changes, Portway rejects the complete candidate with
 `restart_required`. Reloadable fields included in the same candidate are not
 partially applied.
 
-Public HTTPS certificate contents, paths, and `https.certificates` entries are
+Public HTTPS certificate contents, paths, and `proxies.https.certificates` entries are
 exceptions: a complete valid SNI certificate set is published atomically without
 replacing the HTTPS listener. Invalid candidates keep the previous set active.
 

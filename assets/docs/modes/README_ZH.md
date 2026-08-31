@@ -23,15 +23,14 @@ portway 客户端
 ```
 
 Listener 由 `portwayd` 持有。TCP/UDP Proxy 使用服务端公共端口，HTTP/HTTPS
-Proxy 使用域名；客户端通过 `local_ip` 和 `local_port` 声明本地目标。
+Proxy 使用域名；客户端通过嵌套的 `local` 节点声明本地目标。
 
 ```yaml
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local: {ip: 127.0.0.1, port: 22}
+    public: {port: 22022}
 ```
 
 当客户端网络中的应用需要通过 Portway 服务端对外提供访问时，应使用 Proxy。
@@ -53,17 +52,15 @@ portwayd
 ```
 
 Listener 由 `portway` 持有。Forward 支持 TCP 和 UDP，并分别保留字节流和数据报
-语义。`listen_ip`、`listen_port` 定义客户端入口；`target_ip`、`target_port`
+语义。`listen` 定义客户端入口；`target`
 定义服务端所在网络中可达的目标。
 
 ```yaml
 forwards:
   - name: database
     type: tcp
-    listen_ip: 127.0.0.1
-    listen_port: 15432
-    target_ip: 10.20.1.15
-    target_port: 5432
+    listen: {ip: 127.0.0.1, port: 15432}
+    target: {ip: 10.20.1.15, port: 5432}
 ```
 
 Forward 适合访问管理接口、数据库、DNS 等需要保留在服务端私有网络中，但又要

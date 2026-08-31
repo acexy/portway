@@ -28,22 +28,20 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 		configuration: newConfigurationManager(config.ServerConfig{
 			GovernedClients: map[string]config.GovernedClientConfig{
 				"customer-a": {
-					ClientID: "customer-a",
+					Authentication: config.ClientAuthenticationConfig{ClientID: "customer-a"},
 					Permissions: config.GovernedPermissions{
-						ProxyTypes: []protocol.ProxyType{
-							protocol.ProxyTypeTCP,
-							protocol.ProxyTypeHTTP,
-						},
-						TCP: config.ProxyPermission{
+						Proxies: config.GovernedProxyPermissions{
+						TCP: &config.ProxyPermission{
 							RemotePortRanges: []config.PortRange{{Start: 20000, End: 20999}},
 						},
-						HTTP: config.HTTPPermission{
+						HTTP: &config.HTTPPermission{
 							PublicSchemes: []protocol.HTTPPublicScheme{
 								protocol.HTTPPublicSchemeHTTPS,
 							},
 							Domains: []string{"*.customer-a.example.com"},
 						},
-						Limits: config.PermissionLimits{MaxProxies: 2},
+						Limits: config.ProxyPermissionLimits{MaxTotal: 2},
+						},
 					},
 				},
 			},
@@ -160,17 +158,18 @@ func TestRevokedAuthenticationContextsSelectsChangedClient(t *testing.T) {
 	current := config.DefaultServer()
 	current.GovernedClients = map[string]config.GovernedClientConfig{
 		"governed": {
-			ClientID: "governed",
-			Token:    governedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "governed", Token: governedToken},
 			Permissions: config.GovernedPermissions{
-				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
+				Proxies: config.GovernedProxyPermissions{
+					TCP: &config.ProxyPermission{}, Limits: config.DefaultProxyPermissionLimits(),
+				},
+				Forwards: config.GovernedForwardPermissions{Limits: config.DefaultForwardPermissionLimits()},
 			},
 		},
 	}
 	current.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed": {
-			ClientID: "managed",
-			Token:    managedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed", Token: managedToken},
 			Configuration: config.ManagedConfiguration{
 				Revision: 1,
 			},
@@ -181,7 +180,7 @@ func TestRevokedAuthenticationContextsSelectsChangedClient(t *testing.T) {
 		"governed": current.GovernedClients["governed"],
 	}
 	changed := candidate.GovernedClients["governed"]
-	changed.Permissions.Limits.MaxProxies = 1
+	changed.Permissions.Proxies.Limits.MaxTotal = 1
 	candidate.GovernedClients["governed"] = changed
 
 	currentSnapshot, err := config.BuildAuthenticationSnapshot(current)
@@ -211,15 +210,13 @@ func TestRevokedAuthenticationContextsRejectsModeMigration(t *testing.T) {
 	current := config.DefaultServer()
 	current.GovernedClients = map[string]config.GovernedClientConfig{
 		"client-one": {
-			ClientID: "client-one",
-			Token:    token,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "client-one", Token: token},
 		},
 	}
 	candidate := config.DefaultServer()
 	candidate.ManagedClients = map[string]config.ManagedClientConfig{
 		"client-one": {
-			ClientID: "client-one",
-			Token:    token,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "client-one", Token: token},
 			Configuration: config.ManagedConfiguration{
 				Revision: 1,
 			},
@@ -251,12 +248,12 @@ func TestAuthenticationTokensChangedIncludesRecordOwnership(t *testing.T) {
 	token := "client-token-with-at-least-32-random-bytes"
 	current := config.DefaultServer()
 	current.GovernedClients = map[string]config.GovernedClientConfig{
-		"client-one": {ClientID: "client-one", Token: token},
+		"client-one": {Authentication: config.ClientAuthenticationConfig{ClientID: "client-one", Token: token}},
 	}
 
 	unchanged := current
 	unchanged.GovernedClients = map[string]config.GovernedClientConfig{
-		"client-one": {ClientID: "client-one", Token: token},
+		"client-one": {Authentication: config.ClientAuthenticationConfig{ClientID: "client-one", Token: token}},
 	}
 	if authenticationTokensChanged(current, unchanged) {
 		t.Fatal("equivalent authentication records were reported as changed")
@@ -264,7 +261,7 @@ func TestAuthenticationTokensChangedIncludesRecordOwnership(t *testing.T) {
 
 	migrated := config.DefaultServer()
 	migrated.ManagedClients = map[string]config.ManagedClientConfig{
-		"client-one": {ClientID: "client-one", Token: token},
+		"client-one": {Authentication: config.ClientAuthenticationConfig{ClientID: "client-one", Token: token}},
 	}
 	if !authenticationTokensChanged(current, migrated) {
 		t.Fatal("authentication record mode migration was not reported as changed")
@@ -280,14 +277,12 @@ func TestApplyConfigurationCandidateTokenChangeRevokesEverySession(t *testing.T)
 	current.Authentication.SharedToken = &sharedToken
 	current.GovernedClients = map[string]config.GovernedClientConfig{
 		"governed-client": {
-			ClientID: "governed-client",
-			Token:    governedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "governed-client", Token: governedToken},
 		},
 	}
 	current.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed-client": {
-			ClientID: "managed-client",
-			Token:    managedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client", Token: managedToken},
 			Configuration: config.ManagedConfiguration{
 				Revision: 1,
 			},
@@ -296,8 +291,7 @@ func TestApplyConfigurationCandidateTokenChangeRevokesEverySession(t *testing.T)
 	candidate := current
 	candidate.GovernedClients = map[string]config.GovernedClientConfig{
 		"governed-client": {
-			ClientID: "governed-client",
-			Token:    replacementGovernedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "governed-client", Token: replacementGovernedToken},
 		},
 	}
 
@@ -403,17 +397,18 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 	current.Authentication.SharedToken = &sharedToken
 	current.GovernedClients = map[string]config.GovernedClientConfig{
 		"governed-client": {
-			ClientID: "governed-client",
-			Token:    governedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "governed-client", Token: governedToken},
 			Permissions: config.GovernedPermissions{
-				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
+				Proxies: config.GovernedProxyPermissions{
+					TCP: &config.ProxyPermission{}, Limits: config.DefaultProxyPermissionLimits(),
+				},
+				Forwards: config.GovernedForwardPermissions{Limits: config.DefaultForwardPermissionLimits()},
 			},
 		},
 	}
 	current.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed-client": {
-			ClientID: "managed-client",
-			Token:    managedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client", Token: managedToken},
 			Configuration: config.ManagedConfiguration{
 				Revision: 1,
 			},
@@ -424,7 +419,7 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 		"governed-client": current.GovernedClients["governed-client"],
 	}
 	changedGoverned := candidate.GovernedClients["governed-client"]
-	changedGoverned.Permissions.Limits.MaxProxies = 1
+	changedGoverned.Permissions.Proxies.Limits.MaxTotal = 1
 	candidate.GovernedClients["governed-client"] = changedGoverned
 
 	snapshot, err := config.BuildAuthenticationSnapshot(current)
@@ -447,7 +442,7 @@ func TestApplyConfigurationCandidateRevokesOnlyChangedGovernedSession(t *testing
 		"127.0.0.1",
 		broker,
 		false,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 	)
 	defer service.proxyRegistry.Close()
 
@@ -767,7 +762,7 @@ func TestSuspendClientPreservesProxyActivationAfterHeartbeatRecovery(t *testing.
 		"127.0.0.1",
 		broker,
 		false,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 	)
 	defer service.proxyRegistry.Close()
 
@@ -841,8 +836,9 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	certificateFile, keyFile := writeQUICServerCertificate(t)
 	current := config.DefaultServer()
 	current.Authentication.SharedToken = &token
-	current.Tunnel.HTTPSListenAddress = "127.0.0.1:8443"
-	current.HTTPS = config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+	current.Proxies.HTTPS = config.HTTPSConfig{
+		ListenAddress: "127.0.0.1:8443",
+		Certificates: []config.HTTPSCertificateConfig{{
 		Domains:  []string{"localhost"},
 		CertFile: certificateFile,
 		KeyFile:  keyFile,
@@ -853,7 +849,7 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	}
 	certificateManager, err := newHTTPSCertificateManager(
 		logging.New("test"),
-		current.HTTPS,
+		current.Proxies.HTTPS,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -870,7 +866,9 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 
 	replacementCertificateFile, replacementKeyFile := writeQUICServerCertificate(t)
 	candidate := current
-	candidate.HTTPS = config.HTTPSConfig{Certificates: []config.HTTPSCertificateConfig{{
+	candidate.Proxies.HTTPS = config.HTTPSConfig{
+		ListenAddress: current.Proxies.HTTPS.ListenAddress,
+		Certificates: []config.HTTPSCertificateConfig{{
 		Domains:  []string{"localhost"},
 		CertFile: replacementCertificateFile,
 		KeyFile:  replacementKeyFile,
@@ -878,7 +876,7 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	if err := service.applyConfigurationCandidate(candidate); err != nil {
 		t.Fatalf("apply HTTPS certificate path update: %v", err)
 	}
-	if !reflect.DeepEqual(service.configuration.snapshot().HTTPS, candidate.HTTPS) {
+	if !reflect.DeepEqual(service.configuration.snapshot().Proxies.HTTPS, candidate.Proxies.HTTPS) {
 		t.Fatal("HTTPS certificate paths were not published")
 	}
 	if certificateManager.snapshot.Load() == initialSnapshot {
@@ -886,15 +884,15 @@ func TestApplyConfigurationCandidateReloadsHTTPSCertificatePaths(t *testing.T) {
 	}
 	activeSnapshot := certificateManager.snapshot.Load()
 	invalidCandidate := candidate
-	invalidCandidate.HTTPS.Certificates = append(
+	invalidCandidate.Proxies.HTTPS.Certificates = append(
 		[]config.HTTPSCertificateConfig(nil),
-		candidate.HTTPS.Certificates...,
+		candidate.Proxies.HTTPS.Certificates...,
 	)
-	invalidCandidate.HTTPS.Certificates[0].KeyFile = replacementCertificateFile
+	invalidCandidate.Proxies.HTTPS.Certificates[0].KeyFile = replacementCertificateFile
 	if err := service.applyConfigurationCandidate(invalidCandidate); err == nil {
 		t.Fatal("invalid HTTPS certificate path update was accepted")
 	}
-	if !reflect.DeepEqual(service.configuration.snapshot().HTTPS, candidate.HTTPS) {
+	if !reflect.DeepEqual(service.configuration.snapshot().Proxies.HTTPS, candidate.Proxies.HTTPS) {
 		t.Fatal("invalid HTTPS certificate update changed the configuration")
 	}
 	if certificateManager.snapshot.Load() != activeSnapshot {
@@ -946,7 +944,7 @@ func TestManagedConfigurationRolloutCompletesOnActiveSession(t *testing.T) {
 		"127.0.0.1",
 		broker,
 		false,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 	)
 	defer service.proxyRegistry.Close()
 	writer := control.NewWriter(serverConnection)
@@ -1031,7 +1029,7 @@ func TestManagedConfigurationRolloutCompletesOnActiveSession(t *testing.T) {
 		ctx,
 		"managed-client",
 		config.ManagedClientConfig{
-			ClientID: "managed-client",
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 			Configuration: config.ManagedConfiguration{
 				Revision: 2,
 				Proxies:  []config.ProxyConfig{},
@@ -1067,7 +1065,7 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 		"127.0.0.1",
 		broker,
 		false,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 	)
 	defer service.proxyRegistry.Close()
 	writer := control.NewWriter(serverConnection)
@@ -1130,7 +1128,7 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 		ctx,
 		"managed-client",
 		config.ManagedClientConfig{
-			ClientID: "managed-client",
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 			Configuration: config.ManagedConfiguration{
 				Revision: 2,
 			},
@@ -1191,8 +1189,7 @@ func TestManagedConfigurationRevisionMustIncrease(t *testing.T) {
 	current := config.DefaultServer()
 	current.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed-client": {
-			ClientID: "managed-client",
-			Token:    token,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client", Token: token},
 			Configuration: config.ManagedConfiguration{
 				Revision: 2,
 				Proxies:  []config.ProxyConfig{},
@@ -1202,16 +1199,14 @@ func TestManagedConfigurationRevisionMustIncrease(t *testing.T) {
 	candidate := current
 	candidate.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed-client": {
-			ClientID: "managed-client",
-			Token:    token,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client", Token: token},
 			Configuration: config.ManagedConfiguration{
 				Revision: 2,
 				Proxies: []config.ProxyConfig{{
 					Name:       "ssh",
 					Type:       "tcp",
-					LocalIP:    "127.0.0.1",
-					LocalPort:  22,
-					RemotePort: 22022,
+					Local:      config.EndpointConfig{IP: "127.0.0.1", Port: 22},
+					Public:     config.ProxyPublicConfig{Port: 22022},
 				}},
 			},
 		},
@@ -1341,8 +1336,7 @@ func TestManagedInitializationFailureRemovesNewSession(t *testing.T) {
 	configuration := config.DefaultServer()
 	configuration.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed-client": {
-			ClientID: "managed-client",
-			Token:    token,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client", Token: token},
 			Configuration: config.ManagedConfiguration{
 				Revision: 1,
 			},
@@ -1374,7 +1368,7 @@ func TestManagedInitializationFailureRemovesNewSession(t *testing.T) {
 		"127.0.0.1",
 		broker,
 		false,
-		configuration.HTTP,
+		configuration.Proxies.HTTP.HTTPConfig,
 	)
 	defer service.proxyRegistry.Close()
 

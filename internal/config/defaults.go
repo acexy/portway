@@ -10,8 +10,8 @@ import (
 
 // EnsureClientID generates a process-scoped client ID when none is configured.
 func EnsureClientID(configuration *ClientConfig) (string, bool, error) {
-	if configuration.ClientID != "" {
-		return configuration.ClientID, false, nil
+	if configuration.Authentication.ClientID != "" {
+		return configuration.Authentication.ClientID, false, nil
 	}
 
 	randomBytes := make([]byte, generatedClientIDBytes)
@@ -20,7 +20,7 @@ func EnsureClientID(configuration *ClientConfig) (string, bool, error) {
 	}
 
 	clientID := "pw_c_" + base64.RawURLEncoding.EncodeToString(randomBytes)
-	configuration.ClientID = clientID
+	configuration.Authentication.ClientID = clientID
 	return clientID, true, nil
 }
 
@@ -42,29 +42,29 @@ func DefaultServer() ServerConfig {
 			Type:          transport.TypeTCP,
 			ListenAddress: "0.0.0.0:7000",
 		},
-		Tunnel: TunnelConfig{
+		Proxies: ServerProxyConfig{
 			BindIP: "0.0.0.0",
+			HTTP: HTTPProxyConfig{HTTPConfig: HTTPConfig{
+				ReadHeaderTimeout:              httpDefaultReadHeaderTimeout,
+				RequestBodyTimeout:             0,
+				PublicIdleTimeout:              0,
+				GracefulShutdownTimeout:        httpDefaultGracefulShutdownTimeout,
+				MaxHeaderBytes:                 httpDefaultMaxHeaderBytes,
+				MaxRequestBodyBytes:            0,
+				MaxConcurrentRequests:          httpDefaultMaxConcurrentRequests,
+				MaxConcurrentRequestsPerClient: httpDefaultMaxConcurrentRequestsPerClient,
+				MaxConcurrentRequestsPerDomain: httpDefaultMaxConcurrentRequestsPerDomain,
+				MaxIdleConnections:             httpDefaultMaxIdleConnections,
+				MaxIdleConnectionsPerDomain:    httpDefaultMaxIdleConnectionsPerDomain,
+				MaxUpgradeConnections:          httpDefaultMaxUpgradeConnections,
+				MaxUpgradeConnectionsPerClient: httpDefaultMaxUpgradeConnectionsPerClient,
+				MaxUpgradeConnectionsPerDomain: httpDefaultMaxUpgradeConnectionsPerDomain,
+				MaxConcurrentHTTP2Streams:      httpDefaultMaxConcurrentHTTP2Streams,
+				UpgradeIdleTimeout:             0,
+			}},
+			UDP: DefaultUDPConfig(),
 		},
 		LogLevel: LogLevelInfo,
-		HTTP: HTTPConfig{
-			ReadHeaderTimeout:              httpDefaultReadHeaderTimeout,
-			RequestBodyTimeout:             0,
-			PublicIdleTimeout:              0,
-			GracefulShutdownTimeout:        httpDefaultGracefulShutdownTimeout,
-			MaxHeaderBytes:                 httpDefaultMaxHeaderBytes,
-			MaxRequestBodyBytes:            0,
-			MaxConcurrentRequests:          httpDefaultMaxConcurrentRequests,
-			MaxConcurrentRequestsPerClient: httpDefaultMaxConcurrentRequestsPerClient,
-			MaxConcurrentRequestsPerDomain: httpDefaultMaxConcurrentRequestsPerDomain,
-			MaxIdleConnections:             httpDefaultMaxIdleConnections,
-			MaxIdleConnectionsPerDomain:    httpDefaultMaxIdleConnectionsPerDomain,
-			MaxUpgradeConnections:          httpDefaultMaxUpgradeConnections,
-			MaxUpgradeConnectionsPerClient: httpDefaultMaxUpgradeConnectionsPerClient,
-			MaxUpgradeConnectionsPerDomain: httpDefaultMaxUpgradeConnectionsPerDomain,
-			MaxConcurrentHTTP2Streams:      httpDefaultMaxConcurrentHTTP2Streams,
-			UpgradeIdleTimeout:             0,
-		},
-		UDP: DefaultUDPConfig(),
 	}
 }
 

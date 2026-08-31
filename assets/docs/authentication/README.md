@@ -47,9 +47,8 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local: {ip: 127.0.0.1, port: 22}
+    public: {port: 22022}
 ```
 
 Shared clients declare their own complete proxy sets. Their generated or
@@ -76,29 +75,25 @@ authentication:
 Create `governed/customer-a.yaml`:
 
 ```yaml
-client_id: customer-a
-token: REPLACE_TOKEN
+authentication:
+  client_id: customer-a
+  token: REPLACE_TOKEN
 
 permissions:
-  proxy_types: [tcp, http]
-
-  tcp:
-    remote_port_ranges:
-      - start: 20000
-        end: 20999
-
-  http:
-    public_schemes: [https]
-    domains:
-      - app.customer-a.example.com
-      - "*.customer-a.example.com"
-
-  limits:
-    max_proxies: 20
-    max_tcp_proxies: 10
-    max_udp_proxies: 5
-    max_http_proxies: 10
-    max_active_links: 100
+  proxies:
+    tcp:
+      remote_port_ranges:
+        - start: 20000
+          end: 20999
+    http:
+      public_schemes: [https]
+      domains: [app.customer-a.example.com, "*.customer-a.example.com"]
+    limits:
+      max_total: 20
+      max_tcp: 10
+      max_udp: 5
+      max_http: 10
+      max_active_links: 100
 ```
 
 The file name is an operator-facing label and does not need to match
@@ -106,18 +101,15 @@ The file name is an operator-facing label and does not need to match
 desired proxies:
 
 ```yaml
-client_id: customer-a
-
 authentication:
+  client_id: customer-a
   token: REPLACE_TOKEN
 
 proxies:
   - name: app
     type: http
-    public_schemes: [https]
-    domain: app.customer-a.example.com
-    local_ip: 127.0.0.1
-    local_port: 8080
+    local: {ip: 127.0.0.1, port: 8080}
+    public: {schemes: [https], domain: app.customer-a.example.com}
 ```
 
 After Token proof, the server requires the declared ClientID to match the
@@ -128,21 +120,20 @@ proxy-count, and active-link limits. One denied declaration rejects the
 complete update and closes the rejected control session; the server never
 silently publishes a partial set.
 
-Every type listed in `proxy_types` must have a non-empty corresponding rule:
+Every protocol node present under `permissions.proxies` must have a non-empty rule:
 TCP and UDP require at least one `remote_port_ranges` entry. HTTP requires at
 least one domain; omitted or empty `public_schemes` authorizes HTTP only. Rules for a type not
-listed in `proxy_types` must be empty
-or omitted. Multiple ranges allow disjoint public port allocations without
+Omitting a protocol node denies that protocol. Multiple ranges allow disjoint public port allocations without
 granting the unused ports between them.
 
 Omitted Governed limit fields use production-safe defaults: 20 total proxies,
 10 TCP proxies, 5 UDP proxies, 10 HTTP proxies, and 100 pending or active
 links. Explicit values must be greater than zero. Proxy limits have a compiled
 hard maximum of 128 per client, and active links have a compiled hard maximum
-of 512 per client. A per-type proxy limit cannot exceed `max_proxies`.
+of 512 per client. A per-type proxy limit cannot exceed `max_total`.
 
 Governed mode controls public exposure. It does not currently restrict the
-client's private `local_ip` or `local_port`, because those fields are not sent in
+client's private `local` endpoint, because those fields are not sent in
 client proxy declarations.
 
 ## Managed clients
@@ -160,26 +151,25 @@ authentication:
 Create `managed/internal-node.yaml`:
 
 ```yaml
-client_id: internal-node
-token: REPLACE_TOKEN
+authentication:
+  client_id: internal-node
+  token: REPLACE_TOKEN
 
 configuration:
   revision: 1
   proxies:
     - name: ssh
       type: tcp
-      local_ip: 127.0.0.1
-      local_port: 22
-      remote_port: 22022
+      local: {ip: 127.0.0.1, port: 22}
+      public: {port: 22022}
 ```
 
 The Managed client configures the matching ClientID and Token but must not
 define local `proxies`:
 
 ```yaml
-client_id: internal-node
-
 authentication:
+  client_id: internal-node
   token: REPLACE_TOKEN
 ```
 
