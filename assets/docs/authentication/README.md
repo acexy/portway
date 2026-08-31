@@ -230,11 +230,9 @@ active.
 
 Credential and policy changes are fail-closed:
 
-- adding, removing, replacing, or reassigning any Shared, Governed, or Managed
-  Token publishes the new authentication snapshot and disconnects every client,
-  including recoverable sessions;
-- clients with unchanged credentials may reconnect using the same Token, while
-  a changed credential requires the newly published Token;
+- changing Shared Token disconnects all Shared sessions; changing a Governed or
+  Managed Token disconnects only that ClientID, including recoverable sessions;
+- unrelated authentication records and Sessions remain current;
 - changing Governed permissions closes that client's sessions, bindings,
   pending tickets, and active links;
 - changing Managed proxy configuration performs an online prepare/activate

@@ -57,11 +57,9 @@ The current implementation reloads:
 
 Changing authentication state has immediate runtime effects:
 
-- adding, removing, replacing, or reassigning any Shared, Governed, or Managed
-  Token disconnects every client, including sessions waiting in the recovery
-  window;
-- clients whose credentials did not change may reconnect with the same Token;
-  clients whose credentials changed must use the newly published Token;
+- changing Shared Token disconnects all Shared sessions; changing a Governed or
+  Managed Token disconnects only that ClientID, including recovery state;
+- unrelated authentication records retain their generation and Sessions;
 - changing Governed permissions closes that client's session and resources so
   it reconnects under the new policy;
 - a Managed configuration-only change still uses online rollout and does not

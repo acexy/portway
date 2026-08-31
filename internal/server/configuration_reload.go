@@ -198,26 +198,13 @@ func (s *Service) applyConfigurationCandidateContext(
 	tokensChanged := authenticationTokensChanged(current, candidate)
 
 	currentAuthenticationSnapshot := s.authenticationStore.Load()
-	var revokedContexts []authentication.Context
-	if tokensChanged {
-		// A Token generation is a deployment-wide authentication boundary. Rotate
-		// every existing context so active and recoverable clients must all prove
-		// their credentials again against the newly published snapshot.
-		revokedContexts = currentAuthenticationSnapshot.Contexts()
-	} else {
-		revokedContexts = revokedAuthenticationContexts(
-			currentAuthenticationSnapshot,
-			snapshot,
-			current,
-			candidate,
-		)
-	}
+	revokedContexts := revokedAuthenticationContexts(
+		currentAuthenticationSnapshot,
+		snapshot,
+		current,
+		candidate,
+	)
 	managedChanges := changedManagedClients(current, candidate)
-	if tokensChanged {
-		// Disconnected Managed clients receive the latest desired configuration
-		// during their next authenticated session instead of an online rollout.
-		managedChanges = []string{}
-	}
 	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
 		current.GovernedClients,
 		candidate.GovernedClients,
@@ -324,7 +311,7 @@ func (s *Service) applyConfigurationCandidateContext(
 			"managed_removed":          managedRemoved,
 			"managed_rollouts":         len(managedChanges),
 			"tokens_changed":           tokensChanged,
-			"all_clients_disconnected": tokensChanged,
+			"all_clients_disconnected": len(revokedContexts) == len(currentAuthenticationSnapshot.Contexts()) && len(revokedContexts) != 0,
 			"revoked_authentications":  len(revokedContexts),
 			"revoked_sessions":         len(revokedSessions),
 		},

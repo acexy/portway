@@ -207,10 +207,9 @@ ClientID 与记录完全匹配；身份校验完成后，服务端通过受保�
 
 凭据和策略变化采用 fail-closed 行为：
 
-- 新增、删除、替换或重新归属任意 Shared、Governed、Managed Token 时，会先发布新
-  认证快照，再强制下线全部客户端，包括处于恢复窗口的 Session；
-- 凭据未变化的客户端可继续使用原 Token 重连，凭据已变化的客户端必须使用新发布
-  的 Token；
+- Shared Token 变化会断开全部 Shared Session；Governed/Managed Token 变化只
+  断开对应 ClientID，包括恢复窗口 Session；
+- 无关认证记录及其 Session 保持当前代际并继续在线；
 - 修改 Governed 权限会关闭该客户端的 Session、Binding、Pending Ticket 和
   Active Link；
 - 修改 Managed 代理配置会执行在线 Prepare/Activate 切换；切换未完整完成时

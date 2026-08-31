@@ -62,7 +62,8 @@ transport:
   listen_address: 0.0.0.0:7000
 
 authentication:
-  # The generated Token is logged once at startup. Persist it here before restart.
+  # An empty value generates a Token at startup and reuses it during hot reload.
+  # Save the logged Token here before restarting the server.
   shared_token: ""
 `
 

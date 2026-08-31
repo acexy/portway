@@ -4,8 +4,8 @@
 authentication:
   client_id: managed-client
 # 必须包含大于 32 个 UTF-8 字符且保持唯一；推荐使用自动生成的 256-bit 随机值。
-# 禁止提交生产 Token。热加载时新增、删除、替换或重新分配任一 Token 都会断开
-# 全部活动及恢复窗口内的客户端；凭证未变化的客户端可使用原 Token 重连。
+# 禁止提交生产 Token。热加载修改本记录 Token 时，只断开本 ClientID 的活动及
+# 恢复窗口 Session；其他认证记录保持在线。
 # 仅代理配置变化时仍使用在线切换。
   token: PORTWAY_TOKEN_REQUIRED
 

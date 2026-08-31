@@ -244,6 +244,67 @@ func TestRevokedAuthenticationContextsRejectsModeMigration(t *testing.T) {
 	}
 }
 
+func TestRevokedAuthenticationContextsScopesTokenRotationToRecord(t *testing.T) {
+	sharedToken := "shared-token-with-at-least-32-random-bytes"
+	governedToken := "governed-token-with-at-least-32-random-bytes"
+	managedToken := "managed-token-with-at-least-32-random-bytes"
+	base := func() config.ServerConfig {
+		configuration := config.DefaultServer()
+		configuration.Authentication.SharedToken = &sharedToken
+		configuration.GovernedClients = map[string]config.GovernedClientConfig{
+			"governed": {Authentication: config.ClientAuthenticationConfig{ClientID: "governed", Token: governedToken}},
+		}
+		configuration.ManagedClients = map[string]config.ManagedClientConfig{
+			"managed": {
+				Authentication: config.ClientAuthenticationConfig{ClientID: "managed", Token: managedToken},
+				Configuration: config.ManagedConfiguration{Revision: 1},
+			},
+		}
+		return configuration
+	}
+	testCases := []struct {
+		name     string
+		change   func(*config.ServerConfig)
+		wantMode authentication.Mode
+		wantID   string
+	}{
+		{name: "Shared", wantMode: authentication.ModeShared, change: func(configuration *config.ServerConfig) {
+			replacement := "replacement-shared-token-with-at-least-32-random-bytes"
+			configuration.Authentication.SharedToken = &replacement
+		}},
+		{name: "Governed", wantMode: authentication.ModeGoverned, wantID: "governed", change: func(configuration *config.ServerConfig) {
+			record := configuration.GovernedClients["governed"]
+			record.Authentication.Token = "replacement-governed-token-with-at-least-32-random-bytes"
+			configuration.GovernedClients["governed"] = record
+		}},
+		{name: "Managed", wantMode: authentication.ModeManaged, wantID: "managed", change: func(configuration *config.ServerConfig) {
+			record := configuration.ManagedClients["managed"]
+			record.Authentication.Token = "replacement-managed-token-with-at-least-32-random-bytes"
+			configuration.ManagedClients["managed"] = record
+		}},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			current := base()
+			candidate := base()
+			testCase.change(&candidate)
+			currentSnapshot, err := config.BuildAuthenticationSnapshot(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidateSnapshot, err := config.BuildAuthenticationSnapshot(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := authentication.NewStore(currentSnapshot)
+			revoked := revokedAuthenticationContexts(store.Load(), candidateSnapshot, current, candidate)
+			if len(revoked) != 1 || revoked[0].Mode != testCase.wantMode || revoked[0].ClientID != testCase.wantID {
+				t.Fatalf("Token rotation revoked contexts %+v", revoked)
+			}
+		})
+	}
+}
+
 func TestAuthenticationTokensChangedIncludesRecordOwnership(t *testing.T) {
 	token := "client-token-with-at-least-32-random-bytes"
 	current := config.DefaultServer()
@@ -268,7 +329,7 @@ func TestAuthenticationTokensChangedIncludesRecordOwnership(t *testing.T) {
 	}
 }
 
-func TestApplyConfigurationCandidateTokenChangeRevokesEverySession(t *testing.T) {
+func TestApplyConfigurationCandidateTokenChangeRevokesOnlyAffectedRecord(t *testing.T) {
 	sharedToken := "shared-token-with-at-least-32-random-bytes"
 	governedToken := "governed-token-with-at-least-32-random-bytes"
 	replacementGovernedToken := "replacement-governed-token-with-at-least-32-random-bytes"
@@ -356,27 +417,32 @@ func TestApplyConfigurationCandidateTokenChangeRevokesEverySession(t *testing.T)
 	if err := service.applyConfigurationCandidate(candidate); err != nil {
 		t.Fatal(err)
 	}
-	if stats := registry.SnapshotStats(); stats != (session.Stats{}) {
-		t.Fatalf("sessions remained after Token reload: %+v", stats)
+	if stats := registry.SnapshotStats(); stats != (session.Stats{Active: 1, Suspended: 1}) {
+		t.Fatalf("unaffected sessions were not preserved after Token reload: %+v", stats)
 	}
 	for _, registered := range sessions {
-		if store.IsCurrent(registered.context) {
-			t.Fatalf("old authentication context for %s remained current", registered.clientID)
-		}
-		if accepted := serverTestHeartbeatAccepted(
-			registry,
-			registered.clientID,
-			registered.sessionID,
-			1,
-			time.Now(),
-		); accepted {
-			t.Fatalf("session for %s remained registered", registered.clientID)
-		}
-		if err := registered.client.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
-			if _, err := registered.client.Read(make([]byte, 1)); err == nil {
-				t.Fatalf("control connection for %s remained open", registered.clientID)
+		if registered.clientID == "governed-client" {
+			if store.IsCurrent(registered.context) {
+				t.Fatal("changed Governed authentication context remained current")
 			}
+			if accepted := serverTestHeartbeatAccepted(
+				registry, registered.clientID, registered.sessionID, 1, time.Now(),
+			); accepted {
+				t.Fatal("changed Governed session remained registered")
+			}
+			if err := registered.client.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
+				if _, err := registered.client.Read(make([]byte, 1)); err == nil {
+					t.Fatal("changed Governed control connection remained open")
+				}
+			}
+			continue
 		}
+		if !store.IsCurrent(registered.context) {
+			t.Fatalf("unaffected authentication context for %s was rotated", registered.clientID)
+		}
+	}
+	if !serverTestHeartbeatAccepted(registry, "shared-instance", "shared-session", 1, time.Now()) {
+		t.Fatal("unaffected Shared session was revoked")
 	}
 	replacementSelector := authentication.Selector(replacementGovernedToken)
 	if _, exists := store.Resolve(replacementSelector[:]); !exists {

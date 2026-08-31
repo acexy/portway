@@ -244,16 +244,17 @@ security:
 # Optional authentication entries. TCP and QUIC use the same immutable
 # authentication snapshot. All configured Tokens and ClientIDs must be globally
 # unique across shared, governed, and managed entries. The Shared Token and both
-# client directories are hot-reloaded as one atomic snapshot. Adding, removing,
-# replacing, or reassigning any Token disconnects every active and recoverable
-# client after the new snapshot is published; clients with unchanged credentials
-# may reconnect with the same Token. Governed policy-only changes remain selective,
-# while Managed configuration-only changes use online rollout.
+# client directories are hot-reloaded as one atomic snapshot. Token changes
+# revoke only the affected authentication record: Shared changes disconnect all
+# Shared clients, while Governed or Managed changes disconnect only that ClientID.
+# Unchanged records retain their Sessions. Managed configuration-only changes
+# continue to use online rollout.
 authentication:
   # Optional. When present but empty, generate a cryptographically random
   # 32-byte Token at startup and log it once. Later configuration scans reuse
-  # that effective Token instead of silently generating another value. Configure
-  # an explicit new value to rotate it. Omit this field to disable shared
+  # that effective Token instead of silently generating another value. Save the
+  # logged Token here before restarting the server, or the restart generates a
+  # different value. Configure an explicit new value to rotate it. Omit to disable shared
   # authentication when either client directory is configured.
   shared_token: ""
 
@@ -261,8 +262,8 @@ authentication:
   # allowlist, public port/domain policy, and resource limits. Omitted limit
   # fields use production-safe defaults; explicit values must remain within
   # their documented program hard limits. File names are operator-facing labels
-  # and do not need to match ClientID. Any Token change in this directory triggers
-  # the deployment-wide disconnect described above.
+  # and do not need to match ClientID. A Token change disconnects only the
+  # corresponding Governed ClientID.
   # The http permission separately allows public_schemes and domains for
   # type=http declarations; listeners and HTTPS certificates remain global.
   # See config/governed/governed-client.yaml for a complete record example.
@@ -272,8 +273,8 @@ authentication:
   # and complete server-owned proxy configuration. A client may have at most
   # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
   # TCP ports, UDP ports, and HTTP domains must each be globally unique.
-  # Any Token change in this directory triggers the deployment-wide disconnect
-  # described above; proxy configuration-only changes retain online rollout.
+  # A Token change disconnects only the corresponding Managed ClientID;
+  # proxy configuration-only changes retain online rollout.
   # Managed type=http entries explicitly select public_schemes. Every selected
   # listener must be enabled globally; HTTPS certificates are configured above,
   # while each managed local target still speaks HTTP.
