@@ -249,11 +249,27 @@ type ServerProxyConfig struct {
 
 // ProxyMirrorGroupConfig defines one server-owned TCP or UDP mirror group.
 type ProxyMirrorGroupConfig struct {
-	Name            string             `yaml:"name"`
-	Type            protocol.ProxyType `yaml:"type"`
-	Public          ProxyPublicConfig  `yaml:"public"`
-	PrimaryClientID string             `yaml:"primary_client_id"`
-	ClientIDs       []string           `yaml:"client_ids"`
+	Name            string                  `yaml:"name"`
+	Type            protocol.ProxyType      `yaml:"type"`
+	Public          ProxyMirrorPublicConfig `yaml:"public"`
+	PrimaryClientID string                  `yaml:"primary_client_id"`
+	ClientIDs       []string                `yaml:"client_ids"`
+}
+
+// ProxyMirrorPublicConfig defines the public ports shared by one mirror group.
+type ProxyMirrorPublicConfig struct {
+	PortRanges []PortRange `yaml:"port_ranges"`
+}
+
+// Ports expands the configured inclusive ranges into concrete listener ports.
+func (configuration ProxyMirrorPublicConfig) Ports() []uint16 {
+	ports := make([]uint16, 0)
+	for _, portRange := range configuration.PortRanges {
+		for port := uint32(portRange.Start); port <= uint32(portRange.End); port++ {
+			ports = append(ports, uint16(port))
+		}
+	}
+	return ports
 }
 
 // ProxyMirrorConfig separates Governed and Managed mirror authorization.

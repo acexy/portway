@@ -258,7 +258,7 @@ func mirrorConfigurationAllows(
 	clientIDs ...string,
 ) bool {
 	for _, group := range groups {
-		if group.Type != proxyType || group.Public.Port != port {
+		if group.Type != proxyType || !mirrorPublicIncludesPort(group.Public, port) {
 			continue
 		}
 		for _, clientID := range clientIDs {
@@ -274,6 +274,15 @@ func mirrorConfigurationAllows(
 			}
 		}
 		return true
+	}
+	return false
+}
+
+func mirrorPublicIncludesPort(public config.ProxyMirrorPublicConfig, port uint16) bool {
+	for _, portRange := range public.PortRanges {
+		if port >= portRange.Start && port <= portRange.End {
+			return true
+		}
 	}
 	return false
 }

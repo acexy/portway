@@ -10,6 +10,7 @@ import (
 const (
 	maxProxyMirrorGroups  = 128
 	maxProxyMirrorMembers = 32
+	maxProxyMirrorPorts   = 128
 )
 
 type proxyMirrorKey struct {
@@ -44,6 +45,9 @@ func validateProxyMirrorConfiguration(configuration ServerConfig) error {
 	); err != nil {
 		return err
 	}
+	if len(ports) > maxProxyMirrorPorts {
+		return fmt.Errorf("proxies.mirror may expand to at most %d public endpoints", maxProxyMirrorPorts)
+	}
 	return validateManagedClientConflicts(configuration.ManagedClients, configuration.Proxies.Mirror)
 }
 
@@ -67,14 +71,23 @@ func validateProxyMirrorGroups(
 		if group.Type != protocol.ProxyTypeTCP && group.Type != protocol.ProxyTypeUDP {
 			return fmt.Errorf("%s.type must be tcp or udp", field)
 		}
-		if group.Public.Port == 0 || group.Public.Domain != "" || len(group.Public.Schemes) != 0 {
-			return fmt.Errorf("%s.public must contain only a non-zero port", field)
+		if len(group.Public.PortRanges) == 0 {
+			return fmt.Errorf("%s.public.port_ranges must not be empty", field)
 		}
-		key := proxyMirrorKey{proxyType: group.Type, port: group.Public.Port}
-		if owner := ports[key]; owner != "" {
-			return fmt.Errorf("%s public endpoint conflicts with mirror group %q", field, owner)
+		if err := validateSortedPortRanges(field+".public.port_ranges", group.Public.PortRanges); err != nil {
+			return err
 		}
-		ports[key] = group.Name
+		groupPorts := group.Public.Ports()
+		if len(groupPorts) > maxProxyMirrorPorts {
+			return fmt.Errorf("%s.public.port_ranges may expand to at most %d ports", field, maxProxyMirrorPorts)
+		}
+		for _, port := range groupPorts {
+			key := proxyMirrorKey{proxyType: group.Type, port: port}
+			if owner := ports[key]; owner != "" {
+				return fmt.Errorf("%s public endpoint conflicts with mirror group %q", field, owner)
+			}
+			ports[key] = group.Name
+		}
 		if group.PrimaryClientID == "" {
 			return fmt.Errorf("%s.primary_client_id is required", field)
 		}
@@ -90,7 +103,7 @@ func validateProxyMirrorGroups(
 				return fmt.Errorf("%s.client_ids contains duplicate ClientID %q", field, clientID)
 			}
 			members[clientID] = struct{}{}
-			if err := validateProxyMirrorMember(mode, clientID, group, configuration); err != nil {
+			if err := validateProxyMirrorMember(mode, clientID, group, groupPorts, configuration); err != nil {
 				return fmt.Errorf("%s: %w", field, err)
 			}
 		}
@@ -105,6 +118,7 @@ func validateProxyMirrorMember(
 	mode authentication.Mode,
 	clientID string,
 	group ProxyMirrorGroupConfig,
+	ports []uint16,
 	configuration ServerConfig,
 ) error {
 	switch mode {
@@ -119,22 +133,29 @@ func validateProxyMirrorMember(
 		} else {
 			permission = client.Permissions.Proxies.UDP
 		}
-		if permission == nil || !portAllowed(group.Public.Port, permission.RemotePortRanges) {
-			return fmt.Errorf("client_id %q is not permitted to use the mirror port", clientID)
+		if permission == nil {
+			return fmt.Errorf("client_id %q is not permitted to use the mirror ports", clientID)
+		}
+		for _, port := range ports {
+			if !portAllowed(port, permission.RemotePortRanges) {
+				return fmt.Errorf("client_id %q is not permitted to use mirror port %d", clientID, port)
+			}
 		}
 	case authentication.ModeManaged:
 		client, exists := configuration.ManagedClients[clientID]
 		if !exists {
 			return fmt.Errorf("managed client_id %q does not exist", clientID)
 		}
-		matches := 0
-		for _, proxy := range client.Configuration.Proxies {
-			if proxy.Type == group.Type && proxy.Public.Port == group.Public.Port {
-				matches++
+		for _, port := range ports {
+			matches := 0
+			for _, proxy := range client.Configuration.Proxies {
+				if proxy.Type == group.Type && proxy.Public.Port == port {
+					matches++
+				}
 			}
-		}
-		if matches != 1 {
-			return fmt.Errorf("client_id %q must configure exactly one matching proxy", clientID)
+			if matches != 1 {
+				return fmt.Errorf("client_id %q must configure exactly one matching proxy for port %d", clientID, port)
+			}
 		}
 	}
 	return nil

@@ -19,6 +19,12 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
+func mirrorPublic(port uint16) config.ProxyMirrorPublicConfig {
+	return config.ProxyMirrorPublicConfig{
+		PortRanges: []config.PortRange{{Start: port, End: port}},
+	}
+}
+
 func TestManagedReservationRejectsSharedClientBinding(t *testing.T) {
 	manager := newTestTCPProxyManager(t)
 	port := uint16(reserveTCPAddress(t).Port)
@@ -62,7 +68,7 @@ func TestMirrorGroupAllowsGovernedClientsToShareTCPPort(t *testing.T) {
 	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
 		Governed: []config.ProxyMirrorGroupConfig{{
 			Name: "mirror", Type: protocol.ProxyTypeTCP,
-			Public:          config.ProxyPublicConfig{Port: port},
+			Public:          mirrorPublic(port),
 			PrimaryClientID: "client-a", ClientIDs: []string{"client-a", "client-b"},
 		}},
 	}); err != nil {
@@ -99,13 +105,42 @@ func TestMirrorGroupAllowsGovernedClientsToShareTCPPort(t *testing.T) {
 	}
 }
 
+func TestMirrorGroupCreatesEveryConfiguredTCPPort(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	firstPort := uint16(reserveTCPAddress(t).Port)
+	secondPort := uint16(reserveTCPAddress(t).Port)
+	if firstPort > secondPort {
+		firstPort, secondPort = secondPort, firstPort
+	}
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public: config.ProxyMirrorPublicConfig{PortRanges: []config.PortRange{
+				{Start: firstPort, End: firstPort},
+				{Start: secondPort, End: secondPort},
+			}},
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	for _, port := range []uint16{firstPort, secondPort} {
+		group := manager.tcpMirrorGroups[port]
+		if group == nil || group.port != port || manager.endpoints[port] == nil {
+			t.Fatalf("mirror endpoint %d was not created", port)
+		}
+	}
+}
+
 func TestMirrorGroupRejectsUnlistedClient(t *testing.T) {
 	manager := newTestTCPProxyManager(t)
 	port := uint16(reserveTCPAddress(t).Port)
 	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
 		Governed: []config.ProxyMirrorGroupConfig{{
 			Name: "mirror", Type: protocol.ProxyTypeTCP,
-			Public:          config.ProxyPublicConfig{Port: port},
+			Public:          mirrorPublic(port),
 			PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
 		}},
 	}); err != nil {
@@ -133,7 +168,7 @@ func TestMirrorGroupHotReloadReusesEndpointAndChangesPrimary(t *testing.T) {
 	configuration := func(primary string) config.ProxyMirrorConfig {
 		return config.ProxyMirrorConfig{Governed: []config.ProxyMirrorGroupConfig{{
 			Name: "mirror", Type: protocol.ProxyTypeTCP,
-			Public:          config.ProxyPublicConfig{Port: port},
+			Public:          mirrorPublic(port),
 			PrimaryClientID: primary, ClientIDs: []string{"client-a", "client-b"},
 		}}}
 	}
@@ -162,7 +197,7 @@ func TestManagedMirrorGroupAllowsSharedReservationAndBindings(t *testing.T) {
 	port := uint16(reserveTCPAddress(t).Port)
 	groupConfiguration := config.ProxyMirrorConfig{Managed: []config.ProxyMirrorGroupConfig{{
 		Name: "managed-mirror", Type: protocol.ProxyTypeTCP,
-		Public:          config.ProxyPublicConfig{Port: port},
+		Public:          mirrorPublic(port),
 		PrimaryClientID: "managed-a", ClientIDs: []string{"managed-a", "managed-b"},
 	}}}
 	if err := manager.ConfigureMirrorGroups(groupConfiguration); err != nil {
@@ -209,7 +244,7 @@ func TestMirrorSnapshotHasNoResponderWhenPrimaryIsOffline(t *testing.T) {
 	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
 		Governed: []config.ProxyMirrorGroupConfig{{
 			Name: "mirror", Type: protocol.ProxyTypeTCP,
-			Public:          config.ProxyPublicConfig{Port: port},
+			Public:          mirrorPublic(port),
 			PrimaryClientID: "client-a", ClientIDs: []string{"client-a", "client-b"},
 		}},
 	}); err != nil {

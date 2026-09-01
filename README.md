@@ -30,7 +30,7 @@ Portway
 │   ├── Standard Proxy: one public entry maps to one client service
 │   │   ├── TCP / UDP public port
 │   │   └── HTTP / HTTPS domain
-│   └── Mirror Proxy: one public TCP/UDP port copies input to multiple clients
+│   └── Mirror Proxy: public TCP/UDP ports copy input to multiple clients
 │       └── one configured Primary replies; other replies are discarded
 └── Forward: expose an approved server-side service on a portway local port
     └── TCP / UDP local listener

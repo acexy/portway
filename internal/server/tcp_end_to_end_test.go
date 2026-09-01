@@ -14,6 +14,12 @@ import (
 	"github.com/acexy/portway/internal/transport"
 )
 
+func mirrorPublicConfig(port uint16) config.ProxyMirrorPublicConfig {
+	return config.ProxyMirrorPublicConfig{
+		PortRanges: []config.PortRange{{Start: port, End: port}},
+	}
+}
+
 func TestTCPProxyEndToEnd(t *testing.T) {
 	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -165,7 +171,7 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 	}
 	serverConfiguration.Proxies.Mirror.Governed = []config.ProxyMirrorGroupConfig{{
 		Name: "mirror-group", Type: "tcp",
-		Public:          config.ProxyPublicConfig{Port: proxyPort},
+		Public:          mirrorPublicConfig(proxyPort),
 		PrimaryClientID: "primary-client", ClientIDs: []string{"primary-client", "mirror-client"},
 	}}
 

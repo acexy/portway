@@ -101,17 +101,25 @@ func (manager *Registry) SnapshotStats() Stats {
 	}
 	tcpMirrorMembers := 0
 	udpMirrorMembers := 0
+	type mirrorGroupIdentity struct {
+		mode authentication.Mode
+		name string
+	}
+	tcpMirrorGroups := make(map[mirrorGroupIdentity]struct{})
+	udpMirrorGroups := make(map[mirrorGroupIdentity]struct{})
 	for _, group := range manager.tcpMirrorGroups {
+		tcpMirrorGroups[mirrorGroupIdentity{mode: group.mode, name: group.configuration.Name}] = struct{}{}
 		tcpMirrorMembers += len(group.tcpMembers)
 	}
 	for _, group := range manager.udpMirrorGroups {
+		udpMirrorGroups[mirrorGroupIdentity{mode: group.mode, name: group.configuration.Name}] = struct{}{}
 		udpMirrorMembers += len(group.udpMembers)
 	}
 	return Stats{
 		TCPProxies:         tcpProxies,
 		UDPProxies:         udpProxies,
-		TCPMirrorGroups:    len(manager.tcpMirrorGroups),
-		UDPMirrorGroups:    len(manager.udpMirrorGroups),
+		TCPMirrorGroups:    len(tcpMirrorGroups),
+		UDPMirrorGroups:    len(udpMirrorGroups),
 		TCPMirrorMembers:   tcpMirrorMembers,
 		UDPMirrorMembers:   udpMirrorMembers,
 		HTTPProxies:        len(manager.httpDomains),
@@ -150,6 +158,7 @@ type udpProxyBinding struct {
 
 type mirrorGroup struct {
 	configuration config.ProxyMirrorGroupConfig
+	port          uint16
 	mode          authentication.Mode
 	tcpEndpoint   *proxytcp.Endpoint
 	udpEndpoint   *proxyudp.Endpoint

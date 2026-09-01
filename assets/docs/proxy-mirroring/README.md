@@ -1,8 +1,8 @@
 # TCP and UDP Proxy mirroring
 
-Proxy mirroring is a controlled variant of Proxy mode. One public TCP or UDP
-port on `portwayd` accepts visitor traffic and copies the same input to multiple
-configured `portway` clients.
+Proxy mirroring is a controlled variant of Proxy mode. One logical group of
+public TCP or UDP ports on `portwayd` accepts visitor traffic and copies the
+same input to multiple configured `portway` clients.
 
 It is not a load balancer and does not distribute visitors among members. It is
 also unrelated to Forward mode: the public listener remains on `portwayd`, and
@@ -59,7 +59,8 @@ and Forward entries cannot join a mirror group.
 Each group must have:
 
 - a unique `name`;
-- a unique combination of `type` and public `port`;
+- one or more sorted, non-overlapping public `port_ranges` whose concrete ports
+  do not overlap another group of the same protocol;
 - `type` set to `tcp` or `udp`;
 - one `primary_client_id` that also appears in `client_ids`;
 - an explicit, bounded list of authorized member client IDs.
@@ -76,7 +77,11 @@ proxies:
       - name: telemetry
         type: tcp
         public:
-          port: 2233
+          port_ranges:
+            - start: 2233
+              end: 2233
+            - start: 2240
+              end: 2249
         primary_client_id: governed-primary
         client_ids:
           - governed-primary
@@ -85,7 +90,9 @@ proxies:
       - name: discovery
         type: udp
         public:
-          port: 5353
+          port_ranges:
+            - start: 5353
+              end: 5353
         primary_client_id: managed-primary
         client_ids:
           - managed-primary

@@ -61,7 +61,11 @@ proxies:
   #     - name: telemetry
   #       type: tcp
   #       public:
-  #         port: 2233
+  #         port_ranges:
+  #           - start: 2233
+  #             end: 2233
+  #           - start: 2240
+  #             end: 2249
   #       primary_client_id: governed-primary
   #       client_ids:
   #         - governed-primary
@@ -70,7 +74,9 @@ proxies:
   #     - name: discovery
   #       type: udp
   #       public:
-  #         port: 5353
+  #         port_ranges:
+  #           - start: 5353
+  #             end: 5353
   #       primary_client_id: managed-primary
   #       client_ids:
   #         - managed-primary

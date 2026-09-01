@@ -326,12 +326,13 @@ func validateManagedClientConflicts(
 	}
 	mirrorMembers := make(map[string]map[string]struct{})
 	for _, group := range mirror.Managed {
-		key := fmt.Sprintf("%s:%d", group.Type, group.Public.Port)
 		members := make(map[string]struct{}, len(group.ClientIDs))
 		for _, clientID := range group.ClientIDs {
 			members[clientID] = struct{}{}
 		}
-		mirrorMembers[key] = members
+		for _, port := range group.Public.Ports() {
+			mirrorMembers[fmt.Sprintf("%s:%d", group.Type, port)] = members
+		}
 	}
 	clientIDs := coll.MapKeys(clients)
 	sort.Strings(clientIDs)

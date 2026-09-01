@@ -116,7 +116,7 @@ func (manager *Registry) openMirrorVisitor(group *mirrorGroup, visitor net.Conn)
 func (manager *Registry) snapshotMirrorTCPTargets(group *mirrorGroup) []mirrorTCPTarget {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
-	if manager.tcpMirrorGroups[group.configuration.Public.Port] != group {
+	if manager.tcpMirrorGroups[group.port] != group {
 		return nil
 	}
 	targets := make([]mirrorTCPTarget, 0, len(group.tcpMembers))

@@ -69,7 +69,7 @@ func TestUDPMirrorProxyEndToEnd(t *testing.T) {
 		"mirror-client":  permission("mirror-client", mirrorToken),
 	}
 	serverConfiguration.Proxies.Mirror.Governed = []config.ProxyMirrorGroupConfig{{
-		Name: "udp-mirror", Type: "udp", Public: config.ProxyPublicConfig{Port: proxyPort},
+		Name: "udp-mirror", Type: "udp", Public: mirrorPublicConfig(proxyPort),
 		PrimaryClientID: "primary-client", ClientIDs: []string{"primary-client", "mirror-client"},
 	}}
 

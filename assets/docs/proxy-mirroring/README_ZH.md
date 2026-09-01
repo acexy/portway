@@ -1,7 +1,7 @@
 # TCP 与 UDP Proxy 镜像
 
-Proxy 镜像是 Proxy 模式的一种受控变体。`portwayd` 上的一个公共 TCP 或 UDP
-端口承接访问者流量，并把相同输入复制给多个已配置的 `portway` 客户端。
+Proxy 镜像是 Proxy 模式的一种受控变体。`portwayd` 上的一个逻辑公共 TCP 或 UDP
+端口组承接访问者流量，并把相同输入复制给多个已配置的 `portway` 客户端。
 
 它不是负载均衡器，不会把不同访问者分配给不同成员；它也与 Forward 模式无关：
 公共 Listener 仍位于 `portwayd`，目标仍是各客户端可访问的服务。
@@ -52,7 +52,8 @@ TCP 在每条成员链路上保留字节流和半关闭语义，单个缓慢或�
 每个镜像组必须具备：
 
 - 唯一的 `name`；
-- 唯一的 `type` 与公共 `port` 组合；
+- 一个或多个已排序且不重叠的公共 `port_ranges`，展开后的具体端口不能与同协议
+  其他镜像组重叠；
 - 值为 `tcp` 或 `udp` 的 `type`；
 - 同时存在于 `client_ids` 中的唯一 `primary_client_id`；
 - 明确且数量受限的授权客户端 ID 列表。
@@ -68,7 +69,11 @@ proxies:
       - name: telemetry
         type: tcp
         public:
-          port: 2233
+          port_ranges:
+            - start: 2233
+              end: 2233
+            - start: 2240
+              end: 2249
         primary_client_id: governed-primary
         client_ids:
           - governed-primary
@@ -77,7 +82,9 @@ proxies:
       - name: discovery
         type: udp
         public:
-          port: 5353
+          port_ranges:
+            - start: 5353
+              end: 5353
         primary_client_id: managed-primary
         client_ids:
           - managed-primary

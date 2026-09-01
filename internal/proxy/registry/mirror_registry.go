@@ -25,16 +25,19 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	candidatesUDP := make(map[uint16]*mirrorGroup)
 	appendGroups := func(mode authentication.Mode, groups []config.ProxyMirrorGroupConfig) {
 		for _, groupConfiguration := range groups {
-			group := &mirrorGroup{
-				configuration: groupConfiguration,
-				mode:          mode,
-				tcpMembers:    make(map[string]*tcpProxyBinding),
-				udpMembers:    make(map[string]*udpProxyBinding),
-			}
-			if groupConfiguration.Type == protocol.ProxyTypeTCP {
-				candidatesTCP[groupConfiguration.Public.Port] = group
-			} else {
-				candidatesUDP[groupConfiguration.Public.Port] = group
+			for _, port := range groupConfiguration.Public.Ports() {
+				group := &mirrorGroup{
+					configuration: groupConfiguration,
+					port:          port,
+					mode:          mode,
+					tcpMembers:    make(map[string]*tcpProxyBinding),
+					udpMembers:    make(map[string]*udpProxyBinding),
+				}
+				if groupConfiguration.Type == protocol.ProxyTypeTCP {
+					candidatesTCP[port] = group
+				} else {
+					candidatesUDP[port] = group
+				}
 			}
 		}
 	}
@@ -277,7 +280,7 @@ func (manager *Registry) handleMirrorDatagram(
 	payload []byte,
 ) {
 	manager.mutex.Lock()
-	if manager.udpMirrorGroups[group.configuration.Public.Port] != group {
+	if manager.udpMirrorGroups[group.port] != group {
 		manager.mutex.Unlock()
 		return
 	}

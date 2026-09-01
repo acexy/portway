@@ -14,7 +14,7 @@ func TestValidateProxyMirrorConfigurationAllowsGovernedGroup(t *testing.T) {
 	}
 	configuration.Proxies.Mirror.Governed = []ProxyMirrorGroupConfig{{
 		Name: "telemetry", Type: protocol.ProxyTypeTCP,
-		Public:          ProxyPublicConfig{Port: 22000},
+		Public:          mirrorPublic(22000),
 		PrimaryClientID: "client-a", ClientIDs: []string{"client-a", "client-b"},
 	}}
 	if err := ValidateProxyMirrorConfiguration(configuration); err != nil {
@@ -29,7 +29,7 @@ func TestValidateProxyMirrorConfigurationRejectsPrimaryOutsideMembers(t *testing
 	}
 	configuration.Proxies.Mirror.Governed = []ProxyMirrorGroupConfig{{
 		Name: "telemetry", Type: protocol.ProxyTypeTCP,
-		Public:          ProxyPublicConfig{Port: 22000},
+		Public:          mirrorPublic(22000),
 		PrimaryClientID: "client-b", ClientIDs: []string{"client-a"},
 	}}
 	if err := ValidateProxyMirrorConfiguration(configuration); err == nil {
@@ -45,12 +45,37 @@ func TestValidateProxyMirrorConfigurationAllowsManagedSharedPort(t *testing.T) {
 	}
 	configuration.Proxies.Mirror.Managed = []ProxyMirrorGroupConfig{{
 		Name: "telemetry", Type: protocol.ProxyTypeUDP,
-		Public:          ProxyPublicConfig{Port: 32000},
+		Public:          mirrorPublic(32000),
 		PrimaryClientID: "managed-a", ClientIDs: []string{"managed-a", "managed-b"},
 	}}
 	if err := ValidateProxyMirrorConfiguration(configuration); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestValidateProxyMirrorConfigurationAllowsMultiplePorts(t *testing.T) {
+	configuration := DefaultServer()
+	configuration.GovernedClients = map[string]GovernedClientConfig{
+		"client-a": governedMirrorClient("client-a", 22000),
+	}
+	configuration.GovernedClients["client-a"] = GovernedClientConfig{
+		Authentication: ClientAuthenticationConfig{ClientID: "client-a"},
+		Permissions: GovernedPermissions{Proxies: GovernedProxyPermissions{
+			TCP: &ProxyPermission{RemotePortRanges: []PortRange{{Start: 22000, End: 22002}}},
+		}},
+	}
+	configuration.Proxies.Mirror.Governed = []ProxyMirrorGroupConfig{{
+		Name: "telemetry", Type: protocol.ProxyTypeTCP,
+		Public:          ProxyMirrorPublicConfig{PortRanges: []PortRange{{Start: 22000, End: 22002}}},
+		PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
+	}}
+	if err := ValidateProxyMirrorConfiguration(configuration); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mirrorPublic(port uint16) ProxyMirrorPublicConfig {
+	return ProxyMirrorPublicConfig{PortRanges: []PortRange{{Start: port, End: port}}}
 }
 
 func governedMirrorClient(clientID string, port uint16) GovernedClientConfig {
