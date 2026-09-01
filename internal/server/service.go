@@ -77,6 +77,9 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 // Run runs the server until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
 	configuration := s.configuration.snapshot()
+	if err := config.ValidateProxyMirrorConfiguration(configuration); err != nil {
+		return fmt.Errorf("validate proxy mirror configuration: %w", err)
+	}
 	s.logger.InfoWithFields("server started", map[string]any{
 		"event":                "server_started",
 		"listen_address":       configuration.Transport.ListenAddress,
@@ -134,6 +137,9 @@ func (s *Service) Run(ctx context.Context) error {
 		configuration.Proxies.UDP,
 		sourceFilter,
 	)
+	if err := s.proxyRegistry.ConfigureMirrorGroups(configuration.Proxies.Mirror); err != nil {
+		return fmt.Errorf("configure proxy mirror groups: %w", err)
+	}
 	if err := s.proxyRegistry.ConfigureManagedReservations(
 		configuration.ManagedClients,
 	); err != nil {

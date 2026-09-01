@@ -16,6 +16,7 @@ const (
 	ErrorDomainNotAllowed        ErrorCode = "domain_not_allowed"
 	ErrorPublicSchemeNotAllowed  ErrorCode = "public_scheme_not_allowed"
 	ErrorClientLimitExceeded     ErrorCode = "client_limit_exceeded"
+	ErrorMirrorMemberNotAllowed  ErrorCode = "mirror_member_not_allowed"
 )
 
 // Error describes a rejected Proxy Registry transaction.

@@ -56,6 +56,188 @@ func TestManagedReservationRejectsSharedClientBinding(t *testing.T) {
 	}
 }
 
+func TestMirrorGroupAllowsGovernedClientsToShareTCPPort(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          config.ProxyPublicConfig{Port: port},
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a", "client-b"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, clientID := range []string{"client-a", "client-b"} {
+		manager.AttachAuthenticated(
+			clientID,
+			"session-"+clientID,
+			nil,
+			authentication.Context{Mode: authentication.ModeGoverned, ClientID: clientID},
+			10,
+		)
+		result := manager.Sync(
+			clientID,
+			"session-"+clientID,
+			"request-"+clientID,
+			SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration("proxy-"+clientID, port),
+			}},
+		)
+		if result.Status != SyncStatusApplied {
+			t.Fatalf("register %s: %+v", clientID, result)
+		}
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	group := manager.tcpMirrorGroups[port]
+	if group == nil || len(group.tcpMembers) != 2 {
+		t.Fatalf("unexpected mirror members: %+v", group)
+	}
+	if manager.endpointBindings[port] != nil {
+		t.Fatal("mirror endpoint was assigned an exclusive binding")
+	}
+}
+
+func TestMirrorGroupRejectsUnlistedClient(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          config.ProxyPublicConfig{Port: port},
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.AttachAuthenticated(
+		"client-b", "session-b", control.NewWriter(&bytes.Buffer{}),
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-b"}, 10,
+	)
+	result := manager.Sync(
+		"client-b", "session-b", "request-b",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			tcpProxyDeclaration("proxy-b", port),
+		}},
+	)
+	if result.Status != SyncStatusRejected || result.Error == nil ||
+		result.Error.Code != ErrorMirrorMemberNotAllowed {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestMirrorGroupHotReloadReusesEndpointAndChangesPrimary(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	configuration := func(primary string) config.ProxyMirrorConfig {
+		return config.ProxyMirrorConfig{Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          config.ProxyPublicConfig{Port: port},
+			PrimaryClientID: primary, ClientIDs: []string{"client-a", "client-b"},
+		}}}
+	}
+	if err := manager.ConfigureMirrorGroups(configuration("client-a")); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	endpoint := manager.tcpMirrorGroups[port].tcpEndpoint
+	manager.mutex.Unlock()
+	if err := manager.ConfigureMirrorGroups(configuration("client-b")); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	group := manager.tcpMirrorGroups[port]
+	if group.tcpEndpoint != endpoint {
+		t.Fatal("hot reload replaced an unchanged public endpoint")
+	}
+	if group.configuration.PrimaryClientID != "client-b" {
+		t.Fatal("hot reload did not replace the primary ClientID")
+	}
+}
+
+func TestManagedMirrorGroupAllowsSharedReservationAndBindings(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	groupConfiguration := config.ProxyMirrorConfig{Managed: []config.ProxyMirrorGroupConfig{{
+		Name: "managed-mirror", Type: protocol.ProxyTypeTCP,
+		Public:          config.ProxyPublicConfig{Port: port},
+		PrimaryClientID: "managed-a", ClientIDs: []string{"managed-a", "managed-b"},
+	}}}
+	if err := manager.ConfigureMirrorGroups(groupConfiguration); err != nil {
+		t.Fatal(err)
+	}
+	clients := map[string]config.ManagedClientConfig{}
+	for _, clientID := range []string{"managed-a", "managed-b"} {
+		clients[clientID] = config.ManagedClientConfig{
+			Authentication: config.ClientAuthenticationConfig{ClientID: clientID},
+			Configuration: config.ManagedConfiguration{Revision: 1, Proxies: []config.ProxyConfig{{
+				Name: clientID + "-proxy", Type: protocol.ProxyTypeTCP,
+				Public: config.ProxyPublicConfig{Port: port},
+			}}},
+		}
+	}
+	if err := manager.ConfigureManagedReservations(clients); err != nil {
+		t.Fatal(err)
+	}
+	for _, clientID := range []string{"managed-a", "managed-b"} {
+		manager.AttachAuthenticated(
+			clientID, "session-"+clientID, nil,
+			authentication.Context{Mode: authentication.ModeManaged, ClientID: clientID}, 10,
+		)
+		result := manager.SyncAllowEmpty(
+			clientID, "session-"+clientID, "request-"+clientID,
+			SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration(clientID+"-proxy", port),
+			}},
+		)
+		if result.Status != SyncStatusApplied {
+			t.Fatalf("register %s: %+v", clientID, result)
+		}
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	if len(manager.tcpMirrorGroups[port].tcpMembers) != 2 {
+		t.Fatal("managed mirror members were not registered")
+	}
+}
+
+func TestMirrorSnapshotHasNoResponderWhenPrimaryIsOffline(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          config.ProxyPublicConfig{Port: port},
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a", "client-b"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.AttachAuthenticated(
+		"client-b", "session-b", control.NewWriter(&bytes.Buffer{}),
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-b"}, 10,
+	)
+	result := manager.Sync(
+		"client-b", "session-b", "request-b",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			tcpProxyDeclaration("proxy-b", port),
+		}},
+	)
+	if result.Status != SyncStatusApplied {
+		t.Fatalf("register mirror: %+v", result)
+	}
+	manager.Activate("client-b", "session-b")
+	manager.mutex.Lock()
+	group := manager.tcpMirrorGroups[port]
+	manager.mutex.Unlock()
+	targets := manager.snapshotMirrorTCPTargets(group)
+	if len(targets) != 1 || targets[0].primary {
+		t.Fatalf("offline Primary unexpectedly elected a responder: %+v", targets)
+	}
+}
+
 func TestProxySyncRejectsEmptyDeclaration(t *testing.T) {
 	t.Parallel()
 

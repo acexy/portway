@@ -104,6 +104,9 @@ func (s *Service) applyConfigurationCandidateContext(
 	if err := config.ValidateForwardConfiguration(candidate); err != nil {
 		return err
 	}
+	if err := config.ValidateProxyMirrorConfiguration(candidate); err != nil {
+		return err
+	}
 
 	if serverTokenRequiresGeneration(candidate) &&
 		current.Authentication.SharedToken != nil {
@@ -182,6 +185,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
 		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
 		reflect.DeepEqual(candidate.Forwards, current.Forwards) &&
+		reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror) &&
 		!httpsChanged &&
 		candidate.LogLevel == current.LogLevel {
 		s.configuration.updateSourceDigest(candidate.SourceDigest)
@@ -205,6 +209,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		candidate,
 	)
 	managedChanges := changedManagedClients(current, candidate)
+	mirrorChanged := !reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror)
 	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
 		current.GovernedClients,
 		candidate.GovernedClients,
@@ -217,11 +222,17 @@ func (s *Service) applyConfigurationCandidateContext(
 	if s.proxyRegistry != nil {
 		reservationTransaction, err = s.proxyRegistry.BeginManagedReservationUpdate(
 			candidate.ManagedClients,
+			candidate.Proxies.Mirror,
 		)
 		if err != nil {
 			return fmt.Errorf("validate managed reservations: %w", err)
 		}
 		defer reservationTransaction.Rollback()
+	}
+	if mirrorChanged && reservationTransaction != nil {
+		if err := reservationTransaction.ConfigureMirrorGroups(candidate.Proxies.Mirror); err != nil {
+			return fmt.Errorf("prepare proxy mirror groups: %w", err)
+		}
 	}
 	// Change only the level of the initialized logger after every fallible
 	// candidate validation has succeeded. EnableConsole is startup-only and the

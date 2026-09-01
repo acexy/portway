@@ -78,6 +78,9 @@ func loadServerAuthenticationFiles(configuration *ServerConfig) error {
 	}
 	configuration.GovernedClients = governedClients
 	configuration.ManagedClients = managedClients
+	if err := validateManagedClientConflicts(managedClients, configuration.Proxies.Mirror); err != nil {
+		return err
+	}
 	if _, err := BuildAuthenticationSnapshot(*configuration); err != nil {
 		return err
 	}
@@ -173,9 +176,6 @@ func loadManagedClients(path string) (map[string]ManagedClientConfig, error) {
 			return nil, fmt.Errorf("client_id %q is duplicated", clientID)
 		}
 		clients[clientID] = client
-	}
-	if err := validateManagedClientConflicts(clients); err != nil {
-		return nil, err
 	}
 	return clients, nil
 }
@@ -316,7 +316,23 @@ type managedBindingOwner struct {
 	proxyName string
 }
 
-func validateManagedClientConflicts(clients map[string]ManagedClientConfig) error {
+func validateManagedClientConflicts(
+	clients map[string]ManagedClientConfig,
+	mirrorConfigurations ...ProxyMirrorConfig,
+) error {
+	var mirror ProxyMirrorConfig
+	if len(mirrorConfigurations) != 0 {
+		mirror = mirrorConfigurations[0]
+	}
+	mirrorMembers := make(map[string]map[string]struct{})
+	for _, group := range mirror.Managed {
+		key := fmt.Sprintf("%s:%d", group.Type, group.Public.Port)
+		members := make(map[string]struct{}, len(group.ClientIDs))
+		for _, clientID := range group.ClientIDs {
+			members[clientID] = struct{}{}
+		}
+		mirrorMembers[key] = members
+	}
 	clientIDs := coll.MapKeys(clients)
 	sort.Strings(clientIDs)
 
@@ -332,6 +348,12 @@ func validateManagedClientConflicts(clients map[string]ManagedClientConfig) erro
 			switch proxy.Type {
 			case protocol.ProxyTypeTCP:
 				if previous, exists := tcpPorts[proxy.Public.Port]; exists {
+					members := mirrorMembers[fmt.Sprintf("%s:%d", proxy.Type, proxy.Public.Port)]
+					_, previousAllowed := members[previous.clientID]
+					_, currentAllowed := members[clientID]
+					if previousAllowed && currentAllowed {
+						continue
+					}
 					return managedBindingConflict(
 						"TCP remote port",
 						fmt.Sprint(proxy.Public.Port),
@@ -342,6 +364,12 @@ func validateManagedClientConflicts(clients map[string]ManagedClientConfig) erro
 				tcpPorts[proxy.Public.Port] = owner
 			case protocol.ProxyTypeUDP:
 				if previous, exists := udpPorts[proxy.Public.Port]; exists {
+					members := mirrorMembers[fmt.Sprintf("%s:%d", proxy.Type, proxy.Public.Port)]
+					_, previousAllowed := members[previous.clientID]
+					_, currentAllowed := members[clientID]
+					if previousAllowed && currentAllowed {
+						continue
+					}
 					return managedBindingConflict(
 						"UDP remote port",
 						fmt.Sprint(proxy.Public.Port),

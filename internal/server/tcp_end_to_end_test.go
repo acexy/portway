@@ -39,8 +39,8 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 		},
 		Proxies: config.ServerProxyConfig{
 			BindIP: "127.0.0.1",
-			HTTP:  config.DefaultServer().Proxies.HTTP,
-			UDP:   config.DefaultServer().Proxies.UDP,
+			HTTP:   config.DefaultServer().Proxies.HTTP,
+			UDP:    config.DefaultServer().Proxies.UDP,
 		},
 		LogLevel: config.LogLevelInfo,
 		Authentication: config.ServerAuthenticationConfig{
@@ -108,6 +108,140 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not stop")
+	}
+}
+
+func TestTCPMirrorProxyEndToEnd(t *testing.T) {
+	primaryListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primaryListener.Close()
+	primaryContext, cancelPrimary := context.WithCancel(context.Background())
+	defer cancelPrimary()
+	go runEchoServer(primaryContext, primaryListener)
+
+	mirrorListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mirrorListener.Close()
+	mirrorReceived := make(chan []byte, 1)
+	go func() {
+		connection, acceptError := mirrorListener.Accept()
+		if acceptError != nil {
+			return
+		}
+		defer connection.Close()
+		payload := make([]byte, len("mirror-payload"))
+		if _, readError := io.ReadFull(connection, payload); readError == nil {
+			mirrorReceived <- payload
+			_, _ = connection.Write([]byte("response-from-mirror"))
+		}
+	}()
+
+	serverAddress := reserveTCPAddress(t)
+	proxyAddress := reserveTCPAddress(t)
+	proxyPort := uint16(proxyAddress.Port)
+	primaryToken := "primary-token-with-at-least-32-random-bytes"
+	mirrorToken := "mirror-token-with-at-least-32-random-bytes"
+	serverConfiguration := config.DefaultServer()
+	serverConfiguration.Transport.ListenAddress = serverAddress.String()
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Authentication.SharedToken = nil
+	permission := func(clientID string, token string) config.GovernedClientConfig {
+		limits := config.DefaultProxyPermissionLimits()
+		return config.GovernedClientConfig{
+			Authentication: config.ClientAuthenticationConfig{ClientID: clientID, Token: token},
+			Permissions: config.GovernedPermissions{Proxies: config.GovernedProxyPermissions{
+				TCP:    &config.ProxyPermission{RemotePortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
+				Limits: limits,
+			}},
+		}
+	}
+	serverConfiguration.GovernedClients = map[string]config.GovernedClientConfig{
+		"primary-client": permission("primary-client", primaryToken),
+		"mirror-client":  permission("mirror-client", mirrorToken),
+	}
+	serverConfiguration.Proxies.Mirror.Governed = []config.ProxyMirrorGroupConfig{{
+		Name: "mirror-group", Type: "tcp",
+		Public:          config.ProxyPublicConfig{Port: proxyPort},
+		PrimaryClientID: "primary-client", ClientIDs: []string{"primary-client", "mirror-client"},
+	}}
+
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverErrors := make(chan error, 1)
+	serverService := NewService(logging.New("test-mirror-server"), serverConfiguration)
+	go func() { serverErrors <- serverService.Run(serverContext) }()
+
+	type runningMirrorClient struct {
+		cancel context.CancelFunc
+		errors chan error
+	}
+	startClient := func(clientID string, token string, localPort uint16) runningMirrorClient {
+		clientContext, cancel := context.WithCancel(context.Background())
+		errors := make(chan error, 1)
+		configuration := config.DefaultClient()
+		configuration.Transport.ServerAddress = serverAddress.String()
+		configuration.Authentication = config.ClientAuthenticationConfig{ClientID: clientID, Token: token}
+		configuration.Proxies = []config.ProxyConfig{{
+			Name: clientID + "-proxy", Type: "tcp",
+			Local:  config.EndpointConfig{IP: "127.0.0.1", Port: localPort},
+			Public: config.ProxyPublicConfig{Port: proxyPort},
+		}}
+		service := client.NewService(logging.New("test-mirror-client"), configuration)
+		go func() { errors <- service.Run(clientContext) }()
+		return runningMirrorClient{cancel: cancel, errors: errors}
+	}
+	clients := []runningMirrorClient{
+		startClient("primary-client", primaryToken, uint16(primaryListener.Addr().(*net.TCPAddr).Port)),
+		startClient("mirror-client", mirrorToken, uint16(mirrorListener.Addr().(*net.TCPAddr).Port)),
+	}
+
+	payload := []byte("mirror-payload")
+	deadline := time.Now().Add(10 * time.Second)
+	var visitor net.Conn
+	mirrorObserved := false
+	for {
+		candidate, dialError := net.DialTimeout("tcp", proxyAddress.String(), 200*time.Millisecond)
+		if dialError == nil {
+			_ = candidate.SetDeadline(time.Now().Add(300 * time.Millisecond))
+			_, writeError := candidate.Write(payload)
+			response := make([]byte, len(payload))
+			_, readError := io.ReadFull(candidate, response)
+			select {
+			case mirrored := <-mirrorReceived:
+				if string(mirrored) != string(payload) {
+					t.Fatalf("mirror received %q", mirrored)
+				}
+				mirrorObserved = true
+			default:
+			}
+			if writeError == nil && readError == nil && string(response) == string(payload) &&
+				mirrorObserved {
+				visitor = candidate
+				break
+			}
+			candidate.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("TCP mirror clients did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	visitor.Close()
+
+	for _, running := range clients {
+		running.cancel()
+	}
+	for _, running := range clients {
+		if err := waitServiceResult(running.errors); err != nil {
+			t.Fatalf("client stopped with error: %v", err)
+		}
+	}
+	cancelServer()
+	if err := waitServiceResult(serverErrors); err != nil {
+		t.Fatalf("server stopped with error: %v", err)
 	}
 }
 

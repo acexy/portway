@@ -17,18 +17,58 @@ then carries traffic in either direction:
   `portway` and reach an explicitly allowed IP and port from the `portwayd`
   network.
 
-The two modes can run independently or together over the same connection.
-Portway separates control traffic from tunneled data, supports TCP and QUIC as
-the client-server transport, and uses explicit ownership, bounded resources,
-strict validation, and secure defaults for long-running operation.
+The two modes are independent features and can run separately or share one
+authenticated client-server connection.
 
 [中文版](README_ZH.md)
 
-## Features
+## Functional architecture
+
+```text
+Portway
+├── Proxy: publish client-side services through portwayd
+│   ├── Standard Proxy: one public entry maps to one client service
+│   │   ├── TCP / UDP public port
+│   │   └── HTTP / HTTPS domain
+│   └── Mirror Proxy: one public TCP/UDP port copies input to multiple clients
+│       └── one configured Primary replies; other replies are discarded
+└── Forward: expose an approved server-side service on a portway local port
+    └── TCP / UDP local listener
+```
+
+**Proxy** is for publishing services from a client network. `portwayd` owns the
+public listener and carries visitor traffic through the tunnel to `portway`.
+Standard Proxy is suited to SSH, web applications, DNS, game servers, and other
+services that need a stable public entry.
+
+**Mirror Proxy** is a controlled TCP/UDP variant for traffic observation,
+parallel processing, protocol migration, auditing, and validation against a
+shadow service. Every online member receives the same visitor input, but only
+the configured Primary can reply, so mirror clients cannot interfere with the
+visitor response. See [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md).
+
+**Forward** is for consuming services from the server network. `portway` owns
+the local TCP/UDP listener and sends connections or datagrams to an explicitly
+allowed target reachable by `portwayd`. Typical uses include private databases,
+administration endpoints, internal DNS, and other services that should remain
+off the public network.
+
+| Requirement | Feature | Entry location | Target location | Protocols |
+| --- | --- | --- | --- | --- |
+| Publish one client service | Standard Proxy | `portwayd` | Client network | TCP, UDP, HTTP, HTTPS |
+| Copy public input to multiple clients | Mirror Proxy | `portwayd` | Multiple client networks | TCP, UDP |
+| Access a server-side service locally | Forward | `portway` | Server network | TCP, UDP |
+
+For traffic diagrams and complete mode boundaries, see
+[Proxy and Forward modes](assets/docs/modes/README.md).
+
+## Highlights
 
 **Bidirectional traffic**
 
 - Proxy client-side TCP and UDP services through public listeners on the server.
+- Mirror a governed or managed public TCP/UDP Proxy entry to multiple clients
+  without allowing shadow clients to affect visitor responses.
 - Route domains over HTTP or HTTPS, with server-side TLS termination, streaming,
   Upgrade support, connection reuse, and atomic certificate reload.
 - Forward TCP and UDP from client-side listeners to server-side networks. A
@@ -54,10 +94,6 @@ strict validation, and secure defaults for long-running operation.
 - Reload the server configuration atomically, including Token revocation,
   selective policy revocation, Managed configuration rollout, Forward policy,
   and HTTPS certificates. Invalid updates retain the previous effective state.
-
-Portway's two traffic modes cover both sides of private-network connectivity:
-see [Proxy and Forward modes](assets/docs/modes/README.md) for diagrams,
-configuration examples, and their security boundaries.
 
 ## Quick start
 
@@ -373,6 +409,7 @@ appropriate `client.yaml` or `server.yaml` before running the installed command.
 ## Technical documentation
 
 - [Proxy and Forward modes](assets/docs/modes/README.md)
+- [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md)
 - [Technical overview](assets/docs/technical/README.md)
 - [Operations endpoints](assets/docs/operations/README.md)
 - [Authentication and configuration control](assets/docs/authentication/README.md)

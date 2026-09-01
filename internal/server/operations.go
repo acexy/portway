@@ -48,11 +48,14 @@ func (s *Service) writeMetrics(response http.ResponseWriter, _ *http.Request) {
 		udpForwards = forwards.UDPBindings
 	}
 	var tcpProxies, udpProxies, httpProxies int
+	var tcpMirrorGroups, udpMirrorGroups, tcpMirrorMembers, udpMirrorMembers int
 	var httpRequests, httpUpgrades int
 	var udpAssociations, udpPending, udpQueuedBytes int
 	if s.proxyRegistry != nil {
 		proxies := s.proxyRegistry.SnapshotStats()
 		tcpProxies, udpProxies, httpProxies = proxies.TCPProxies, proxies.UDPProxies, proxies.HTTPProxies
+		tcpMirrorGroups, udpMirrorGroups = proxies.TCPMirrorGroups, proxies.UDPMirrorGroups
+		tcpMirrorMembers, udpMirrorMembers = proxies.TCPMirrorMembers, proxies.UDPMirrorMembers
 		httpRequests, httpUpgrades = proxies.HTTPActiveRequests, proxies.HTTPActiveUpgrades
 		udpAssociations = proxies.UDP.Associations
 		udpPending = proxies.UDP.PendingAssociations
@@ -79,6 +82,10 @@ func (s *Service) writeMetrics(response http.ResponseWriter, _ *http.Request) {
 		{"portway_udp_forwards", "Current registered UDP Forwards.", uint64(udpForwards)},
 		{"portway_tcp_proxies", "Current registered TCP proxies.", uint64(tcpProxies)},
 		{"portway_udp_proxies", "Current registered UDP proxies.", uint64(udpProxies)},
+		{"portway_tcp_mirror_groups", "Current configured TCP mirror groups.", uint64(tcpMirrorGroups)},
+		{"portway_udp_mirror_groups", "Current configured UDP mirror groups.", uint64(udpMirrorGroups)},
+		{"portway_tcp_mirror_members", "Current registered TCP mirror members.", uint64(tcpMirrorMembers)},
+		{"portway_udp_mirror_members", "Current registered UDP mirror members.", uint64(udpMirrorMembers)},
 		{"portway_http_proxies", "Current registered HTTP proxies.", uint64(httpProxies)},
 		{"portway_http_active_requests", "Current active HTTP requests.", uint64(httpRequests)},
 		{"portway_http_active_upgrades", "Current active upgraded HTTP connections.", uint64(httpUpgrades)},

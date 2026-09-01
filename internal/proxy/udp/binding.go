@@ -21,18 +21,19 @@ type TargetResolver func() (link.Target, error)
 
 // Binding owns all associations for one registered UDP proxy.
 type Binding struct {
-	context       context.Context
-	cancel        context.CancelFunc
-	configuration config.UDPConfig
-	endpoint      *Endpoint
-	broker        *link.Broker
-	limiter       *Limiter
-	filter        *ipfilter.Filter
-	resolveTarget TargetResolver
-	mutex         sync.Mutex
-	associations  map[netip.AddrPort]*association
-	closeOnce     sync.Once
-	waitGroup     sync.WaitGroup
+	context         context.Context
+	cancel          context.CancelFunc
+	configuration   config.UDPConfig
+	endpoint        *Endpoint
+	broker          *link.Broker
+	limiter         *Limiter
+	filter          *ipfilter.Filter
+	resolveTarget   TargetResolver
+	mutex           sync.Mutex
+	associations    map[netip.AddrPort]*association
+	closeOnce       sync.Once
+	waitGroup       sync.WaitGroup
+	responseEnabled atomic.Bool
 }
 
 // NewBinding creates a UDP runtime without changing the endpoint handler.
@@ -57,8 +58,14 @@ func NewBinding(
 		resolveTarget: resolveTarget,
 		associations:  make(map[netip.AddrPort]*association),
 	}
+	binding.responseEnabled.Store(true)
 	binding.waitGroup.Go(binding.sweep)
 	return binding
+}
+
+// SetResponseEnabled controls whether association responses reach the visitor.
+func (binding *Binding) SetResponseEnabled(enabled bool) {
+	binding.responseEnabled.Store(enabled)
 }
 
 // HandleDatagram routes one public datagram to its association.
@@ -171,18 +178,19 @@ func (binding *Binding) Close() {
 }
 
 type association struct {
-	binding       *Binding
-	source        netip.AddrPort
-	target        link.Target
-	lease         *AssociationLease
-	context       context.Context
-	cancel        context.CancelFunc
-	queue         chan []byte
-	lastActivity  atomic.Int64
-	releaseSource func()
-	closeOnce     sync.Once
-	finishOnce    sync.Once
-	done          chan struct{}
+	binding         *Binding
+	source          netip.AddrPort
+	target          link.Target
+	lease           *AssociationLease
+	context         context.Context
+	cancel          context.CancelFunc
+	queue           chan []byte
+	lastActivity    atomic.Int64
+	releaseSource   func()
+	closeOnce       sync.Once
+	finishOnce      sync.Once
+	done            chan struct{}
+	responseEnabled bool
 }
 
 func newAssociation(
@@ -193,15 +201,16 @@ func newAssociation(
 ) *association {
 	ctx, cancel := context.WithCancel(binding.context)
 	candidate := &association{
-		binding:       binding,
-		source:        source,
-		target:        target,
-		lease:         lease,
-		context:       ctx,
-		cancel:        cancel,
-		queue:         make(chan []byte, binding.configuration.MaxQueuedDatagramsPerAssociation),
-		releaseSource: func() {},
-		done:          make(chan struct{}),
+		binding:         binding,
+		source:          source,
+		target:          target,
+		lease:           lease,
+		context:         ctx,
+		cancel:          cancel,
+		queue:           make(chan []byte, binding.configuration.MaxQueuedDatagramsPerAssociation),
+		releaseSource:   func() {},
+		done:            make(chan struct{}),
+		responseEnabled: binding.responseEnabled.Load(),
 	}
 	candidate.touch()
 	return candidate
@@ -295,8 +304,10 @@ func (association *association) forward(
 		if err != nil {
 			return errors.Join(err, receiveWriteError(writeErrors))
 		}
-		if err := association.binding.endpoint.WriteTo(payload, association.source); err != nil {
-			return err
+		if association.responseEnabled {
+			if err := association.binding.endpoint.WriteTo(payload, association.source); err != nil {
+				return err
+			}
 		}
 		association.touch()
 		select {

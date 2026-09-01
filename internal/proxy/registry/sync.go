@@ -188,6 +188,21 @@ func (manager *Registry) sync(
 		if endpoint == nil {
 			continue
 		}
+		state := manager.clients[clientID]
+		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil &&
+			group.tcpEndpoint == endpoint {
+			reusableEndpoints[declaration.RemotePort] = endpoint
+			continue
+		}
+		if manager.tcpMirrorGroups[declaration.RemotePort] != nil {
+			manager.mutex.Unlock()
+			return rejectedSyncResult(
+				request.Revision,
+				ErrorMirrorMemberNotAllowed,
+				declaration.Name,
+				"mirror group membership is not allowed",
+			)
+		}
 		currentBinding := manager.endpointBindings[declaration.RemotePort]
 		if currentBinding == nil || currentBinding.clientID != clientID {
 			manager.mutex.Unlock()
@@ -220,6 +235,21 @@ func (manager *Registry) sync(
 		endpoint := manager.udpEndpoints[declaration.RemotePort]
 		if endpoint == nil {
 			continue
+		}
+		state := manager.clients[clientID]
+		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil &&
+			group.udpEndpoint == endpoint {
+			reusableUDPEndpoints[declaration.RemotePort] = endpoint
+			continue
+		}
+		if manager.udpMirrorGroups[declaration.RemotePort] != nil {
+			manager.mutex.Unlock()
+			return rejectedSyncResult(
+				request.Revision,
+				ErrorMirrorMemberNotAllowed,
+				declaration.Name,
+				"mirror group membership is not allowed",
+			)
 		}
 		currentBinding := manager.udpEndpointBindings[declaration.RemotePort]
 		if currentBinding == nil || currentBinding.clientID != clientID ||
@@ -339,6 +369,11 @@ func (manager *Registry) sync(
 			)
 		}
 		nextUDPProxies[declaration.Name] = binding
+		manager.mutex.Lock()
+		if group := manager.mirrorGroupLocked(clientID, manager.clients[clientID], declaration); group != nil {
+			binding.runtime.SetResponseEnabled(clientID == group.configuration.PrimaryClientID)
+		}
+		manager.mutex.Unlock()
 		results = append(results, protocol.ProxyResult{
 			Name:       declaration.Name,
 			Status:     protocol.ProxyStatusActive,

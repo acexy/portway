@@ -23,15 +23,21 @@ Client-side local service
 ```
 
 The listener belongs to `portwayd`. TCP and UDP proxies use a public server
-port; HTTP/HTTPS proxies use a domain. The client declares the local destination
-through the nested `local` endpoint.
+port; HTTP/HTTPS proxies use a domain. A Standard Proxy maps the entry to one
+client service. A governed or managed TCP/UDP
+[Mirror Proxy](../proxy-mirroring/README.md) copies the same visitor input to
+multiple configured clients while allowing only one Primary to reply. The
+client declares its local destination through the nested `local` endpoint.
 
 ```yaml
 proxies:
   - name: ssh
     type: tcp
-    local: {ip: 127.0.0.1, port: 22}
-    public: {port: 22022}
+    local:
+      ip: 127.0.0.1
+      port: 22
+    public:
+      port: 22022
 ```
 
 Use Proxy when an application on the client network must be reachable through
@@ -62,8 +68,12 @@ reachable from the server.
 forwards:
   - name: database
     type: tcp
-    listen: {ip: 127.0.0.1, port: 15432}
-    target: {ip: 10.20.1.15, port: 5432}
+    listen:
+      ip: 127.0.0.1
+      port: 15432
+    target:
+      ip: 10.20.1.15
+      port: 5432
 ```
 
 Use Forward for administration, databases, DNS, or other services that should

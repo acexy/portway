@@ -240,10 +240,26 @@ type HTTPProxyConfig struct {
 
 // ServerProxyConfig groups every server-owned public Proxy runtime setting.
 type ServerProxyConfig struct {
-	BindIP string          `yaml:"bind_ip"`
-	HTTP   HTTPProxyConfig `yaml:"http"`
-	HTTPS  HTTPSConfig     `yaml:"https"`
-	UDP    UDPConfig       `yaml:"udp"`
+	BindIP string            `yaml:"bind_ip"`
+	HTTP   HTTPProxyConfig   `yaml:"http"`
+	HTTPS  HTTPSConfig       `yaml:"https"`
+	UDP    UDPConfig         `yaml:"udp"`
+	Mirror ProxyMirrorConfig `yaml:"mirror"`
+}
+
+// ProxyMirrorGroupConfig defines one server-owned TCP or UDP mirror group.
+type ProxyMirrorGroupConfig struct {
+	Name            string             `yaml:"name"`
+	Type            protocol.ProxyType `yaml:"type"`
+	Public          ProxyPublicConfig  `yaml:"public"`
+	PrimaryClientID string             `yaml:"primary_client_id"`
+	ClientIDs       []string           `yaml:"client_ids"`
+}
+
+// ProxyMirrorConfig separates Governed and Managed mirror authorization.
+type ProxyMirrorConfig struct {
+	Governed []ProxyMirrorGroupConfig `yaml:"governed"`
+	Managed  []ProxyMirrorGroupConfig `yaml:"managed"`
 }
 
 // SecurityConfig configures server-side source filtering.

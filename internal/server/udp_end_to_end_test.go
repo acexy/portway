@@ -20,6 +20,140 @@ func TestUDPProxyOverQUICTransportEndToEnd(t *testing.T) {
 	runUDPProxyEndToEnd(t, transport.TypeQUIC)
 }
 
+func TestUDPMirrorProxyEndToEnd(t *testing.T) {
+	primaryConnection, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primaryConnection.Close()
+	primaryContext, cancelPrimary := context.WithCancel(context.Background())
+	defer cancelPrimary()
+	go runUDPEchoServer(primaryContext, primaryConnection)
+
+	mirrorConnection, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mirrorConnection.Close()
+	mirrorReceived := make(chan []byte, 1)
+	go func() {
+		buffer := make([]byte, 1024)
+		length, source, readError := mirrorConnection.ReadFromUDP(buffer)
+		if readError != nil {
+			return
+		}
+		mirrorReceived <- append([]byte(nil), buffer[:length]...)
+		_, _ = mirrorConnection.WriteToUDP([]byte("mirror-response"), source)
+	}()
+
+	serverAddress := reserveTCPAddress(t).String()
+	proxyAddress := reserveUDPAddress(t)
+	proxyPort := uint16(proxyAddress.Port)
+	primaryToken := "udp-primary-token-with-at-least-32-random-bytes"
+	mirrorToken := "udp-mirror-token-with-at-least-32-random-bytes"
+	serverConfiguration := config.DefaultServer()
+	serverConfiguration.Transport.ListenAddress = serverAddress
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Authentication.SharedToken = nil
+	permission := func(clientID string, token string) config.GovernedClientConfig {
+		return config.GovernedClientConfig{
+			Authentication: config.ClientAuthenticationConfig{ClientID: clientID, Token: token},
+			Permissions: config.GovernedPermissions{Proxies: config.GovernedProxyPermissions{
+				UDP:    &config.ProxyPermission{RemotePortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
+				Limits: config.DefaultProxyPermissionLimits(),
+			}},
+		}
+	}
+	serverConfiguration.GovernedClients = map[string]config.GovernedClientConfig{
+		"primary-client": permission("primary-client", primaryToken),
+		"mirror-client":  permission("mirror-client", mirrorToken),
+	}
+	serverConfiguration.Proxies.Mirror.Governed = []config.ProxyMirrorGroupConfig{{
+		Name: "udp-mirror", Type: "udp", Public: config.ProxyPublicConfig{Port: proxyPort},
+		PrimaryClientID: "primary-client", ClientIDs: []string{"primary-client", "mirror-client"},
+	}}
+
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverErrors := make(chan error, 1)
+	serverService := NewService(logging.New("test-udp-mirror-server"), serverConfiguration)
+	go func() { serverErrors <- serverService.Run(serverContext) }()
+
+	type runningClient struct {
+		cancel context.CancelFunc
+		errors chan error
+	}
+	startClient := func(clientID string, token string, localPort uint16) runningClient {
+		ctx, cancel := context.WithCancel(context.Background())
+		errors := make(chan error, 1)
+		configuration := config.DefaultClient()
+		configuration.Transport.ServerAddress = serverAddress
+		configuration.Authentication = config.ClientAuthenticationConfig{ClientID: clientID, Token: token}
+		configuration.Proxies = []config.ProxyConfig{{
+			Name: clientID + "-udp", Type: "udp",
+			Local:  config.EndpointConfig{IP: "127.0.0.1", Port: localPort},
+			Public: config.ProxyPublicConfig{Port: proxyPort},
+		}}
+		service := client.NewService(logging.New("test-udp-mirror-client"), configuration)
+		go func() { errors <- service.Run(ctx) }()
+		return runningClient{cancel: cancel, errors: errors}
+	}
+	clients := []runningClient{
+		startClient("primary-client", primaryToken, uint16(primaryConnection.LocalAddr().(*net.UDPAddr).Port)),
+		startClient("mirror-client", mirrorToken, uint16(mirrorConnection.LocalAddr().(*net.UDPAddr).Port)),
+	}
+
+	visitor, err := net.DialUDP("udp", nil, proxyAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer visitor.Close()
+	payload := []byte("udp-mirror-payload")
+	response := make([]byte, 1024)
+	deadline := time.Now().Add(10 * time.Second)
+	primaryResponded := false
+	mirrorObserved := false
+	for {
+		if _, err := visitor.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = visitor.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		length, _, readError := visitor.ReadFromUDP(response)
+		if readError == nil {
+			if string(response[:length]) != string(payload) {
+				t.Fatalf("visitor received non-primary response %q", response[:length])
+			}
+			primaryResponded = true
+		}
+		select {
+		case mirrored := <-mirrorReceived:
+			if string(mirrored) != string(payload) {
+				t.Fatalf("mirror received %q", mirrored)
+			}
+			mirrorObserved = true
+		default:
+		}
+		if primaryResponded && mirrorObserved {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("UDP mirror did not become ready: %v", readError)
+		}
+	}
+
+	for _, running := range clients {
+		running.cancel()
+	}
+	for _, running := range clients {
+		if err := waitServiceResult(running.errors); err != nil {
+			t.Fatalf("UDP mirror client stopped with error: %v", err)
+		}
+	}
+	cancelServer()
+	if err := waitServiceResult(serverErrors); err != nil {
+		t.Fatalf("UDP mirror server stopped with error: %v", err)
+	}
+}
+
 func runUDPProxyEndToEnd(t *testing.T, transportType transport.Type) {
 	t.Helper()
 	echoConnection, err := net.ListenUDP("udp", &net.UDPAddr{

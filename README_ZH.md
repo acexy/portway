@@ -15,15 +15,51 @@ Portway 在 `portway` 与 `portwayd` 之间建立认证隧道，并支持两个�
 - **Forward 模式（客户端到服务端）：** 在 `portway` 上创建本地 TCP/UDP
   Listener，访问 `portwayd` 所在网络中明确授权的 IP 和端口。
 
-两种模式既可独立使用，也可复用同一连接同时运行。Portway 将控制流量与隧道数据
-分离，支持 TCP 和 QUIC 作为客户端-服务端传输，并通过显式资源归属、有界资源、
-严格校验和安全默认配置满足长期运行需求。
+两种模式是相互独立的功能，既可分别运行，也可复用同一条认证客户端-服务端连接。
 
-## 功能特性
+## 项目总体功能架构
+
+```text
+Portway
+├── Proxy：将客户端侧服务通过 portwayd 发布出去
+│   ├── 普通代理：一个公共入口对应一个客户端服务
+│   │   ├── TCP / UDP 公共端口
+│   │   └── HTTP / HTTPS 域名
+│   └── 镜像代理：一个公共 TCP/UDP 端口将输入复制给多个客户端
+│       └── 只有指定 Primary 回复，其他客户端的回复被丢弃
+└── Forward：将服务端侧获准服务转发到 portway 本地端口
+    └── TCP / UDP 本地 Listener
+```
+
+**Proxy** 用于发布客户端网络中的服务。公共 Listener 由 `portwayd` 持有，访问者
+流量通过隧道送到 `portway`。普通代理适合 SSH、Web 应用、DNS、游戏服务等需要
+稳定公网入口的服务。
+
+**镜像 Proxy** 是受控的 TCP/UDP 代理变体，适合流量观测、并行处理、协议迁移、
+审计以及影子服务验证。所有在线成员收到相同的访问者输入，但只有指定 Primary
+能够回复，因此镜像客户端不会干扰访问者响应。详见
+[TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)。
+
+**Forward** 用于使用服务端网络中的服务。本地 TCP/UDP Listener 由 `portway`
+持有，连接或数据报会发送到 `portwayd` 可达且明确获准的目标。典型场景包括私有
+数据库、管理接口、内部 DNS，以及其他不应暴露到公网的服务。
+
+| 需求 | 功能 | 入口位置 | 目标位置 | 协议 |
+| --- | --- | --- | --- | --- |
+| 发布单个客户端服务 | 普通 Proxy | `portwayd` | 客户端网络 | TCP、UDP、HTTP、HTTPS |
+| 将公共输入复制给多个客户端 | 镜像 Proxy | `portwayd` | 多个客户端网络 | TCP、UDP |
+| 从本地访问服务端侧服务 | Forward | `portway` | 服务端网络 | TCP、UDP |
+
+流量图和完整模式边界请参阅
+[Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)。
+
+## 功能亮点
 
 **双向流量能力**
 
 - 通过服务端公共 Listener 代理客户端侧 TCP 和 UDP 服务。
+- 将受 Governed 或 Managed 管理的公共 TCP/UDP Proxy 入口镜像给多个客户端，
+  同时阻止影子客户端影响访问者响应。
 - 按域名代理 HTTP 或 HTTPS，支持服务端 TLS 终止、流式传输、Upgrade、连接复用
   和证书原子热更新。
 - 将客户端侧 TCP/UDP Listener 转发到服务端网络，并由服务端 Allowlist 按 CIDR、
@@ -44,9 +80,6 @@ Portway 在 `portway` 与 `portwayd` 之间建立认证隧道，并支持两个�
 - 支持可信客户端群组共享配置、受策略约束的客户端配置和服务端完全托管配置。
 - 原子热加载服务端配置，包括 Token 吊销、策略选择性吊销、Managed 配置下发、
   Forward 策略和 HTTPS 证书；无效更新继续保留上一份有效状态。
-
-Portway 的两种流量模式覆盖私有网络连接的两个方向。请参阅
-[Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)，了解流量图、配置示例和安全边界。
 
 ## 快速开始
 
@@ -349,6 +382,7 @@ Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要
 ## 技术文档
 
 - [Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)
+- [TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)
 - [技术概览](assets/docs/technical/README_ZH.md)
 - [运维接口](assets/docs/operations/README_ZH.md)
 - [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)

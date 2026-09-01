@@ -87,6 +87,31 @@ proxies:
   # Defaults to 0.0.0.0. Must be an IP address, not a hostname.
   bind_ip: 0.0.0.0
 
+  # Optional server-owned TCP/UDP mirror groups. Only Governed and Managed
+  # ClientIDs may participate. Every online member receives the same visitor
+  # input, while only primary_client_id may reply. Missing Primary leaves the
+  # group receive-only; no replacement is elected. Group and member changes
+  # are hot-reloaded and affect new TCP connections or UDP associations.
+  # mirror:
+  #   governed:
+  #     - name: telemetry
+  #       type: tcp
+  #       public:
+  #         port: 2233
+  #       primary_client_id: governed-primary
+  #       client_ids:
+  #         - governed-primary
+  #         - governed-mirror
+  #   managed:
+  #     - name: discovery
+  #       type: udp
+  #       public:
+  #         port: 5353
+  #       primary_client_id: managed-primary
+  #       client_ids:
+  #         - managed-primary
+  #         - managed-mirror
+
   # Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
   # These values are shared by public HTTP and TLS-terminated HTTPS requests.
   # Defaults apply even when both public listeners are empty. Changing an

@@ -32,6 +32,8 @@ type Registry struct {
 	endpointBindings      map[uint16]*tcpProxyBinding
 	udpEndpoints          map[uint16]*proxyudp.Endpoint
 	udpEndpointBindings   map[uint16]*udpProxyBinding
+	tcpMirrorGroups       map[uint16]*mirrorGroup
+	udpMirrorGroups       map[uint16]*mirrorGroup
 	managedTCPPorts       map[uint16]string
 	managedUDPPorts       map[uint16]string
 	managedHTTPDomains    map[string]string
@@ -77,6 +79,10 @@ type cachedSyncRequest struct {
 type Stats struct {
 	TCPProxies         int
 	UDPProxies         int
+	TCPMirrorGroups    int
+	UDPMirrorGroups    int
+	TCPMirrorMembers   int
+	UDPMirrorMembers   int
 	HTTPProxies        int
 	HTTPActiveRequests int
 	HTTPActiveUpgrades int
@@ -87,9 +93,27 @@ type Stats struct {
 func (manager *Registry) SnapshotStats() Stats {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
+	tcpProxies := 0
+	udpProxies := 0
+	for _, state := range manager.clients {
+		tcpProxies += len(state.tcpProxies)
+		udpProxies += len(state.udpProxies)
+	}
+	tcpMirrorMembers := 0
+	udpMirrorMembers := 0
+	for _, group := range manager.tcpMirrorGroups {
+		tcpMirrorMembers += len(group.tcpMembers)
+	}
+	for _, group := range manager.udpMirrorGroups {
+		udpMirrorMembers += len(group.udpMembers)
+	}
 	return Stats{
-		TCPProxies:         len(manager.endpointBindings),
-		UDPProxies:         len(manager.udpEndpointBindings),
+		TCPProxies:         tcpProxies,
+		UDPProxies:         udpProxies,
+		TCPMirrorGroups:    len(manager.tcpMirrorGroups),
+		UDPMirrorGroups:    len(manager.udpMirrorGroups),
+		TCPMirrorMembers:   tcpMirrorMembers,
+		UDPMirrorMembers:   udpMirrorMembers,
 		HTTPProxies:        len(manager.httpDomains),
 		HTTPActiveRequests: manager.httpActiveRequests,
 		HTTPActiveUpgrades: manager.httpActiveUpgrades,
@@ -122,6 +146,15 @@ type udpProxyBinding struct {
 	declaration protocol.ProxyDeclaration
 	endpoint    *proxyudp.Endpoint
 	runtime     *proxyudp.Binding
+}
+
+type mirrorGroup struct {
+	configuration config.ProxyMirrorGroupConfig
+	mode          authentication.Mode
+	tcpEndpoint   *proxytcp.Endpoint
+	udpEndpoint   *proxyudp.Endpoint
+	tcpMembers    map[string]*tcpProxyBinding
+	udpMembers    map[string]*udpProxyBinding
 }
 
 func sameProxyDeclaration(
@@ -216,6 +249,8 @@ func newRegistry(
 		endpointBindings:      make(map[uint16]*tcpProxyBinding),
 		udpEndpoints:          make(map[uint16]*proxyudp.Endpoint),
 		udpEndpointBindings:   make(map[uint16]*udpProxyBinding),
+		tcpMirrorGroups:       make(map[uint16]*mirrorGroup),
+		udpMirrorGroups:       make(map[uint16]*mirrorGroup),
 		managedTCPPorts:       make(map[uint16]string),
 		managedUDPPorts:       make(map[uint16]string),
 		managedHTTPDomains:    make(map[string]string),

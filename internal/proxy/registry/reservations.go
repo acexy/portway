@@ -18,11 +18,27 @@ type ManagedReservationTransaction struct {
 	httpDomains map[string]string
 }
 
+// ConfigureMirrorGroups publishes a prepared mirror generation while the
+// transaction owns the registration barrier.
+func (transaction *ManagedReservationTransaction) ConfigureMirrorGroups(
+	configuration config.ProxyMirrorConfig,
+) error {
+	if transaction == nil || transaction.manager == nil {
+		return fmt.Errorf("managed reservation transaction is inactive")
+	}
+	return transaction.manager.configureMirrorGroupsLocked(configuration)
+}
+
 // BeginManagedReservationUpdate validates a candidate while acquiring the
 // registration barrier. The caller must Commit or Rollback the transaction.
 func (manager *Registry) BeginManagedReservationUpdate(
 	clients map[string]config.ManagedClientConfig,
+	mirrorConfigurations ...config.ProxyMirrorConfig,
 ) (*ManagedReservationTransaction, error) {
+	var candidateMirror config.ProxyMirrorConfig
+	if len(mirrorConfigurations) != 0 {
+		candidateMirror = mirrorConfigurations[0]
+	}
 	tcpPorts := make(map[uint16]string)
 	udpPorts := make(map[uint16]string)
 	httpDomains := make(map[string]string)
@@ -32,6 +48,24 @@ func (manager *Registry) BeginManagedReservationUpdate(
 			case protocol.ProxyTypeTCP:
 				if owner := tcpPorts[proxy.Public.Port]; owner != "" &&
 					owner != clientID {
+					allowed := mirrorConfigurationAllows(
+						candidateMirror.Managed,
+						protocol.ProxyTypeTCP,
+						proxy.Public.Port,
+						owner,
+						clientID,
+					)
+					if len(mirrorConfigurations) == 0 {
+						manager.mutex.Lock()
+						group := manager.tcpMirrorGroups[proxy.Public.Port]
+						allowed = group != nil &&
+							group.allowsMode(owner, authentication.ModeManaged) &&
+							group.allowsMode(clientID, authentication.ModeManaged)
+						manager.mutex.Unlock()
+					}
+					if allowed {
+						continue
+					}
 					return nil, fmt.Errorf(
 						"managed TCP remote port %q is reserved by multiple clients",
 						fmt.Sprint(proxy.Public.Port),
@@ -41,6 +75,24 @@ func (manager *Registry) BeginManagedReservationUpdate(
 			case protocol.ProxyTypeUDP:
 				if owner := udpPorts[proxy.Public.Port]; owner != "" &&
 					owner != clientID {
+					allowed := mirrorConfigurationAllows(
+						candidateMirror.Managed,
+						protocol.ProxyTypeUDP,
+						proxy.Public.Port,
+						owner,
+						clientID,
+					)
+					if len(mirrorConfigurations) == 0 {
+						manager.mutex.Lock()
+						group := manager.udpMirrorGroups[proxy.Public.Port]
+						allowed = group != nil &&
+							group.allowsMode(owner, authentication.ModeManaged) &&
+							group.allowsMode(clientID, authentication.ModeManaged)
+						manager.mutex.Unlock()
+					}
+					if allowed {
+						continue
+					}
 					return nil, fmt.Errorf(
 						"managed UDP remote port %q is reserved by multiple clients",
 						fmt.Sprint(proxy.Public.Port),
@@ -157,6 +209,18 @@ func (manager *Registry) managedReservationRejectionLocked(
 	request SyncRequest,
 ) *SyncResult {
 	for _, proxy := range request.Proxies {
+		if proxy.Type == protocol.ProxyTypeTCP {
+			if group := manager.tcpMirrorGroups[proxy.RemotePort]; group != nil &&
+				group.allowsMode(clientID, mode) {
+				continue
+			}
+		}
+		if proxy.Type == protocol.ProxyTypeUDP {
+			if group := manager.udpMirrorGroups[proxy.RemotePort]; group != nil &&
+				group.allowsMode(clientID, mode) {
+				continue
+			}
+		}
 		var owner string
 		switch proxy.Type {
 		case protocol.ProxyTypeTCP:
@@ -185,4 +249,31 @@ func reservationConflictCode(proxyType protocol.ProxyType) ErrorCode {
 		return ErrorDomainConflict
 	}
 	return ErrorPortConflict
+}
+
+func mirrorConfigurationAllows(
+	groups []config.ProxyMirrorGroupConfig,
+	proxyType protocol.ProxyType,
+	port uint16,
+	clientIDs ...string,
+) bool {
+	for _, group := range groups {
+		if group.Type != proxyType || group.Public.Port != port {
+			continue
+		}
+		for _, clientID := range clientIDs {
+			allowed := false
+			for _, member := range group.ClientIDs {
+				if member == clientID {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
