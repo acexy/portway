@@ -11,6 +11,7 @@ import (
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -201,39 +202,56 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 	}
 	clients := []runningMirrorClient{
 		startClient("primary-client", primaryToken, uint16(primaryListener.Addr().(*net.TCPAddr).Port)),
-		startClient("mirror-client", mirrorToken, uint16(mirrorListener.Addr().(*net.TCPAddr).Port)),
 	}
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		nil,
+		protocol.ProxyTypeTCP,
+		1,
+	)
+	clients = append(
+		clients,
+		startClient("mirror-client", mirrorToken, uint16(mirrorListener.Addr().(*net.TCPAddr).Port)),
+	)
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		clients[1].errors,
+		protocol.ProxyTypeTCP,
+		2,
+	)
 
 	payload := []byte("mirror-payload")
-	deadline := time.Now().Add(10 * time.Second)
-	var visitor net.Conn
-	mirrorObserved := false
-	for {
-		candidate, dialError := net.DialTimeout("tcp", proxyAddress.String(), 200*time.Millisecond)
-		if dialError == nil {
-			_ = candidate.SetDeadline(time.Now().Add(300 * time.Millisecond))
-			_, writeError := candidate.Write(payload)
-			response := make([]byte, len(payload))
-			_, readError := io.ReadFull(candidate, response)
-			select {
-			case mirrored := <-mirrorReceived:
-				if string(mirrored) != string(payload) {
-					t.Fatalf("mirror received %q", mirrored)
-				}
-				mirrorObserved = true
-			default:
-			}
-			if writeError == nil && readError == nil && string(response) == string(payload) &&
-				mirrorObserved {
-				visitor = candidate
-				break
-			}
-			candidate.Close()
+	visitor, err := net.DialTimeout("tcp", proxyAddress.String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer visitor.Close()
+	if err := visitor.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := visitor.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, len(payload))
+	if _, err := io.ReadFull(visitor, response); err != nil {
+		t.Fatal(err)
+	}
+	if string(response) != string(payload) {
+		t.Fatalf("unexpected primary response %q", response)
+	}
+	select {
+	case mirrored := <-mirrorReceived:
+		if string(mirrored) != string(payload) {
+			t.Fatalf("mirror received %q", mirrored)
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("TCP mirror clients did not become ready")
-		}
-		time.Sleep(10 * time.Millisecond)
+	case <-time.After(10 * time.Second):
+		t.Fatal("mirror client did not receive payload")
 	}
 	visitor.Close()
 
@@ -412,6 +430,45 @@ func reserveTCPAddress(t testing.TB) *net.TCPAddr {
 		t.Fatal(err)
 	}
 	return address
+}
+
+func waitForMirrorMembers(
+	t *testing.T,
+	service *Service,
+	serverErrors <-chan error,
+	primaryErrors <-chan error,
+	mirrorErrors <-chan error,
+	proxyType protocol.ProxyType,
+	expected int,
+) {
+	t.Helper()
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if service.ready.Load() {
+			stats := service.proxyRegistry.SnapshotStats()
+			members := stats.TCPMirrorMembers
+			if proxyType == protocol.ProxyTypeUDP {
+				members = stats.UDPMirrorMembers
+			}
+			if members == expected {
+				return
+			}
+		}
+		select {
+		case err := <-serverErrors:
+			t.Fatalf("server stopped before %s mirror members became ready: %v", proxyType, err)
+		case err := <-primaryErrors:
+			t.Fatalf("primary client stopped before %s mirror members became ready: %v", proxyType, err)
+		case err := <-mirrorErrors:
+			t.Fatalf("mirror client stopped before %s mirror members became ready: %v", proxyType, err)
+		case <-deadline.C:
+			t.Fatalf("%s mirror members did not become ready", proxyType)
+		case <-ticker.C:
+		}
+	}
 }
 
 func dialWithRetry(t testing.TB, address string, timeout time.Duration) net.Conn {

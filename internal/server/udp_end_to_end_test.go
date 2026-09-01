@@ -9,6 +9,7 @@ import (
 	"github.com/acexy/portway/internal/client"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
 
@@ -99,8 +100,29 @@ func TestUDPMirrorProxyEndToEnd(t *testing.T) {
 	}
 	clients := []runningClient{
 		startClient("primary-client", primaryToken, uint16(primaryConnection.LocalAddr().(*net.UDPAddr).Port)),
-		startClient("mirror-client", mirrorToken, uint16(mirrorConnection.LocalAddr().(*net.UDPAddr).Port)),
 	}
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		nil,
+		protocol.ProxyTypeUDP,
+		1,
+	)
+	clients = append(
+		clients,
+		startClient("mirror-client", mirrorToken, uint16(mirrorConnection.LocalAddr().(*net.UDPAddr).Port)),
+	)
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		clients[1].errors,
+		protocol.ProxyTypeUDP,
+		2,
+	)
 
 	visitor, err := net.DialUDP("udp", nil, proxyAddress)
 	if err != nil {
@@ -109,14 +131,14 @@ func TestUDPMirrorProxyEndToEnd(t *testing.T) {
 	defer visitor.Close()
 	payload := []byte("udp-mirror-payload")
 	response := make([]byte, 1024)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	primaryResponded := false
 	mirrorObserved := false
 	for {
 		if _, err := visitor.Write(payload); err != nil {
 			t.Fatal(err)
 		}
-		_ = visitor.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		_ = visitor.SetReadDeadline(time.Now().Add(time.Second))
 		length, _, readError := visitor.ReadFromUDP(response)
 		if readError == nil {
 			if string(response[:length]) != string(payload) {
