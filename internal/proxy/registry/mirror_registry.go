@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strconv"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
@@ -99,48 +98,6 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	}
 	manager.mutex.Unlock()
 
-	newTCPEndpoints := make(map[uint16]*proxytcp.Endpoint)
-	newUDPEndpoints := make(map[uint16]*proxyudp.Endpoint)
-	rollback := func() {
-		closeTCPEndpoints(newTCPEndpoints)
-		closeUDPEndpoints(newUDPEndpoints)
-	}
-	for port, candidate := range candidatesTCP {
-		if candidate.tcpEndpoint != nil {
-			continue
-		}
-		endpoint, err := proxytcp.Listen(
-			manager.context,
-			manager.logger.WithComponent("proxy_mirror_tcp"),
-			net.JoinHostPort(manager.proxyBindIP, strconv.Itoa(int(port))),
-			manager.sourceFilter,
-		)
-		if err != nil {
-			rollback()
-			return fmt.Errorf("listen on mirror TCP port %d: %w", port, err)
-		}
-		candidate.tcpEndpoint = endpoint
-		newTCPEndpoints[port] = endpoint
-	}
-	for port, candidate := range candidatesUDP {
-		if candidate.udpEndpoint != nil {
-			continue
-		}
-		endpoint, err := proxyudp.Listen(
-			manager.context,
-			manager.logger.WithComponent("proxy_mirror_udp"),
-			net.JoinHostPort(manager.proxyBindIP, strconv.Itoa(int(port))),
-			manager.sourceFilter,
-			manager.udpConfiguration.MaxDatagramSize,
-		)
-		if err != nil {
-			rollback()
-			return fmt.Errorf("listen on mirror UDP port %d: %w", port, err)
-		}
-		candidate.udpEndpoint = endpoint
-		newUDPEndpoints[port] = endpoint
-	}
-
 	manager.mutex.Lock()
 	removedTCP := make(map[uint16]*proxytcp.Endpoint)
 	removedUDP := make(map[uint16]*proxyudp.Endpoint)
@@ -149,7 +106,9 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	for port, old := range manager.tcpMirrorGroups {
 		candidate := candidatesTCP[port]
 		if candidate == nil {
-			removedTCP[port] = old.tcpEndpoint
+			if old.tcpEndpoint != nil {
+				removedTCP[port] = old.tcpEndpoint
+			}
 			for _, binding := range old.tcpMembers {
 				removedBindings = append(removedBindings, binding.bindingID)
 				if state := manager.clients[binding.clientID]; state != nil &&
@@ -172,7 +131,9 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	for port, old := range manager.udpMirrorGroups {
 		candidate := candidatesUDP[port]
 		if candidate == nil {
-			removedUDP[port] = old.udpEndpoint
+			if old.udpEndpoint != nil {
+				removedUDP[port] = old.udpEndpoint
+			}
 			for _, binding := range old.udpMembers {
 				removedUDPBindings = append(removedUDPBindings, binding)
 				if state := manager.clients[binding.clientID]; state != nil &&
@@ -192,9 +153,24 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 			}
 		}
 	}
+	for port, candidate := range candidatesTCP {
+		if len(candidate.tcpMembers) == 0 && candidate.tcpEndpoint != nil {
+			removedTCP[port] = candidate.tcpEndpoint
+			candidate.tcpEndpoint = nil
+		}
+	}
+	for port, candidate := range candidatesUDP {
+		if len(candidate.udpMembers) == 0 && candidate.udpEndpoint != nil {
+			removedUDP[port] = candidate.udpEndpoint
+			candidate.udpEndpoint = nil
+		}
+	}
 	manager.tcpMirrorGroups = candidatesTCP
 	manager.udpMirrorGroups = candidatesUDP
 	for port, group := range candidatesTCP {
+		if group.tcpEndpoint == nil {
+			continue
+		}
 		manager.endpoints[port] = group.tcpEndpoint
 		delete(manager.endpointBindings, port)
 		groupSnapshot := group
@@ -203,6 +179,9 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 		})
 	}
 	for port, group := range candidatesUDP {
+		if group.udpEndpoint == nil {
+			continue
+		}
 		manager.udpEndpoints[port] = group.udpEndpoint
 		delete(manager.udpEndpointBindings, port)
 		groupSnapshot := group
@@ -221,12 +200,6 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	}
 	manager.mutex.Unlock()
 
-	for _, endpoint := range newTCPEndpoints {
-		endpoint.Start()
-	}
-	for _, endpoint := range newUDPEndpoints {
-		endpoint.Start()
-	}
 	closeTCPEndpoints(removedTCP)
 	closeUDPEndpoints(removedUDP)
 	for _, bindingID := range removedBindings {

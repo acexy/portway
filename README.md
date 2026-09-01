@@ -364,11 +364,11 @@ need either private key.
 ## Commands
 
 ```text
-portway run FILE
+portway run [FILE]
 portway gen config [full]
 portway version
 
-portwayd run FILE
+portwayd run [FILE]
 portwayd gen config [full]
 portwayd gen cert [options]
 portwayd version
@@ -379,6 +379,10 @@ directory. Client generation writes a fresh canonical 256-bit Token into the
 owner-only file. Add `full` to use the complete annotated template. Existing
 files are never overwritten. Run either binary without arguments to display
 every available command, including nested generation commands.
+
+The optional positional `FILE` selects a configuration path. When omitted,
+`portway run` loads `client.yaml` and `portwayd run` loads `server.yaml` from
+the current working directory. There is no `--config` option.
 
 ## Install with Homebrew
 

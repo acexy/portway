@@ -3,6 +3,7 @@ package registry
 import (
 	"crypto/sha256"
 	"net"
+	"net/netip"
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
@@ -169,6 +170,13 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 		binding.sessionID = sessionID
 		if group := manager.tcpMirrorGroups[binding.declaration.RemotePort]; group != nil &&
 			group.allows(clientID, state) {
+			if group.tcpEndpoint == nil {
+				group.tcpEndpoint = binding.endpoint
+				groupSnapshot := group
+				group.tcpEndpoint.SetHandler(func(visitor net.Conn) {
+					go manager.openMirrorVisitor(groupSnapshot, visitor)
+				})
+			}
 			group.tcpMembers[clientID] = binding
 			delete(manager.endpointBindings, binding.declaration.RemotePort)
 		} else {
@@ -201,6 +209,13 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 		binding.sessionID = sessionID
 		if group := manager.udpMirrorGroups[binding.declaration.RemotePort]; group != nil &&
 			group.allows(clientID, state) {
+			if group.udpEndpoint == nil {
+				group.udpEndpoint = binding.endpoint
+				groupSnapshot := group
+				group.udpEndpoint.SetHandler(func(source netip.AddrPort, payload []byte) {
+					manager.handleMirrorDatagram(groupSnapshot, source, payload)
+				})
+			}
 			binding.runtime.SetResponseEnabled(clientID == group.configuration.PrimaryClientID)
 			group.udpMembers[clientID] = binding
 			delete(manager.udpEndpointBindings, binding.declaration.RemotePort)

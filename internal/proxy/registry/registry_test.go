@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -105,7 +106,7 @@ func TestMirrorGroupAllowsGovernedClientsToShareTCPPort(t *testing.T) {
 	}
 }
 
-func TestMirrorGroupCreatesEveryConfiguredTCPPort(t *testing.T) {
+func TestMirrorGroupCreatesTCPPortLazilyAndReleasesLastMember(t *testing.T) {
 	manager := newTestTCPProxyManager(t)
 	firstPort := uint16(reserveTCPAddress(t).Port)
 	secondPort := uint16(reserveTCPAddress(t).Port)
@@ -125,12 +126,116 @@ func TestMirrorGroupCreatesEveryConfiguredTCPPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
 	for _, port := range []uint16{firstPort, secondPort} {
 		group := manager.tcpMirrorGroups[port]
-		if group == nil || group.port != port || manager.endpoints[port] == nil {
-			t.Fatalf("mirror endpoint %d was not created", port)
+		if group == nil || group.port != port {
+			manager.mutex.Unlock()
+			t.Fatalf("mirror group %d was not configured", port)
 		}
+		if group.tcpEndpoint != nil || manager.endpoints[port] != nil {
+			manager.mutex.Unlock()
+			t.Fatalf("mirror endpoint %d was created without a member", port)
+		}
+	}
+	manager.mutex.Unlock()
+
+	manager.AttachAuthenticated(
+		"client-a", "session-a", nil,
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-a"}, 10,
+	)
+	result := manager.Sync(
+		"client-a", "session-a", "request-a",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			tcpProxyDeclaration("proxy-a", firstPort),
+		}},
+	)
+	if result.Status != SyncStatusApplied {
+		t.Fatalf("register mirror member: %+v", result)
+	}
+	manager.mutex.Lock()
+	if manager.tcpMirrorGroups[firstPort].tcpEndpoint == nil || manager.endpoints[firstPort] == nil {
+		manager.mutex.Unlock()
+		t.Fatal("first mirror member did not create its endpoint")
+	}
+	if manager.tcpMirrorGroups[secondPort].tcpEndpoint != nil || manager.endpoints[secondPort] != nil {
+		manager.mutex.Unlock()
+		t.Fatal("unused mirror port unexpectedly created an endpoint")
+	}
+	manager.mutex.Unlock()
+
+	manager.Remove("client-a", "session-a")
+	manager.mutex.Lock()
+	endpoint := manager.tcpMirrorGroups[firstPort].tcpEndpoint
+	registeredEndpoint := manager.endpoints[firstPort]
+	manager.mutex.Unlock()
+	if endpoint != nil || registeredEndpoint != nil {
+		t.Fatal("last mirror member removal did not release its endpoint")
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(firstPort))))
+	if err != nil {
+		t.Fatalf("released mirror port cannot be rebound: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMirrorGroupCreatesUDPPortLazilyAndReleasesLastMember(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveUDPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeUDP,
+			Public:          mirrorPublic(port),
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	group := manager.udpMirrorGroups[port]
+	endpoint := manager.udpEndpoints[port]
+	manager.mutex.Unlock()
+	if group == nil || group.udpEndpoint != nil || endpoint != nil {
+		t.Fatal("UDP mirror endpoint was created without a member")
+	}
+
+	manager.AttachAuthenticated(
+		"client-a", "session-a", nil,
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-a"}, 10,
+	)
+	result := manager.Sync(
+		"client-a", "session-a", "request-a",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			udpProxyDeclaration("proxy-a", port),
+		}},
+	)
+	if result.Status != SyncStatusApplied {
+		t.Fatalf("register UDP mirror member: %+v", result)
+	}
+	manager.mutex.Lock()
+	endpoint = manager.udpEndpoints[port]
+	manager.mutex.Unlock()
+	if endpoint == nil {
+		t.Fatal("first UDP mirror member did not create its endpoint")
+	}
+
+	manager.Remove("client-a", "session-a")
+	manager.mutex.Lock()
+	groupEndpoint := manager.udpMirrorGroups[port].udpEndpoint
+	registeredEndpoint := manager.udpEndpoints[port]
+	manager.mutex.Unlock()
+	if groupEndpoint != nil || registeredEndpoint != nil {
+		t.Fatal("last UDP mirror member removal did not release its endpoint")
+	}
+	connection, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP: net.ParseIP("127.0.0.1"), Port: int(port),
+	})
+	if err != nil {
+		t.Fatalf("released UDP mirror port cannot be rebound: %v", err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

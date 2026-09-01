@@ -26,7 +26,7 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 		Commands: []cli.Command{
 			{
 				Name:    "run",
-				Usage:   "run FILE",
+				Usage:   "run [FILE]",
 				Summary: "Start the Portway client",
 				Execute: runClientCommand,
 			},
@@ -73,11 +73,11 @@ func runClientCommand(
 	_ io.Writer,
 	stderr io.Writer,
 ) int {
-	if len(arguments) != 1 {
-		_, _ = io.WriteString(stderr, "portway run: exactly one configuration file is required\n")
+	configPath, valid := clientConfigurationPath(arguments)
+	if !valid {
+		_, _ = io.WriteString(stderr, "portway run: at most one configuration file is allowed\n")
 		return 2
 	}
-	configPath := arguments[0]
 
 	log := logging.New("client")
 
@@ -112,4 +112,15 @@ func runClientCommand(
 		return 1
 	}
 	return 0
+}
+
+func clientConfigurationPath(arguments []string) (string, bool) {
+	switch len(arguments) {
+	case 0:
+		return "client.yaml", true
+	case 1:
+		return arguments[0], true
+	default:
+		return "", false
+	}
 }

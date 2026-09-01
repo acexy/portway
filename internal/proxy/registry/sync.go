@@ -185,13 +185,11 @@ func (manager *Registry) sync(
 			continue
 		}
 		endpoint := manager.endpoints[declaration.RemotePort]
-		if endpoint == nil {
-			continue
-		}
 		state := manager.clients[clientID]
-		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil &&
-			group.tcpEndpoint == endpoint {
-			reusableEndpoints[declaration.RemotePort] = endpoint
+		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil {
+			if endpoint != nil && group.tcpEndpoint == endpoint {
+				reusableEndpoints[declaration.RemotePort] = endpoint
+			}
 			continue
 		}
 		if manager.tcpMirrorGroups[declaration.RemotePort] != nil {
@@ -202,6 +200,9 @@ func (manager *Registry) sync(
 				declaration.Name,
 				"mirror group membership is not allowed",
 			)
+		}
+		if endpoint == nil {
+			continue
 		}
 		currentBinding := manager.endpointBindings[declaration.RemotePort]
 		if currentBinding == nil || currentBinding.clientID != clientID {
@@ -233,13 +234,11 @@ func (manager *Registry) sync(
 			continue
 		}
 		endpoint := manager.udpEndpoints[declaration.RemotePort]
-		if endpoint == nil {
-			continue
-		}
 		state := manager.clients[clientID]
-		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil &&
-			group.udpEndpoint == endpoint {
-			reusableUDPEndpoints[declaration.RemotePort] = endpoint
+		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil {
+			if endpoint != nil && group.udpEndpoint == endpoint {
+				reusableUDPEndpoints[declaration.RemotePort] = endpoint
+			}
 			continue
 		}
 		if manager.udpMirrorGroups[declaration.RemotePort] != nil {
@@ -250,6 +249,9 @@ func (manager *Registry) sync(
 				declaration.Name,
 				"mirror group membership is not allowed",
 			)
+		}
+		if endpoint == nil {
+			continue
 		}
 		currentBinding := manager.udpEndpointBindings[declaration.RemotePort]
 		if currentBinding == nil || currentBinding.clientID != clientID ||

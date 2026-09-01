@@ -85,6 +85,11 @@ func (manager *Registry) Detach(clientID string, sessionID string) func() {
 		if group := manager.tcpMirrorGroups[binding.declaration.RemotePort]; group != nil &&
 			group.tcpMembers[clientID] == binding {
 			delete(group.tcpMembers, clientID)
+			if len(group.tcpMembers) == 0 && group.tcpEndpoint == endpoint {
+				group.tcpEndpoint = nil
+				delete(manager.endpoints, binding.declaration.RemotePort)
+				endpoints[binding.declaration.RemotePort] = endpoint
+			}
 		} else if manager.endpoints[binding.declaration.RemotePort] == endpoint {
 			delete(manager.endpoints, binding.declaration.RemotePort)
 			delete(manager.endpointBindings, binding.declaration.RemotePort)
@@ -98,6 +103,11 @@ func (manager *Registry) Detach(clientID string, sessionID string) func() {
 		if group := manager.udpMirrorGroups[binding.declaration.RemotePort]; group != nil &&
 			group.udpMembers[clientID] == binding {
 			delete(group.udpMembers, clientID)
+			if len(group.udpMembers) == 0 && group.udpEndpoint == endpoint {
+				group.udpEndpoint = nil
+				delete(manager.udpEndpoints, binding.declaration.RemotePort)
+				udpEndpoints[binding.declaration.RemotePort] = endpoint
+			}
 		} else if manager.udpEndpoints[binding.declaration.RemotePort] == endpoint {
 			delete(manager.udpEndpoints, binding.declaration.RemotePort)
 			delete(manager.udpEndpointBindings, binding.declaration.RemotePort)

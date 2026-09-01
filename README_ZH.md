@@ -338,11 +338,11 @@ transport:
 ## 命令
 
 ```text
-portway run FILE
+portway run [FILE]
 portway gen config [full]
 portway version
 
-portwayd run FILE
+portwayd run [FILE]
 portwayd gen config [full]
 portwayd gen cert [options]
 portwayd version
@@ -352,6 +352,10 @@ portwayd version
 配置生成会把新的规范 256-bit Token 写入仅属主可读写的文件。追加 `full` 可生成
 带完整注释的全量模板。命令不会覆盖已有文件。直接运行任一二进制文件（不带参数）
 会列出包括嵌套生成命令在内的全部可用命令。
+
+可选位置参数 `FILE` 用于指定配置路径。省略时，`portway run` 从当前工作目录加载
+`client.yaml`，`portwayd run` 从当前工作目录加载 `server.yaml`。命令不提供
+`--config` 选项。
 
 ## 使用 Homebrew 安装
 
