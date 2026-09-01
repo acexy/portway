@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
+	forwardregistry "github.com/acexy/portway/internal/forward/registry"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
@@ -22,6 +24,31 @@ import (
 	"github.com/acexy/portway/internal/transport"
 	"github.com/sirupsen/logrus"
 )
+
+type failingManagedActivationExchange struct {
+	writer     *control.Writer
+	activation protocol.ManagedConfigActivate
+}
+
+func (exchange *failingManagedActivationExchange) prepare(
+	context.Context,
+	protocol.ManagedConfigPrepare,
+	protocol.ManagedConfigStatus,
+) error {
+	return nil
+}
+
+func (exchange *failingManagedActivationExchange) activate(
+	_ context.Context,
+	activation protocol.ManagedConfigActivate,
+) error {
+	exchange.activation = activation
+	return errors.New("activation failed")
+}
+
+func (exchange *failingManagedActivationExchange) controlWriter() *control.Writer {
+	return exchange.writer
+}
 
 func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T) {
 	service := &Service{
@@ -1208,6 +1235,96 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 	}
 	clientConnection.Close()
 	<-controlErrors
+}
+
+func TestManagedConfigurationActivationFailurePreservesForwardGeneration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	broker := link.NewBroker(ctx)
+	defer broker.Close()
+	forwardRegistry := forwardregistry.New(
+		broker,
+		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) {
+			return true, true
+		},
+		config.DefaultUDPConfig,
+	)
+	defer forwardRegistry.Close()
+	proxyRegistry := proxyregistry.New(
+		ctx,
+		logging.New("test"),
+		"127.0.0.1",
+		broker,
+		false,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
+	)
+	defer proxyRegistry.Close()
+	var controlOutput bytes.Buffer
+	writer := control.NewWriter(&controlOutput)
+	authenticationContext := authentication.Context{
+		Mode: authentication.ModeManaged, ClientID: "managed-client",
+	}
+	proxyRegistry.AttachAuthenticated(
+		"managed-client", "session-one", writer, authenticationContext, 0,
+	)
+	oldDeclaration := protocol.ForwardDeclaration{
+		Name: "database", Type: protocol.ForwardTypeTCP,
+		TargetIP: "127.0.0.1", TargetPort: 5432,
+	}
+	oldResults, forwardError := forwardRegistry.Sync(
+		"managed-client", "session-one", writer, authenticationContext, 10,
+		[]protocol.ForwardDeclaration{oldDeclaration},
+	)
+	if forwardError != nil {
+		t.Fatal(forwardError)
+	}
+	exchange := &failingManagedActivationExchange{writer: writer}
+	service := &Service{proxyRegistry: proxyRegistry, forwardRegistry: forwardRegistry}
+	err := service.applyManagedGeneration(
+		ctx,
+		"managed-client",
+		"session-one",
+		protocol.ManagedConfigPrepare{Revision: 2, Digest: "candidate"},
+		protocol.SyncConfiguration{
+			Revision: 2,
+			Proxies:  []protocol.ProxyDeclaration{},
+			Forwards: []protocol.ForwardDeclaration{{
+				Name: "database", Type: protocol.ForwardTypeTCP,
+				TargetIP: "127.0.0.1", TargetPort: 6432,
+			}},
+		},
+		authenticationContext,
+		exchange,
+		true,
+	)
+	if err == nil || !strings.Contains(err.Error(), "activation failed") {
+		t.Fatalf("activation failure = %v", err)
+	}
+	oldOffer := forwardRegistry.Offer(
+		"managed-client",
+		"session-one",
+		protocol.RequestForwardLink{
+			RequestID: "old", Name: oldDeclaration.Name, Type: oldDeclaration.Type,
+			BindingID: oldResults[0].BindingID,
+		},
+	)
+	if oldOffer.Error != nil {
+		t.Fatalf("old Forward generation was not preserved: %+v", oldOffer.Error)
+	}
+	if len(exchange.activation.Forwards) != 1 {
+		t.Fatalf("candidate Forward results = %+v", exchange.activation.Forwards)
+	}
+	candidateOffer := forwardRegistry.Offer(
+		"managed-client",
+		"session-one",
+		protocol.RequestForwardLink{
+			RequestID: "candidate", Name: oldDeclaration.Name, Type: oldDeclaration.Type,
+			BindingID: exchange.activation.Forwards[0].BindingID,
+		},
+	)
+	if candidateOffer.Error == nil {
+		t.Fatal("failed candidate Forward generation was published")
+	}
 }
 
 func TestConfigurationReloadWaitsForAuthenticationRegistrationBarrier(t *testing.T) {

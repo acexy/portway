@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
@@ -117,5 +118,54 @@ func TestSyncTransactionRollbackPreservesPublishedBinding(t *testing.T) {
 	})
 	if offer.Error != nil {
 		t.Fatalf("rollback replaced the published Binding: %+v", offer.Error)
+	}
+}
+
+func TestSyncTransactionDoesNotBlockAndRejectsStaleCommit(t *testing.T) {
+	broker := link.NewBroker(context.Background())
+	defer broker.Close()
+	registry := New(
+		broker,
+		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
+		config.DefaultUDPConfig,
+	)
+	declaration := protocol.ForwardDeclaration{
+		Name: "database", Type: protocol.ForwardTypeTCP,
+		TargetIP: "127.0.0.1", TargetPort: 5432,
+	}
+	if _, forwardError := registry.Sync(
+		"client", "session", nil, authentication.Context{}, 10,
+		[]protocol.ForwardDeclaration{declaration},
+	); forwardError != nil {
+		t.Fatal(forwardError)
+	}
+	candidate, forwardError := registry.BeginSync(
+		"client", "session", nil, authentication.Context{}, 10,
+		[]protocol.ForwardDeclaration{{
+			Name: "database", Type: protocol.ForwardTypeTCP,
+			TargetIP: "127.0.0.1", TargetPort: 6432,
+		}},
+	)
+	if forwardError != nil {
+		t.Fatal(forwardError)
+	}
+	synchronized := make(chan *protocol.ForwardError, 1)
+	go func() {
+		_, syncError := registry.Sync(
+			"client", "session", nil, authentication.Context{}, 10,
+			[]protocol.ForwardDeclaration{declaration},
+		)
+		synchronized <- syncError
+	}()
+	select {
+	case syncError := <-synchronized:
+		if syncError != nil {
+			t.Fatal(syncError)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prepared Forward transaction blocked another synchronization")
+	}
+	if candidate.Commit() {
+		t.Fatal("stale Forward candidate replaced a newer generation")
 	}
 }

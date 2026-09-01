@@ -63,6 +63,14 @@ func (s *Service) runControlLoop(
 	var pendingManagedProxies []config.ProxyConfig
 	var pendingManagedForwardRuntime *forwardManager
 	var pendingManagedStatus *protocol.ManagedConfigStatus
+	defer func() {
+		if pendingManagedForwardRuntime != nil && pendingManagedForwardRuntime != forwardRuntime {
+			pendingManagedForwardRuntime.close()
+		}
+		if forwardRuntime != nil {
+			forwardRuntime.close()
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -249,18 +257,17 @@ func (s *Service) runControlLoop(
 						transport.ErrProtocol,
 					)
 				}
+				nextForwardRuntime, err := replaceManagedForwardRuntime(
+					forwardRuntime,
+					pendingManagedForwardRuntime,
+					activation.Forwards,
+				)
+				if err != nil {
+					return err
+				}
+				forwardRuntime = nextForwardRuntime
 				s.setRuntimeProxies(pendingManagedProxies)
 				linkManager.updateProxies(pendingManagedProxies)
-				if err := pendingManagedForwardRuntime.applyBindings(activation.Forwards); err != nil {
-					return fmt.Errorf("%w: %v", transport.ErrProtocol, err)
-				}
-				if err := pendingManagedForwardRuntime.start(); err != nil {
-					return transport.Permanent(err)
-				}
-				if forwardRuntime != nil {
-					forwardRuntime.close()
-				}
-				forwardRuntime = pendingManagedForwardRuntime
 				s.managedMutex.Lock()
 				s.managedStatus = protocol.ManagedConfigStatus{Revision: activation.Revision, Digest: activation.Digest}
 				s.managedMutex.Unlock()
@@ -309,6 +316,28 @@ func (s *Service) runControlLoop(
 		}
 	}
 }
+
+func replaceManagedForwardRuntime(
+	current *forwardManager,
+	candidate *forwardManager,
+	bindings []protocol.ForwardResult,
+) (*forwardManager, error) {
+	if err := candidate.applyBindings(bindings); err != nil {
+		return current, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
+	}
+	// The old listeners must release unchanged addresses before the candidate
+	// generation can bind them. From this point, failures are fail-closed and
+	// the control session reconnects to converge on the desired generation.
+	if current != nil {
+		current.close()
+	}
+	if err := candidate.start(); err != nil {
+		candidate.close()
+		return nil, transport.Permanent(err)
+	}
+	return candidate, nil
+}
+
 func (s *Service) closeControlSession(
 	connection net.Conn,
 	messages <-chan protocol.Envelope,
@@ -351,6 +380,7 @@ func (s *Service) closeControlSession(
 					"close acknowledgment contained an unexpected session ID",
 					errors.New("session ID mismatch"),
 				)
+				return
 			}
 			sessionLogger.Trace("close acknowledgment received")
 			return

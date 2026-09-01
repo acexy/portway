@@ -198,6 +198,7 @@ func (s *Service) applyManagedGeneration(
 				forwardError.Message,
 			)
 		}
+		defer forwardTransaction.Rollback()
 	}
 	if deactivate {
 		s.proxyRegistry.Deactivate(clientID, sessionID)
@@ -227,12 +228,16 @@ func (s *Service) applyManagedGeneration(
 	forwardResults := []protocol.ForwardResult{}
 	if forwardTransaction != nil {
 		forwardResults = append(forwardResults, forwardTransaction.Results()...)
-		forwardTransaction.Commit()
 	}
 	if err := exchange.activate(ctx, protocol.ManagedConfigActivate{
 		Revision: status.Revision, Digest: status.Digest, Forwards: forwardResults,
 	}); err != nil {
 		return err
+	}
+	if forwardTransaction != nil {
+		if !forwardTransaction.Commit() {
+			return errors.New("managed Forward generation changed before activation")
+		}
 	}
 	if deactivate {
 		s.proxyRegistry.Activate(clientID, sessionID)

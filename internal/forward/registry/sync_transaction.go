@@ -6,8 +6,9 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
-// SyncTransaction owns a prepared Forward generation while holding the
-// Registry publication barrier. Commit and Rollback are idempotent.
+// SyncTransaction owns a prepared Forward generation. Commit revalidates the
+// observed generation under the Registry publication barrier; Rollback only
+// discards the unpublished candidate. Both operations are idempotent.
 type SyncTransaction struct {
 	registry  *Registry
 	clientID  string
@@ -75,6 +76,7 @@ func (registry *Registry) BeginSync(
 		}
 		transaction.results = append(transaction.results, result)
 	}
+	registry.mutex.Unlock()
 	return transaction, nil
 }
 
@@ -86,12 +88,28 @@ func (transaction *SyncTransaction) Results() []protocol.ForwardResult {
 	return transaction.results
 }
 
-// Commit atomically publishes the prepared Forward generation.
-func (transaction *SyncTransaction) Commit() {
+// Commit atomically publishes the prepared Forward generation if the observed
+// Session generation and current policy still match.
+func (transaction *SyncTransaction) Commit() bool {
 	if transaction == nil || transaction.registry == nil {
-		return
+		return false
 	}
 	registry := transaction.registry
+	registry.mutex.Lock()
+	if registry.closed || !transaction.matchesPreviousLocked() {
+		transaction.registry = nil
+		registry.mutex.Unlock()
+		return false
+	}
+	for _, current := range transaction.next {
+		configured, active := registry.policy(current.authentication, current.declaration)
+		if !configured {
+			transaction.registry = nil
+			registry.mutex.Unlock()
+			return false
+		}
+		current.active = active
+	}
 	for key, existing := range registry.bindings {
 		if existing.clientID == transaction.clientID && existing.sessionID == transaction.sessionID {
 			delete(registry.bindings, key)
@@ -105,14 +123,31 @@ func (transaction *SyncTransaction) Commit() {
 	for _, previous := range transaction.previous {
 		registry.broker.CancelBinding(previous.bindingID)
 	}
+	return true
 }
 
-// Rollback discards the prepared generation and releases the publication barrier.
+func (transaction *SyncTransaction) matchesPreviousLocked() bool {
+	previous := make(map[*binding]struct{}, len(transaction.previous))
+	for _, current := range transaction.previous {
+		previous[current] = struct{}{}
+	}
+	matched := 0
+	for _, current := range transaction.registry.bindings {
+		if current.clientID != transaction.clientID || current.sessionID != transaction.sessionID {
+			continue
+		}
+		if _, exists := previous[current]; !exists {
+			return false
+		}
+		matched++
+	}
+	return matched == len(previous)
+}
+
+// Rollback discards the unpublished generation.
 func (transaction *SyncTransaction) Rollback() {
 	if transaction == nil || transaction.registry == nil {
 		return
 	}
-	registry := transaction.registry
 	transaction.registry = nil
-	registry.mutex.Unlock()
 }

@@ -236,7 +236,9 @@ func (s *Service) serveControlMessages(
 				Proxies:  proxyResult.Proxies,
 				Forwards: append([]protocol.ForwardResult(nil), forwardTransaction.Results()...),
 			}
-			forwardTransaction.Commit()
+			if !forwardTransaction.Commit() {
+				return false, errors.New("Forward generation changed while synchronizing")
+			}
 			s.cacheConfigurationSync(clientID, sessionID, envelope.RequestID, request, result)
 			if err := finishConfiguration(envelope.RequestID, result); err != nil {
 				return false, err

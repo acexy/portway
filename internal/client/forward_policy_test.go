@@ -75,6 +75,87 @@ func TestForwardManagerRejectsMissingUDPServerLimits(t *testing.T) {
 	}
 }
 
+func TestReplaceManagedForwardRuntimeRebindsUnchangedAddress(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := probe.Addr().(*net.TCPAddr)
+	probe.Close()
+	configuration := config.ForwardConfig{
+		Name: "database", Type: protocol.ForwardTypeTCP,
+		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(address.Port)},
+		Target: config.EndpointConfig{IP: "127.0.0.1", Port: 5432},
+	}
+	current, err := newForwardManager(
+		context.Background(), logging.New("test"), "client", "session", nil, nil,
+		[]config.ForwardConfig{configuration},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := current.applyBindings([]protocol.ForwardResult{{
+		Name: configuration.Name, Type: configuration.Type,
+		BindingID: "old-binding", Active: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.start(); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := newForwardManager(
+		context.Background(), logging.New("test"), "client", "session", nil, nil,
+		[]config.ForwardConfig{configuration},
+	)
+	if err != nil {
+		current.close()
+		t.Fatal(err)
+	}
+	next, err := replaceManagedForwardRuntime(
+		current,
+		candidate,
+		[]protocol.ForwardResult{{
+			Name: configuration.Name, Type: configuration.Type,
+			BindingID: "new-binding", Active: true,
+		}},
+	)
+	if err != nil {
+		candidate.close()
+		t.Fatal(err)
+	}
+	defer next.close()
+	assertTCPAddressUnavailable(t, address.String())
+}
+
+func TestReplaceManagedForwardRuntimeKeepsCurrentOnInvalidCandidate(t *testing.T) {
+	current, err := newForwardManager(
+		context.Background(), logging.New("test"), "client", "session", nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.close()
+	candidate, err := newForwardManager(
+		context.Background(), logging.New("test"), "client", "session", nil, nil,
+		[]config.ForwardConfig{{
+			Name: "database", Type: protocol.ForwardTypeTCP,
+			Listen: config.EndpointConfig{IP: "127.0.0.1", Port: 20000},
+			Target: config.EndpointConfig{IP: "127.0.0.1", Port: 5432},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.close()
+	next, err := replaceManagedForwardRuntime(current, candidate, nil)
+	if err == nil {
+		t.Fatal("invalid candidate Forward generation was accepted")
+	}
+	if next != current {
+		t.Fatal("invalid candidate replaced the current Forward generation")
+	}
+}
+
 func assertTCPAddressAvailable(t *testing.T, address string) {
 	t.Helper()
 	listener, err := net.Listen("tcp", address)

@@ -91,7 +91,7 @@ func (registry *Registry) Sync(
 	maxActiveLinks int,
 	declarations []protocol.ForwardDeclaration,
 ) ([]protocol.ForwardResult, *protocol.ForwardError) {
-	transaction, forwardError := registry.BeginSync(
+	transaction, synchronizationError := registry.BeginSync(
 		clientID,
 		sessionID,
 		writer,
@@ -99,11 +99,17 @@ func (registry *Registry) Sync(
 		maxActiveLinks,
 		declarations,
 	)
-	if forwardError != nil {
-		return nil, forwardError
+	if synchronizationError != nil {
+		return nil, synchronizationError
 	}
 	results := append([]protocol.ForwardResult(nil), transaction.Results()...)
-	transaction.Commit()
+	if !transaction.Commit() {
+		return nil, forwardError(
+			protocol.ForwardErrorSessionInactive,
+			"",
+			"Forward generation changed while synchronizing",
+		)
+	}
 	return results, nil
 }
 
