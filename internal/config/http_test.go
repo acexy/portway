@@ -251,7 +251,7 @@ func TestValidateClientUsesOneProxyNameNamespace(t *testing.T) {
 	configuration := validHTTPClientConfiguration()
 	configuration.Proxies = append(configuration.Proxies, ProxyConfig{
 		Name: "web", Type: "tcp",
-		Local: EndpointConfig{IP: "127.0.0.1", Port: 22},
+		Local:  EndpointConfig{IP: "127.0.0.1", Port: 22},
 		Public: ProxyPublicConfig{Port: 22022},
 	})
 	if err := validateClient(configuration); err == nil {
@@ -329,7 +329,7 @@ func validHTTPClientConfiguration() ClientConfig {
 		Name: "web", Type: "http",
 		Local: EndpointConfig{IP: "127.0.0.1", Port: 8080},
 		Public: ProxyPublicConfig{
-			Domain: "app.example.com",
+			Domain:  "app.example.com",
 			Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 		},
 	}}

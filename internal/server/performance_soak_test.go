@@ -76,12 +76,12 @@ func TestPerformanceSoak(t *testing.T) {
 	clientConfiguration.Proxies = []config.ProxyConfig{
 		{
 			Name: "tcp", Type: "tcp",
-			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(tcpBackend.Addr().(*net.TCPAddr).Port)},
+			Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(tcpBackend.Addr().(*net.TCPAddr).Port)},
 			Public: config.ProxyPublicConfig{Port: uint16(tcpProxyAddress.Port)},
 		},
 		{
 			Name: "udp", Type: "udp",
-			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port)},
+			Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port)},
 			Public: config.ProxyPublicConfig{Port: uint16(udpProxyAddress.Port)},
 		},
 		{

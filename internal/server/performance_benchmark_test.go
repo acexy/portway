@@ -53,7 +53,7 @@ func BenchmarkTCPLinkEstablishmentEndToEnd(b *testing.B) {
 			clientConfiguration.Authentication.ClientID = "benchmark-link-" + string(transportType)
 			clientConfiguration.Proxies = []config.ProxyConfig{{
 				Name: "echo", Type: "tcp",
-				Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoListener.Addr().(*net.TCPAddr).Port)},
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoListener.Addr().(*net.TCPAddr).Port)},
 				Public: config.ProxyPublicConfig{Port: uint16(proxyAddress.Port)},
 			}}
 			startBenchmarkServices(b, serverConfiguration, clientConfiguration)
@@ -142,7 +142,7 @@ func BenchmarkTCPProxyEndToEnd(b *testing.B) {
 			clientConfiguration.Authentication.ClientID = "benchmark-tcp-" + string(transportType)
 			clientConfiguration.Proxies = []config.ProxyConfig{{
 				Name: "echo", Type: "tcp",
-				Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoListener.Addr().(*net.TCPAddr).Port)},
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoListener.Addr().(*net.TCPAddr).Port)},
 				Public: config.ProxyPublicConfig{Port: uint16(proxyAddress.Port)},
 			}}
 			startBenchmarkServices(b, serverConfiguration, clientConfiguration)
@@ -191,7 +191,7 @@ func BenchmarkUDPProxyEndToEnd(b *testing.B) {
 			clientConfiguration.Authentication.ClientID = "benchmark-udp-" + string(transportType)
 			clientConfiguration.Proxies = []config.ProxyConfig{{
 				Name: "echo", Type: "udp",
-				Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoConnection.LocalAddr().(*net.UDPAddr).Port)},
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoConnection.LocalAddr().(*net.UDPAddr).Port)},
 				Public: config.ProxyPublicConfig{Port: uint16(proxyAddress.Port)},
 			}}
 			startBenchmarkServices(b, serverConfiguration, clientConfiguration)

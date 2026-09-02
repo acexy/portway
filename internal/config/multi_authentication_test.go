@@ -512,8 +512,8 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 	valid := GovernedPermissions{
 		Proxies: GovernedProxyPermissions{
 			Limits: DefaultProxyPermissionLimits(),
-			TCP: &ProxyPermission{PortRanges: []PortRange{{Start: 20000, End: 20999}}},
-			UDP: &ProxyPermission{PortRanges: []PortRange{{Start: 30000, End: 30999}}},
+			TCP:    &ProxyPermission{PortRanges: []PortRange{{Start: 20000, End: 20999}}},
+			UDP:    &ProxyPermission{PortRanges: []PortRange{{Start: 30000, End: 30999}}},
 			HTTP: &HTTPPermission{
 				PublicSchemes: []protocol.HTTPPublicScheme{
 					protocol.HTTPPublicSchemeHTTP,
@@ -599,9 +599,9 @@ func TestValidateManagedProxiesRejectsHardLimitOverflow(t *testing.T) {
 	proxies := make([]ProxyConfig, hardMaxProxiesPerClient+1)
 	for index := range proxies {
 		proxies[index] = ProxyConfig{
-			Name:  fmt.Sprintf("tcp-%d", index),
-			Type:  "tcp",
-			Local: EndpointConfig{IP: "127.0.0.1", Port: 1},
+			Name:   fmt.Sprintf("tcp-%d", index),
+			Type:   "tcp",
+			Local:  EndpointConfig{IP: "127.0.0.1", Port: 1},
 			Public: ProxyPublicConfig{Port: uint16(20000 + index)},
 		}
 	}

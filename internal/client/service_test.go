@@ -251,16 +251,16 @@ func TestRuntimeIdentityAndProxiesDoNotMutateStartupConfiguration(t *testing.T) 
 	configuration := config.DefaultClient()
 	configuration.Authentication.ClientID = "startup-client"
 	configuration.Proxies = []config.ProxyConfig{{
-		Name:      "startup",
-		Type:      "tcp",
-		Local:     config.EndpointConfig{IP: "127.0.0.1", Port: 1},
+		Name:  "startup",
+		Type:  "tcp",
+		Local: config.EndpointConfig{IP: "127.0.0.1", Port: 1},
 	}}
 	service := NewService(logging.New("test"), configuration)
 	service.setRuntimeClientID("authenticated-client")
 	service.setRuntimeProxies([]config.ProxyConfig{{
-		Name:      "managed",
-		Type:      "tcp",
-		Local:     config.EndpointConfig{IP: "127.0.0.1", Port: 2},
+		Name:  "managed",
+		Type:  "tcp",
+		Local: config.EndpointConfig{IP: "127.0.0.1", Port: 2},
 	}})
 
 	if service.configuration.Authentication.ClientID != "startup-client" ||
