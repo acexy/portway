@@ -39,11 +39,10 @@ func TestClientUDPProxyConfigurationIsAccepted(t *testing.T) {
 	configuration := DefaultClient()
 	configuration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
 	configuration.Proxies = []ProxyConfig{{
-		Name:       "dns",
-		Type:       "udp",
-		LocalIP:    "127.0.0.1",
-		LocalPort:  53,
-		RemotePort: 5353,
+		Name:   "dns",
+		Type:   "udp",
+		Local:  EndpointConfig{IP: "127.0.0.1", Port: 53},
+		Public: ProxyPublicConfig{Port: 5353},
 	}}
 	if err := validateClient(configuration); err != nil {
 		t.Fatalf("valid UDP proxy configuration was rejected: %v", err)

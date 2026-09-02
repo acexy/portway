@@ -104,7 +104,7 @@ func TestLimiterSoakReleasesAllAssociationAndQueueAccounting(t *testing.T) {
 	configuration.MaxNewAssociationsPerSecondPerProxy = 1000
 	limiter := NewLimiter(configuration)
 	now := time.Unix(100, 0)
-	for index := 0; index < 5000; index++ {
+	for index := range 5000 {
 		lease, accepted := limiter.Acquire(
 			"soak-client",
 			"soak-proxy",

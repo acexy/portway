@@ -70,25 +70,25 @@ func TestPerformanceSoak(t *testing.T) {
 	udpProxyAddress := reserveUDPAddress(t)
 	httpProxyAddress := reserveTCPAddress(t)
 	serverConfiguration, clientConfiguration := benchmarkTransportConfigurations(t, transportType)
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.Tunnel.HTTPListenAddress = httpProxyAddress.String()
-	clientConfiguration.ClientID = "soak-" + string(transportType)
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.HTTP.ListenAddress = httpProxyAddress.String()
+	clientConfiguration.Authentication.ClientID = "soak-" + string(transportType)
 	clientConfiguration.Proxies = []config.ProxyConfig{
 		{
-			Name: "tcp", Type: "tcp", LocalIP: "127.0.0.1",
-			LocalPort:  uint16(tcpBackend.Addr().(*net.TCPAddr).Port),
-			RemotePort: uint16(tcpProxyAddress.Port),
+			Name: "tcp", Type: "tcp",
+			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(tcpBackend.Addr().(*net.TCPAddr).Port)},
+			Public: config.ProxyPublicConfig{Port: uint16(tcpProxyAddress.Port)},
 		},
 		{
-			Name: "udp", Type: "udp", LocalIP: "127.0.0.1",
-			LocalPort:  uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port),
-			RemotePort: uint16(udpProxyAddress.Port),
+			Name: "udp", Type: "udp",
+			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(udpBackend.LocalAddr().(*net.UDPAddr).Port)},
+			Public: config.ProxyPublicConfig{Port: uint16(udpProxyAddress.Port)},
 		},
 		{
-			Name: "http", Type: "http", Domain: "soak.example.com",
-			LocalIP:       "127.0.0.1",
-			LocalPort:     uint16(httpBackend.Listener.Addr().(*net.TCPAddr).Port),
-			PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+			Name: "http", Type: "http",
+			Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(httpBackend.Listener.Addr().(*net.TCPAddr).Port)},
+			Public: config.ProxyPublicConfig{Domain: "soak.example.com",
+				Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
 		},
 	}
 	startBenchmarkServices(t, serverConfiguration, clientConfiguration)
@@ -139,10 +139,15 @@ func TestPerformanceSoak(t *testing.T) {
 	var httpOperations atomic.Uint64
 	errorsChannel := make(chan error, 3)
 	var waitGroup sync.WaitGroup
-	waitGroup.Add(3)
-	go runTCPSoakLoad(loadContext, tcpVisitor, &tcpOperations, errorsChannel, &waitGroup)
-	go runUDPSoakLoad(loadContext, udpVisitor, udpPayload, &udpOperations, errorsChannel, &waitGroup)
-	go runHTTPSoakLoad(loadContext, doHTTPRequest, &httpOperations, errorsChannel, &waitGroup)
+	waitGroup.Go(func() {
+		runTCPSoakLoad(loadContext, tcpVisitor, &tcpOperations, errorsChannel)
+	})
+	waitGroup.Go(func() {
+		runUDPSoakLoad(loadContext, udpVisitor, udpPayload, &udpOperations, errorsChannel)
+	})
+	waitGroup.Go(func() {
+		runHTTPSoakLoad(loadContext, doHTTPRequest, &httpOperations, errorsChannel)
+	})
 	waitGroup.Wait()
 	close(errorsChannel)
 	for loadError := range errorsChannel {
@@ -175,9 +180,7 @@ func runTCPSoakLoad(
 	connection net.Conn,
 	operations *atomic.Uint64,
 	errorsChannel chan<- error,
-	waitGroup *sync.WaitGroup,
 ) {
-	defer waitGroup.Done()
 	payload := bytes.Repeat([]byte("t"), 32*1024)
 	response := make([]byte, len(payload))
 	for ctx.Err() == nil {
@@ -203,9 +206,7 @@ func runUDPSoakLoad(
 	payload []byte,
 	operations *atomic.Uint64,
 	errorsChannel chan<- error,
-	waitGroup *sync.WaitGroup,
 ) {
-	defer waitGroup.Done()
 	response := make([]byte, len(payload))
 	for ctx.Err() == nil {
 		if err := connection.SetDeadline(time.Now().Add(time.Second)); err != nil {
@@ -233,9 +234,7 @@ func runHTTPSoakLoad(
 	request func() error,
 	operations *atomic.Uint64,
 	errorsChannel chan<- error,
-	waitGroup *sync.WaitGroup,
 ) {
-	defer waitGroup.Done()
 	for ctx.Err() == nil {
 		if err := request(); err != nil {
 			if ctx.Err() == nil {

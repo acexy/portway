@@ -65,14 +65,11 @@ func (manager *linkManager) open(request protocol.OpenLink) {
 	}
 	linkContext, cancel := context.WithCancel(manager.context)
 	manager.links[request.LinkID] = cancel
-	manager.waitGroup.Add(1)
-	manager.mutex.Unlock()
-
-	go func() {
-		defer manager.waitGroup.Done()
+	manager.waitGroup.Go(func() {
 		defer manager.remove(request.LinkID)
 		manager.run(linkContext, request)
-	}()
+	})
+	manager.mutex.Unlock()
 }
 
 func (manager *linkManager) cancelLink(linkID string) {
@@ -158,8 +155,8 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		)
 		defer cancelLocalDial()
 		address := net.JoinHostPort(
-			proxyConfiguration.LocalIP,
-			fmt.Sprintf("%d", proxyConfiguration.LocalPort),
+			proxyConfiguration.Local.IP,
+			fmt.Sprintf("%d", proxyConfiguration.Local.Port),
 		)
 		connection, err := (&net.Dialer{}).DialContext(localDialContext, "tcp", address)
 		results <- dialResult{
@@ -308,8 +305,8 @@ func (manager *linkManager) runUDP(
 		return
 	}
 	address := net.JoinHostPort(
-		proxyConfiguration.LocalIP,
-		fmt.Sprintf("%d", proxyConfiguration.LocalPort),
+		proxyConfiguration.Local.IP,
+		fmt.Sprintf("%d", proxyConfiguration.Local.Port),
 	)
 	type udpDialResult struct {
 		dataConnection  transport.Stream

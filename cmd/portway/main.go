@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"io"
 	"os"
 
@@ -27,14 +26,8 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 		Commands: []cli.Command{
 			{
 				Name:    "run",
-				Usage:   "run [--config FILE]",
+				Usage:   "run [FILE]",
 				Summary: "Start the Portway client",
-				Options: []cli.Option{
-					{
-						Usage:       "--config FILE",
-						Description: "Client YAML configuration (default: client.yaml)",
-					},
-				},
 				Execute: runClientCommand,
 			},
 			{
@@ -80,24 +73,15 @@ func runClientCommand(
 	_ io.Writer,
 	stderr io.Writer,
 ) int {
-	flags := flag.NewFlagSet("portway run", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	configPath := flags.String(
-		"config",
-		"client.yaml",
-		"path to the client YAML configuration file",
-	)
-	if err := flags.Parse(arguments); err != nil {
-		return 2
-	}
-	if flags.NArg() != 0 {
-		_, _ = io.WriteString(stderr, "portway run: unexpected arguments\n")
+	configPath, valid := clientConfigurationPath(arguments)
+	if !valid {
+		_, _ = io.WriteString(stderr, "portway run: at most one configuration file is allowed\n")
 		return 2
 	}
 
 	log := logging.New("client")
 
-	configuration, err := config.LoadClient(*configPath, !configFlagWasSet(flags))
+	configuration, err := config.LoadClient(configPath, false)
 	if err != nil {
 		log.Error("failed to load client configuration", err)
 		return 1
@@ -108,7 +92,7 @@ func runClientCommand(
 	}
 	log.InfoWithFields("client configuration loaded", map[string]any{
 		"event":       "configuration_loaded",
-		"config_file": *configPath,
+		"config_file": configPath,
 		"log_level":   configuration.LogLevel,
 		"transport":   configuration.Transport.Type,
 		"proxy_count": len(configuration.Proxies),
@@ -130,12 +114,13 @@ func runClientCommand(
 	return 0
 }
 
-func configFlagWasSet(flags *flag.FlagSet) bool {
-	configured := false
-	flags.Visit(func(currentFlag *flag.Flag) {
-		if currentFlag.Name == "config" {
-			configured = true
-		}
-	})
-	return configured
+func clientConfigurationPath(arguments []string) (string, bool) {
+	switch len(arguments) {
+	case 0:
+		return "client.yaml", true
+	case 1:
+		return arguments[0], true
+	default:
+		return "", false
+	}
 }

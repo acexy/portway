@@ -31,6 +31,8 @@ const (
 	CapabilityUDP         Capability = "udp"
 	CapabilityHTTP        Capability = "http"
 	CapabilityJSONControl Capability = "json-control"
+	CapabilityTCPForward  Capability = "tcp_forward"
+	CapabilityUDPForward  Capability = "udp_forward"
 )
 
 // ManagementMode identifies who owns a client's proxy configuration.
@@ -61,10 +63,6 @@ const (
 	MessageCloseSession MessageType = "close_session"
 	// MessageCloseAck confirms that a client session was removed.
 	MessageCloseAck MessageType = "close_ack"
-	// MessageSyncProxies atomically declares a client's complete proxy set.
-	MessageSyncProxies MessageType = "sync_proxies"
-	// MessageSyncResult reports an atomic proxy declaration result.
-	MessageSyncResult MessageType = "sync_result"
 	// MessageOpenLink asks a client to establish one proxy data link.
 	MessageOpenLink MessageType = "open_link"
 	// MessageCancelLink cancels a pending data link.
@@ -83,6 +81,22 @@ const (
 	MessageManagedConfigActivate MessageType = "managed_config_activate"
 	// MessageManagedConfigApplied confirms activation of a managed configuration.
 	MessageManagedConfigApplied MessageType = "managed_config_applied"
+	// MessageSyncConfiguration atomically declares complete Proxy and Forward sets.
+	MessageSyncConfiguration MessageType = "sync_configuration"
+	// MessageSyncConfigurationResult reports a complete configuration result.
+	MessageSyncConfigurationResult MessageType = "sync_configuration_result"
+	// MessageRequestForwardLink asks the server to prepare one Forward Link.
+	MessageRequestForwardLink MessageType = "request_forward_link"
+	// MessageForwardLinkOffer returns an authorized one-time Forward Ticket.
+	MessageForwardLinkOffer MessageType = "forward_link_offer"
+	// MessageCancelForwardLink cancels a pending Forward Link.
+	MessageCancelForwardLink MessageType = "cancel_forward_link"
+	// MessageForwardLinkFailed reports Forward Link setup failure.
+	MessageForwardLinkFailed MessageType = "forward_link_failed"
+	// MessageForwardBindingRevoked deactivates one Forward Binding after reload.
+	MessageForwardBindingRevoked MessageType = "forward_binding_revoked"
+	// MessageForwardBindingActivated restores one dormant Forward Binding after reload.
+	MessageForwardBindingActivated MessageType = "forward_binding_activated"
 )
 
 // SessionErrorCode identifies a stable session registration or recovery failure.
@@ -296,7 +310,7 @@ func ValidateRequestID(requestID string) error {
 	if len(requestID) > maxRequestIDBytes {
 		return fmt.Errorf("request ID exceeds %d bytes", maxRequestIDBytes)
 	}
-	for index := 0; index < len(requestID); index++ {
+	for index := range len(requestID) {
 		character := requestID[index]
 		if (character >= 'a' && character <= 'z') ||
 			(character >= 'A' && character <= 'Z') ||

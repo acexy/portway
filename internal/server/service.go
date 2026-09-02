@@ -14,6 +14,7 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
+	forwardregistry "github.com/acexy/portway/internal/forward/registry"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/logging"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
@@ -38,18 +39,21 @@ func (reloadError restartRequiredError) Error() string {
 // It owns the client listener, control sessions, proxy registration, and
 // session-scoped TCP proxy resources.
 type Service struct {
-	logger                *logging.Logger
-	configuration         *configurationManager
-	clientRegistry        *session.Registry
-	proxyRegistry         *proxyregistry.Registry
-	linkBroker            *link.Broker
-	transportServer       transport.Server
-	authenticationStore   *authentication.Store
-	authenticationBarrier sync.RWMutex
-	managed               *managedCoordinator
-	httpsCertificates     *httpsCertificateManager
-	inboundAdmission      chan struct{}
-	ready                 atomic.Bool
+	logger                  *logging.Logger
+	configuration           *configurationManager
+	clientRegistry          *session.Registry
+	proxyRegistry           *proxyregistry.Registry
+	forwardRegistry         *forwardregistry.Registry
+	linkBroker              *link.Broker
+	transportServer         transport.Server
+	authenticationStore     *authentication.Store
+	authenticationBarrier   sync.RWMutex
+	configurationSyncMutex  sync.Mutex
+	configurationSyncStates map[string]*configurationSyncState
+	managed                 *managedCoordinator
+	httpsCertificates       *httpsCertificateManager
+	inboundAdmission        chan struct{}
+	ready                   atomic.Bool
 }
 
 // NewService creates a server service.
@@ -58,10 +62,11 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 		configuration.Generation = 1
 	}
 	return &Service{
-		logger:         logger,
-		configuration:  newConfigurationManager(configuration),
-		clientRegistry: session.NewRegistryWithLimit(maxClientSessions),
-		managed:        newManagedCoordinator(),
+		logger:                  logger,
+		configuration:           newConfigurationManager(configuration),
+		clientRegistry:          session.NewRegistryWithLimit(maxClientSessions),
+		managed:                 newManagedCoordinator(),
+		configurationSyncStates: make(map[string]*configurationSyncState),
 		inboundAdmission: make(
 			chan struct{},
 			maxUnaffiliatedInboundConnections,
@@ -72,11 +77,14 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 // Run runs the server until the parent context is canceled.
 func (s *Service) Run(ctx context.Context) error {
 	configuration := s.configuration.snapshot()
+	if err := config.ValidateProxyMirrorConfiguration(configuration); err != nil {
+		return fmt.Errorf("validate proxy mirror configuration: %w", err)
+	}
 	s.logger.InfoWithFields("server started", map[string]any{
 		"event":                "server_started",
 		"listen_address":       configuration.Transport.ListenAddress,
-		"http_listen_address":  configuration.Tunnel.HTTPListenAddress,
-		"https_listen_address": configuration.Tunnel.HTTPSListenAddress,
+		"http_listen_address":  configuration.Proxies.HTTP.ListenAddress,
+		"https_listen_address": configuration.Proxies.HTTPS.ListenAddress,
 	})
 	defer s.logger.Info("server stopped")
 
@@ -114,17 +122,24 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
+	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy, func() config.UDPConfig {
+		return config.EffectiveForwardUDPConfig(s.configuration.snapshot().Forwards)
+	})
+	defer s.forwardRegistry.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,
 		s.logger.WithComponent("proxy_registry"),
-		configuration.Tunnel.BindIP,
+		configuration.Proxies.BindIP,
 		s.linkBroker,
-		configuration.Tunnel.HTTPListenAddress != "",
-		configuration.Tunnel.HTTPSListenAddress != "",
-		configuration.HTTP,
-		configuration.UDP,
+		configuration.Proxies.HTTP.ListenAddress != "",
+		configuration.Proxies.HTTPS.ListenAddress != "",
+		configuration.Proxies.HTTP.HTTPConfig,
+		configuration.Proxies.UDP,
 		sourceFilter,
 	)
+	if err := s.proxyRegistry.ConfigureMirrorGroups(configuration.Proxies.Mirror); err != nil {
+		return fmt.Errorf("configure proxy mirror groups: %w", err)
+	}
 	if err := s.proxyRegistry.ConfigureManagedReservations(
 		configuration.ManagedClients,
 	); err != nil {
@@ -133,16 +148,16 @@ func (s *Service) Run(ctx context.Context) error {
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
 	listenerErrors := make(chan error, 3)
-	if configuration.Tunnel.HTTPListenAddress != "" {
+	if configuration.Proxies.HTTP.ListenAddress != "" {
 		httpListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
 			"tcp",
-			configuration.Tunnel.HTTPListenAddress,
+			configuration.Proxies.HTTP.ListenAddress,
 		)
 		if listenError != nil {
 			return fmt.Errorf(
 				"listen for HTTP proxy requests on %q: %w",
-				configuration.Tunnel.HTTPListenAddress,
+				configuration.Proxies.HTTP.ListenAddress,
 				listenError,
 			)
 		}
@@ -153,7 +168,7 @@ func (s *Service) Run(ctx context.Context) error {
 			"public HTTP listener started",
 			map[string]any{
 				"event":          "http_listener_started",
-				"listen_address": configuration.Tunnel.HTTPListenAddress,
+				"listen_address": configuration.Proxies.HTTP.ListenAddress,
 			},
 		)
 		httpProtocols := new(http.Protocols)
@@ -166,34 +181,32 @@ func (s *Service) Run(ctx context.Context) error {
 				s.proxyRegistry,
 				"http_header",
 			),
-			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
-			IdleTimeout:       configuration.HTTP.PublicIdleTimeout,
-			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
+			ReadHeaderTimeout: configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout,
+			IdleTimeout:       configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout,
+			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
 			Protocols:         httpProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
 		}
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			serveError := httpServer.Serve(httpListener)
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()
 			}
-		}()
+		})
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
-				configuration.HTTP.GracefulShutdownTimeout,
+				configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout,
 			)
 			defer cancel()
 			_ = httpServer.Shutdown(shutdownContext)
 		}()
 	}
-	if configuration.Tunnel.HTTPSListenAddress != "" {
+	if configuration.Proxies.HTTPS.ListenAddress != "" {
 		s.httpsCertificates, err = newHTTPSCertificateManager(
 			s.logger.WithComponent("https_certificate"),
-			configuration.HTTPS,
+			configuration.Proxies.HTTPS,
 		)
 		if err != nil {
 			return fmt.Errorf("initialize HTTPS certificate: %w", err)
@@ -201,12 +214,12 @@ func (s *Service) Run(ctx context.Context) error {
 		httpsListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
 			"tcp",
-			configuration.Tunnel.HTTPSListenAddress,
+			configuration.Proxies.HTTPS.ListenAddress,
 		)
 		if listenError != nil {
 			return fmt.Errorf(
 				"listen for HTTPS proxy requests on %q: %w",
-				configuration.Tunnel.HTTPSListenAddress,
+				configuration.Proxies.HTTPS.ListenAddress,
 				listenError,
 			)
 		}
@@ -221,7 +234,7 @@ func (s *Service) Run(ctx context.Context) error {
 			"public HTTPS listener started",
 			map[string]any{
 				"event":          "https_listener_started",
-				"listen_address": configuration.Tunnel.HTTPSListenAddress,
+				"listen_address": configuration.Proxies.HTTPS.ListenAddress,
 			},
 		)
 		tlsConfiguration := &tls.Config{
@@ -239,46 +252,38 @@ func (s *Service) Run(ctx context.Context) error {
 				s.proxyRegistry,
 				"https_header",
 			),
-			ReadHeaderTimeout: configuration.HTTP.ReadHeaderTimeout,
-			IdleTimeout:       configuration.HTTP.PublicIdleTimeout,
-			MaxHeaderBytes:    configuration.HTTP.MaxHeaderBytes,
+			ReadHeaderTimeout: configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout,
+			IdleTimeout:       configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout,
+			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
 			Protocols:         httpsProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
 			TLSConfig:         tlsConfiguration,
 		}
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			serveError := httpsServer.Serve(tls.NewListener(httpsListener, tlsConfiguration))
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()
 			}
-		}()
+		})
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
-				configuration.HTTP.GracefulShutdownTimeout,
+				configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout,
 			)
 			defer cancel()
 			_ = httpsServer.Shutdown(shutdownContext)
 		}()
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			s.watchHTTPSCertificate(sessionContext)
-		}()
+		})
 	}
-	sessions.Add(1)
-	go func() {
-		defer sessions.Done()
+	sessions.Go(func() {
 		s.monitorClients(sessionContext)
-	}()
-	sessions.Add(1)
-	go func() {
-		defer sessions.Done()
+	})
+	sessions.Go(func() {
 		s.watchConfiguration(sessionContext)
-	}()
+	})
 	if configuration.Operations.ListenAddress != "" {
 		operationsListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,
@@ -297,15 +302,13 @@ func (s *Service) Run(ctx context.Context) error {
 			ReadHeaderTimeout: operationsReadHeaderTimeout,
 			MaxHeaderBytes:    operationsMaxHeaderBytes,
 		}
-		sessions.Add(1)
-		go func() {
-			defer sessions.Done()
+		sessions.Go(func() {
 			serveError := operationsServer.Serve(operationsListener)
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()
 			}
-		}()
+		})
 		defer func() {
 			shutdownContext, cancel := context.WithTimeout(
 				context.Background(),
@@ -342,13 +345,11 @@ func (s *Service) Run(ctx context.Context) error {
 			continue
 		}
 
-		sessions.Add(1)
-		go func(accepted transport.Inbound) {
-			defer sessions.Done()
+		sessions.Go(func() {
 			defer releaseAdmission()
 			if err := s.handleAdmittedConnection(
 				sessionContext,
-				accepted,
+				inbound,
 				releaseAdmission,
 			); err != nil &&
 				!errors.Is(err, io.EOF) &&
@@ -356,7 +357,7 @@ func (s *Service) Run(ctx context.Context) error {
 				sessionContext.Err() == nil {
 				s.logger.Warn("client connection ended", err)
 			}
-		}(inbound)
+		})
 	}
 }
 

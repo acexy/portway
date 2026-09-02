@@ -29,14 +29,14 @@ func benchmarkProxySync(b *testing.B, proxyCount int) {
 			PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
 		}
 	}
-	request := protocol.SyncProxies{Revision: 1, Proxies: declarations}
+	request := SyncRequest{Revision: 1, Proxies: declarations}
 	result := manager.Sync(
 		"benchmark-client",
 		"benchmark-session",
 		"benchmark-request",
 		request,
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		b.Fatalf("initial proxy synchronization failed: %+v", result.Error)
 	}
 
@@ -49,7 +49,7 @@ func benchmarkProxySync(b *testing.B, proxyCount int) {
 			"benchmark-request",
 			request,
 		)
-		if result.Status != protocol.ProxySyncStatusApplied {
+		if result.Status != SyncStatusApplied {
 			b.Fatalf("proxy synchronization failed: %+v", result.Error)
 		}
 	}
@@ -61,12 +61,12 @@ func BenchmarkProxySyncParallel(b *testing.B) {
 	manager.httpEnabled = true
 	clientIDs := make([]string, clientCount)
 	sessionIDs := make([]string, clientCount)
-	requests := make([]protocol.SyncProxies, clientCount)
+	requests := make([]SyncRequest, clientCount)
 	for index := range clientCount {
 		clientIDs[index] = fmt.Sprintf("benchmark-client-%02d", index)
 		sessionIDs[index] = fmt.Sprintf("benchmark-session-%02d", index)
 		manager.Attach(clientIDs[index], sessionIDs[index], nil)
-		requests[index] = protocol.SyncProxies{
+		requests[index] = SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{{
 				Name:          "web",
@@ -78,7 +78,7 @@ func BenchmarkProxySyncParallel(b *testing.B) {
 		result := manager.Sync(
 			clientIDs[index], sessionIDs[index], "benchmark-request", requests[index],
 		)
-		if result.Status != protocol.ProxySyncStatusApplied {
+		if result.Status != SyncStatusApplied {
 			b.Fatalf("initialize proxy synchronization %d: %+v", index, result.Error)
 		}
 	}
@@ -95,7 +95,7 @@ func BenchmarkProxySyncParallel(b *testing.B) {
 				"benchmark-request",
 				requests[worker],
 			)
-			if result.Status != protocol.ProxySyncStatusApplied {
+			if result.Status != SyncStatusApplied {
 				b.Fatalf("parallel proxy synchronization failed: %+v", result.Error)
 			}
 		}

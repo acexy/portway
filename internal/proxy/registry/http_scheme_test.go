@@ -56,19 +56,19 @@ func TestValidateProxyDeclarationsRequiresAvailablePublicSchemes(t *testing.T) {
 		schemes      []protocol.HTTPPublicScheme
 		httpEnabled  bool
 		httpsEnabled bool
-		wantCode     protocol.ProxyErrorCode
+		wantCode     ErrorCode
 	}{
 		{name: "missing defaults to HTTP", httpEnabled: true},
 		{
 			name:     "HTTP unavailable",
 			schemes:  []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
-			wantCode: protocol.ProxyErrorPublicSchemeUnavailable,
+			wantCode: ErrorPublicSchemeUnavailable,
 		},
 		{
 			name:        "HTTPS unavailable",
 			schemes:     []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
 			httpEnabled: true,
-			wantCode:    protocol.ProxyErrorPublicSchemeUnavailable,
+			wantCode:    ErrorPublicSchemeUnavailable,
 		},
 		{
 			name: "partial availability rejects complete declaration",
@@ -77,7 +77,7 @@ func TestValidateProxyDeclarationsRequiresAvailablePublicSchemes(t *testing.T) {
 				protocol.HTTPPublicSchemeHTTPS,
 			},
 			httpEnabled: true,
-			wantCode:    protocol.ProxyErrorPublicSchemeUnavailable,
+			wantCode:    ErrorPublicSchemeUnavailable,
 		},
 		{
 			name: "both available",

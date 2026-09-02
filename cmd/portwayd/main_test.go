@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,44 @@ func TestRunVersionPrintsServerVersion(t *testing.T) {
 	expected := "version: development\ncore-protocol: 1\n"
 	if stdout.String() != expected {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
+	}
+}
+
+func TestRunServerAllowsAtMostOneConfigurationFile(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"run", "server.yaml", "extra.yaml"},
+		{"run", "--config", "server.yaml"},
+	} {
+		var stderr bytes.Buffer
+		exitCode := run(arguments, io.Discard, &stderr)
+		if exitCode != 2 {
+			t.Fatalf("run(%v) exit code = %d, want 2", arguments, exitCode)
+		}
+		if !strings.Contains(stderr.String(), "at most one configuration file is allowed") {
+			t.Fatalf("run(%v) stderr = %q", arguments, stderr.String())
+		}
+	}
+}
+
+func TestRunServerUsesDefaultConfigurationFile(t *testing.T) {
+	path, valid := serverConfigurationPath(nil)
+	if !valid || path != "server.yaml" {
+		t.Fatalf("serverConfigurationPath(nil) = %q, %t", path, valid)
+	}
+
+	workingDirectory := t.TempDir()
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	exitCode := run([]string{"run"}, io.Discard, io.Discard)
+	if exitCode != 1 {
+		t.Fatalf("run() exit code = %d, want configuration load failure", exitCode)
 	}
 }
 

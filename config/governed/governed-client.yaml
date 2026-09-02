@@ -8,90 +8,70 @@
 # All ClientIDs and Tokens must be globally unique across Shared, Governed, and
 # Managed authentication records.
 
-# * Required. Server-owned identity returned to the authenticated client.
-# Length: 1-64 characters.
-# Allowed characters: ASCII letters, digits, dots, underscores, and hyphens.
-client_id: governed-client
+authentication:
+  # * Required. Server-owned identity returned to the authenticated client.
+  client_id: governed-client
+  # * Required. Independent Token configured by the client. It must contain
+  # more than 32 UTF-8 characters and remain globally unique. Prefer an
+  # automatically generated 256-bit value and never commit a production Token.
+  # Hot-reloading this Token disconnects only this ClientID.
+  token: PORTWAY_TOKEN_REQUIRED
 
-# * Required. Independent Token configured as authentication.token on this
-# client. It must contain more than 32 UTF-8 characters; prefer an automatically
-# generated 256-bit value. Never commit or log a real Token. Hot-reloading any
-# Token addition, removal, replacement, or reassignment disconnects every active
-# and recoverable client; clients with unchanged credentials may reconnect with
-# their existing Token.
-token: PORTWAY_TOKEN_REQUIRED
-
-# * Required. Limits the proxy configuration declared by this client.
-# The server rejects the complete proxy set when any declaration is outside
-# these permissions; it never silently removes individual proxies.
+# * Required. Limits the complete Proxy and Forward configuration declared by
+# this client. The server rejects a complete declaration set when any entry is
+# outside these permissions; it never silently removes individual entries.
+# Permission changes are hot-reloadable and revoke only this Governed ClientID;
+# after reconnecting, the client resubmits its complete desired sets.
 permissions:
-  # Optional. Proxy type allowlist. Empty means that no proxy type is allowed.
-  # These values select end-to-end proxy semantics carried between portwayd
-  # and portway, not public listener schemes. Allowed values: tcp, udp, http.
-  # Values must not be repeated. Public HTTP/HTTPS access is authorized below.
-  proxy_types:
-    - tcp
-    - udp
-    - http
+  proxies:
+    # A protocol is allowed only when its rule node is present. Omit the entire
+    # proxies node when this client is allowed to declare Forwards only.
+    tcp:
+      remote_port_ranges:
+        - start: 20000
+          end: 20999
+        - start: 22000
+          end: 22099
+    udp:
+      remote_port_ranges:
+        - start: 30000
+          end: 30999
+    http:
+      public_schemes:
+        - https
+      domains:
+        - app.example.com
+        - "*.customer.example.com"
+    # Optional Proxy-specific ceilings. Omitted fields use production-safe
+    # defaults; explicit zero values are invalid. max_active_links counts only
+    # Proxy Links; a separate program hard limit still covers both directions.
+    limits:
+      max_total: 20
+      max_tcp: 10
+      max_udp: 5
+      max_http: 10
+      max_active_links: 100
 
-  # Required and non-empty when tcp is allowed. Must be empty or omitted when
-  # tcp is not allowed.
-  tcp:
-    # Inclusive public TCP port ranges.
-    # Ports must be in 1-65535. Ranges must not overlap.
-    remote_port_ranges:
-      - start: 20000
-        end: 20999
-      - start: 22000
-        end: 22099
-
-  # Required and non-empty when udp is allowed. Must be empty or omitted when
-  # udp is not allowed.
-  udp:
-    # Inclusive public UDP port ranges.
-    # Ports must be in 1-65535. Ranges must not overlap.
-    remote_port_ranges:
-      - start: 30000
-        end: 30999
-
-  # Required and non-empty when http is allowed. Must be empty or omitted when
-  # http is not allowed.
-  http:
-    # Optional when http is allowed. Empty or omitted authorizes only http.
-    # Explicit unique values may be http or https. Each client declaration may
-    # request only these listeners, which must also be enabled globally.
-    public_schemes:
-      - https
-
-    # Authorized unique exact domains or single-label wildcard domains.
-    # Values must not repeat. Exact names must be lowercase canonical DNS names.
-    # "*.example.com" matches "app.example.com", but not "example.com" or
-    # "a.b.example.com". Clients still register exact domains, not wildcards.
-    # HTTPS availability is controlled independently by the server listener
-    # and SNI certificate set. An allowed client domain must also be covered by
-    # a configured certificate before visitors can use HTTPS. TLS terminates
-    # at portwayd and the client-side target remains plain HTTP.
-    domains:
-      - app.example.com
-      - "*.customer.example.com"
-
-  # Optional. Per-client ceilings applied before the program hard limits.
-  # Omitted fields use the defaults shown below. Every configured value must be
-  # greater than zero and no greater than its documented hard maximum.
-  # Per-type proxy limits must not exceed max_proxies.
-  limits:
-    # Default: 20. Hard maximum: 128.
-    max_proxies: 20
-
-    # Default: 10. Hard maximum: 128.
-    max_tcp_proxies: 10
-
-    # Default: 5. Hard maximum: 128.
-    max_udp_proxies: 5
-
-    # Default: 10. Hard maximum: 128.
-    max_http_proxies: 10
-
-    # Counts pending and active links for this client.
-    # Default: 100. Hard maximum: 512.
-    max_active_links: 100
+  # Governed clients receive no Forward permission unless rules are present.
+  # Every rule must be a complete subset of one server-wide forwards.rules
+  # entry; ranges are never clipped or combined across global rules.
+  forwards:
+    rules:
+      - ip_range: 10.20.0.0/16
+        tcp:
+          port_ranges:
+            - start: 5432
+              end: 5432
+      - ip_range: 10.30.0.53/32
+        udp:
+          port_ranges:
+            - start: 53
+              end: 53
+    limits:
+      # Optional Forward-specific ceilings. Omitted fields use production-safe
+      # defaults; explicit zero values are invalid. max_active_links counts only
+      # Forward Links; a separate program hard limit still covers both directions.
+      max_total: 5
+      max_tcp: 4
+      max_udp: 1
+      max_active_links: 20

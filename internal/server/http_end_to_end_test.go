@@ -49,8 +49,8 @@ func TestHTTPProxyEndToEnd(t *testing.T) {
 	serverErrors := make(chan error, 1)
 	serverConfiguration := config.DefaultServer()
 	serverConfiguration.Transport.ListenAddress = serverAddress.String()
-	serverConfiguration.Tunnel.HTTPListenAddress = httpAddress.String()
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.HTTP.ListenAddress = httpAddress.String()
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
 	serverConfiguration.Authentication.SharedToken = &token
 	serverService := NewService(logging.New("test-http-server"), serverConfiguration)
 	go func() { serverErrors <- serverService.Run(serverContext) }()
@@ -58,13 +58,14 @@ func TestHTTPProxyEndToEnd(t *testing.T) {
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)
 	clientConfiguration := config.DefaultClient()
-	clientConfiguration.ClientID = "http-end-to-end-client"
+	clientConfiguration.Authentication.ClientID = "http-end-to-end-client"
 	clientConfiguration.Transport.ServerAddress = serverAddress.String()
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Proxies = []config.ProxyConfig{{
-		Name: "web", Type: "http", Domain: "app.example.com",
-		LocalIP: "127.0.0.1", LocalPort: uint16(backendAddress.Port),
-		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+		Name: "web", Type: "http",
+		Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(backendAddress.Port)},
+		Public: config.ProxyPublicConfig{Domain: "app.example.com",
+			Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
 	}}
 	clientService := client.NewService(logging.New("test-http-client"), clientConfiguration)
 	go func() { clientErrors <- clientService.Run(clientContext) }()
@@ -147,9 +148,9 @@ func TestHTTPSProxyEndToEnd(t *testing.T) {
 	serverErrors := make(chan error, 1)
 	serverConfiguration := config.DefaultServer()
 	serverConfiguration.Transport.ListenAddress = serverAddress.String()
-	serverConfiguration.Tunnel.HTTPSListenAddress = httpsAddress.String()
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.HTTPS.Certificates = []config.HTTPSCertificateConfig{{
+	serverConfiguration.Proxies.HTTPS.ListenAddress = httpsAddress.String()
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.HTTPS.Certificates = []config.HTTPSCertificateConfig{{
 		Domains:  []string{"secure.example.com"},
 		CertFile: certificateFile,
 		KeyFile:  keyFile,
@@ -161,13 +162,14 @@ func TestHTTPSProxyEndToEnd(t *testing.T) {
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)
 	clientConfiguration := config.DefaultClient()
-	clientConfiguration.ClientID = "https-end-to-end-client"
+	clientConfiguration.Authentication.ClientID = "https-end-to-end-client"
 	clientConfiguration.Transport.ServerAddress = serverAddress.String()
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Proxies = []config.ProxyConfig{{
-		Name: "secure-web", Type: "http", Domain: "secure.example.com",
-		LocalIP: "127.0.0.1", LocalPort: uint16(backendAddress.Port),
-		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+		Name: "secure-web", Type: "http",
+		Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(backendAddress.Port)},
+		Public: config.ProxyPublicConfig{Domain: "secure.example.com",
+			Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS}},
 	}}
 	clientService := client.NewService(logging.New("test-https-client"), clientConfiguration)
 	go func() { clientErrors <- clientService.Run(clientContext) }()

@@ -11,14 +11,6 @@
 # Use trace for detailed protocol and lifecycle diagnostics, including heartbeats.
 log_level: info
 
-# Required for Governed and Managed authentication; must exactly match the
-# ClientID bound to the Token in the server-owned client record.
-# Optional for Shared authentication. Leave empty in Shared mode to generate a
-# random ID for the current process, or configure an explicit stable value.
-# Length: 1-64 characters when configured.
-# Allowed characters: ASCII letters, digits, dots, underscores, and hyphens.
-client_id: ""
-
 # Optional. Underlying client-server transport settings.
 transport:
   # Optional. Server network endpoint used by both TCP and QUIC. It may contain
@@ -48,6 +40,11 @@ transport:
 
 # * Required. Portway application identity settings.
 authentication:
+  # Required for Governed and Managed authentication; must match the ClientID
+  # bound to this Token. Optional in Shared mode; empty generates a process ID.
+  # Length: 1-64 using ASCII letters, digits, dots, underscores, and hyphens.
+  client_id: ""
+
   # * Required. Shared by TCP and QUIC. The server associates a globally unique
   # Token with shared, governed, or managed behavior automatically; the client
   # does not declare a management mode.
@@ -56,10 +53,10 @@ authentication:
   # Never commit a real Token to version control.
   token: PORTWAY_TOKEN_REQUIRED
 
-# Required and non-empty for Shared and Governed clients. Managed clients must
-# leave this empty because the server supplies and locks the complete proxy
-# configuration.
-# Proxy names must be unique within this ClientID across all proxy types.
+# Shared and Governed clients own this complete desired Proxy set. At least one
+# Proxy or Forward is required across both collections. Managed clients must
+# leave both collections empty because the server supplies and locks them.
+# Names must be unique across all Proxies and Forwards for this ClientID.
 proxies:
   # * Required for every proxy. Unique name using lowercase letters, digits,
   # underscores, or hyphens; length 1-64. The first character must be a
@@ -74,14 +71,14 @@ proxies:
 
     # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
     # from the Portway client.
-    local_ip: 127.0.0.1
+    local:
+      ip: 127.0.0.1
+      # * Required for every proxy. Local target port, range 1-65535.
+      port: 22
 
-    # * Required for every proxy. Local target port, range 1-65535.
-    local_port: 22
-
-    # * Required when type=tcp or type=udp. Public server port, range 1-65535.
-    # Not allowed when type=http.
-    remote_port: 22022
+    public:
+      # * Required when type=tcp or type=udp. Public server port, range 1-65535.
+      port: 22022
 
   # HTTP/HTTPS public entry example. public_schemes explicitly selects the
   # allowed public listeners; every requested listener must be enabled on
@@ -92,25 +89,51 @@ proxies:
   # additionally requires a certificate mapping that covers this exact domain.
   - name: web
     type: http
-    # Optional when type=http. Defaults to [http] when empty or omitted.
-    # Explicit values must be unique and may be http or https.
-    # Not allowed for tcp or udp.
-    public_schemes:
-      - https
-    # * Required when type=http. Canonical lowercase DNS name without a
-    # scheme, port, path, wildcard, IP literal, or trailing dot.
-    domain: app.example.com
-    # Optional. Defaults to 127.0.0.1.
-    local_ip: 127.0.0.1
-    # * Required for every proxy. Range 1-65535.
-    local_port: 8080
+    local:
+      ip: 127.0.0.1
+      port: 8080
+    public:
+      # Optional when type=http. Defaults to [http] when empty or omitted.
+      # Explicit values must be unique and may be http or https.
+      # Not allowed for tcp or udp.
+      schemes:
+        - https
+      # * Required when type=http. Canonical lowercase DNS name.
+      domain: app.example.com
 
   # UDP example:
   - name: dns
     type: udp
     # Optional. Defaults to 127.0.0.1.
-    local_ip: 127.0.0.1
-    # * Required for every proxy. Range 1-65535.
-    local_port: 53
-    # * Required when type=udp. Public UDP port, range 1-65535.
-    remote_port: 5353
+    local:
+      ip: 127.0.0.1
+      port: 53
+    public:
+      port: 5353
+
+# Shared and Governed clients own this complete desired Forward set. At least
+# one Proxy or Forward is required across both collections. Managed clients
+# must leave both collections empty because the server supplies and locks them.
+# A Forward accepts traffic on portway and carries it through the authenticated
+# tunnel to an IP:port reachable from portwayd. Shared and Governed clients own
+# this complete set. Managed clients must not configure it locally because the
+# server supplies it. The client reads its YAML only at process startup; local
+# configuration changes, including Forward changes, require a client restart.
+# Names are unique across Proxies and Forwards for the same client.
+forwards:
+  - name: database
+    # * Required. Allowed values: tcp, udp.
+    type: tcp
+    # * Required. Explicit client-side listening IP; hostnames are not
+    # accepted. Bind loopback unless other machines must use this entry.
+    listen:
+      ip: 127.0.0.1
+      # * Required. Client-side listening port, range 1-65535.
+      port: 15432
+    # * Required. Explicit target IP reachable from portwayd; hostnames are
+    # not accepted. The server checks this IP and port against its global
+    # Forward allowlist and any Governed client permissions.
+    target:
+      ip: 10.20.1.15
+      # * Required. Server-side target port, range 1-65535.
+      port: 5432

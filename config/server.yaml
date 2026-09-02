@@ -11,13 +11,6 @@
 # Use trace for detailed per-session protocol diagnostics, including heartbeats.
 log_level: info
 
-# Optional. Local operations HTTP listener for /healthz, /readyz, and /metrics.
-# Defaults to empty, which disables it. Bind this to loopback or a protected
-# management network; the endpoints do not implement application authentication.
-# Changing this value requires restarting portwayd.
-operations:
-  listen_address: ""
-
 # Optional. Underlying client-server transport settings.
 # The server starts only the selected transport.
 transport:
@@ -43,157 +36,287 @@ transport:
     # Private key for cert_file. Keep this file readable only by Portway.
     key_file: /path/to/server.key
 
+# Optional authentication entries. TCP and QUIC use the same immutable
+# authentication snapshot. All configured Tokens and ClientIDs must be globally
+# unique across shared, governed, and managed entries. The Shared Token and both
+# client directories are hot-reloaded as one atomic snapshot. Token changes
+# revoke only the affected authentication record: Shared changes disconnect all
+# Shared clients, while Governed or Managed changes disconnect only that ClientID.
+# Unchanged records retain their Sessions. Managed configuration changes use
+# the online Prepare/Activate rollout instead of revoking the Session.
+authentication:
+  # Optional. When present but empty, generate a cryptographically random
+  # 32-byte Token at startup and log it once. Later configuration scans reuse
+  # that effective Token instead of silently generating another value. Save the
+  # logged Token here before restarting the server, or the restart generates a
+  # different value. Configure an explicit new value to rotate it. Omit the
+  # field to disable Shared authentication when either client directory is
+  # configured.
+  shared_token: ""
+
+  # Optional. Every *.yaml file defines one ClientID, unique Token, Proxy and
+  # Forward permission boundaries, and resource limits. Omitted limit fields
+  # use production-safe defaults; explicit values must remain within their
+  # documented program hard limits. File names are operator-facing labels and
+  # do not need to match ClientID. A Token or permission change disconnects only
+  # the corresponding Governed ClientID; the client reconnects and resubmits
+  # its complete desired Proxy and Forward sets.
+  # The http permission separately allows public_schemes and domains for
+  # type=http declarations; listeners and HTTPS certificates remain global.
+  # Relative paths are resolved from the main server configuration directory.
+  # See config/governed/governed-client.yaml for a complete record example.
+  # governed_clients_path: "./governed"
+
+  # Optional. Every *.yaml file defines one ClientID, unique Token, optional
+  # Forward permission boundary, revision, and complete server-owned Proxy and
+  # Forward configuration. A client may have at most 128 managed proxies across
+  # TCP, UDP, and HTTP. Across all Managed files, TCP ports, UDP ports, and HTTP
+  # domains must each be globally unique.
+  # A Token change disconnects only the corresponding Managed ClientID;
+  # client configuration-only changes retain online rollout.
+  # Managed type=http entries explicitly select public_schemes. Every selected
+  # listener must be enabled globally; HTTPS certificates are configured above,
+  # while each managed local target still speaks HTTP.
+  # Relative paths are resolved from the main server configuration directory.
+  # See config/managed/managed-client.yaml for a complete record example.
+  # managed_clients_path: "./managed"
+
 # Optional. Public proxy listener settings.
-tunnel:
+proxies:
   # Optional. IP used by public TCP and UDP proxy listeners.
   # Defaults to 0.0.0.0. Must be an IP address, not a hostname.
   bind_ip: 0.0.0.0
 
-  # Optional. Public HTTP proxy listener.
-  # Defaults to empty, which disables HTTP proxy registration and serving.
-  # When configured, it must differ from transport.listen_address.
-  http_listen_address: ""
+  # Optional server-owned TCP/UDP mirror groups. Only Governed and Managed
+  # ClientIDs may participate. Every online member receives the same visitor
+  # input, while only primary_client_id may reply. Missing Primary leaves the
+  # group receive-only; no replacement is elected. Group and member changes
+  # are hot-reloaded and affect new TCP connections or UDP associations.
+  # mirror:
+  #   governed:
+  #     - name: telemetry
+  #       type: tcp
+  #       public:
+  #         port_ranges:
+  #           - start: 2233
+  #             end: 2233
+  #           - start: 2240
+  #             end: 2249
+  #       primary_client_id: governed-primary
+  #       client_ids:
+  #         - governed-primary
+  #         - governed-mirror
+  #   managed:
+  #     - name: discovery
+  #       type: udp
+  #       public:
+  #         port_ranges:
+  #           - start: 5353
+  #             end: 5353
+  #       primary_client_id: managed-primary
+  #       client_ids:
+  #         - managed-primary
+  #         - managed-mirror
 
-  # Optional. Public HTTPS proxy listener. Portway terminates TLS and forwards
-  # requests to the client-side local service over HTTP. Defaults to empty,
-  # which disables HTTPS. It must differ from all other TCP listeners.
-  https_listen_address: ""
+  # Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
+  # These values are shared by public HTTP and TLS-terminated HTTPS requests.
+  # Defaults apply even when both public listeners are empty. Changing an
+  # effective value currently requires restarting portwayd.
+  http:
+    # Optional. Public HTTP listener. Empty disables HTTP. It must not duplicate
+    # the transport, HTTPS, or operations TCP listener address.
+    listen_address: ""
+    # Optional. Defaults to 0s, which disables the Portway deadline.
+    # Maximum non-zero value: 60s.
+    read_header_timeout: 0s
 
-# Optional. Public HTTPS SNI certificate set. At least one entry is required
-# when tunnel.https_listen_address is configured. Exact names take precedence
-# over single-label wildcards. Every declared name must be covered by the
-# certificate SAN. Missing or unknown SNI is rejected. File contents, paths,
-# and the complete list are hot-reloadable as one atomic snapshot; invalid
-# updates keep the previous snapshot active. QUIC certificates are independent.
-https:
-  certificates:
-    - domains:
-        - app.example.com
-        - "*.apps.example.com"
-      cert_file: /path/to/app-example-com.crt
-      # Keep private keys readable only by Portway.
-      key_file: /path/to/app-example-com.key
+    # Optional. Maximum duration for receiving a complete request body.
+    # Defaults to 0s, which disables the Portway deadline. Maximum: 10m.
+    request_body_timeout: 0s
 
-    - domains:
-        - service.example.net
-      cert_file: /path/to/service-example-net.crt
-      key_file: /path/to/service-example-net.key
+    # Optional. Public HTTP/HTTPS keep-alive idle timeout. Defaults to 0s,
+    # which uses Go's unlimited server default. Maximum: 10m.
+    public_idle_timeout: 0s
 
-# Optional. HTTP proxy safety limits, capacity limits, and business timeouts.
-# These values are shared by public HTTP and TLS-terminated HTTPS requests.
-# Defaults apply even when both public listeners are empty. Changing an
-# effective value currently requires restarting portwayd.
-http:
-  # Optional. Defaults to 0s, which disables the Portway deadline.
-  # Maximum non-zero value: 60s.
-  read_header_timeout: 0s
+    # Optional. Maximum graceful HTTP shutdown period. Defaults to 30s.
+    # Valid range: greater than 0s and at most 2m.
+    graceful_shutdown_timeout: 30s
 
-  # Optional. Maximum duration for receiving a complete request body.
-  # Defaults to 0s, which disables the Portway deadline. Maximum: 10m.
-  request_body_timeout: 0s
+    # Optional. Defaults to 0s. Zero means no Portway idle timeout.
+    # Maximum non-zero value: 10m.
+    idle_connection_timeout: 0s
 
-  # Optional. Public HTTP/HTTPS keep-alive idle timeout. Defaults to 0s,
-  # which uses Go's unlimited server default. Maximum: 10m.
-  public_idle_timeout: 0s
+    # Optional. Defaults to 0s. Zero allows streaming responses without a
+    # Portway response-header deadline. Maximum non-zero value: 10m.
+    response_header_timeout: 0s
 
-  # Optional. Maximum graceful HTTP shutdown period. Defaults to 30s.
-  # Valid range: greater than 0s and at most 2m.
-  graceful_shutdown_timeout: 30s
+    # Optional. Full-duplex inactivity timeout after an HTTP Upgrade. Successful
+    # reads or writes refresh it. Defaults to 0s; maximum non-zero value: 24h.
+    upgrade_idle_timeout: 0s
 
-  # Optional. Defaults to 0s. Zero means no Portway idle timeout.
-  # Maximum non-zero value: 10m.
-  idle_connection_timeout: 0s
+    # Optional. Maximum request body size. Defaults to 0, which is unlimited.
+    # Hard maximum when enabled: 1073741824 bytes (1 GiB).
+    max_request_body_bytes: 0
 
-  # Optional. Defaults to 0s. Zero allows streaming responses without a
-  # Portway response-header deadline. Maximum non-zero value: 10m.
-  response_header_timeout: 0s
+    # Optional capacity settings. Defaults are shown below. Every effective value
+    # must be greater than zero and no greater than its documented hard maximum.
+    # Per-client and per-domain values must not exceed their global value.
 
-  # Optional. Full-duplex inactivity timeout after an HTTP Upgrade. Successful
-  # reads or writes refresh it. Defaults to 0s; maximum non-zero value: 24h.
-  upgrade_idle_timeout: 0s
+    # Hard maximum: 1048576 bytes.
+    max_header_bytes: 65536
 
-  # Optional. Maximum request body size. Defaults to 0, which is unlimited.
-  # Hard maximum when enabled: 1073741824 bytes (1 GiB).
-  max_request_body_bytes: 0
+    # Hard maximum: 16384.
+    max_concurrent_requests: 4096
 
-  # Optional capacity settings. Defaults are shown below. Every effective value
-  # must be greater than zero and no greater than its documented hard maximum.
-  # Per-client and per-domain values must not exceed their global value.
+    # Hard maximum: 2048.
+    max_concurrent_requests_per_client: 512
 
-  # Hard maximum: 1048576 bytes.
-  max_header_bytes: 65536
+    # Hard maximum: 1024.
+    max_concurrent_requests_per_domain: 256
 
-  # Hard maximum: 16384.
-  max_concurrent_requests: 4096
+    # Global cap across all active and idle backend Links. Hard maximum: 4096.
+    max_idle_connections: 1024
 
-  # Hard maximum: 2048.
-  max_concurrent_requests_per_client: 512
+    # Per-domain idle pool cap. Hard maximum: 128.
+    max_idle_connections_per_domain: 32
 
-  # Hard maximum: 1024.
-  max_concurrent_requests_per_domain: 256
+    # Hard maximum: 4096.
+    max_upgrade_connections: 1024
 
-  # Global cap across all active and idle backend Links. Hard maximum: 4096.
-  max_idle_connections: 1024
+    # Hard maximum: 512.
+    max_upgrade_connections_per_client: 128
 
-  # Per-domain idle pool cap. Hard maximum: 128.
-  max_idle_connections_per_domain: 32
+    # Hard maximum: 256.
+    max_upgrade_connections_per_domain: 64
 
-  # Hard maximum: 4096.
-  max_upgrade_connections: 1024
+    # Hard maximum: 256.
+    max_concurrent_http2_streams: 128
 
-  # Hard maximum: 512.
-  max_upgrade_connections_per_client: 128
+  # Optional. Public HTTPS SNI certificate set. At least one entry is required
+  # when proxies.https.listen_address is configured. Exact names take precedence
+  # over single-label wildcards. Every declared name must be covered by the
+  # certificate SAN. Missing or unknown SNI is rejected. File contents, paths,
+  # and the complete list are hot-reloadable as one atomic snapshot; invalid
+  # updates keep the previous snapshot active. QUIC certificates are independent.
+  https:
+    # Optional. Public HTTPS listener. Empty disables HTTPS. It must not
+    # duplicate the transport, HTTP, or operations TCP listener address.
+    listen_address: ""
+    certificates:
+      - domains:
+          - app.example.com
+          - "*.apps.example.com"
+        cert_file: /path/to/app-example-com.crt
+        # Keep private keys readable only by Portway.
+        key_file: /path/to/app-example-com.key
 
-  # Hard maximum: 256.
-  max_upgrade_connections_per_domain: 64
+      - domains:
+          - service.example.net
+        cert_file: /path/to/service-example-net.crt
+        key_file: /path/to/service-example-net.key
 
-  # Hard maximum: 256.
-  max_concurrent_http2_streams: 128
+  # Optional. UDP association, queue, rate, and memory safety limits.
+  # Defaults shown below apply even when no UDP proxy is registered.
+  # Every effective value must remain within its compiled hard boundary.
+  udp:
+    # Optional. Association inactivity period. Defaults to 60s.
+    # Valid range: 5s to 10m.
+    association_idle_timeout: 60s
 
-# Optional. UDP association, queue, rate, and memory safety limits.
-# Defaults shown below apply even when no UDP proxy is registered.
-# Every effective value must remain within its compiled hard boundary.
-udp:
-  # Optional. Association inactivity period. Defaults to 60s.
-  # Valid range: 5s to 10m.
-  association_idle_timeout: 60s
+    # Optional. Maximum blocked Data Link frame write. Defaults to 3s.
+    # Valid range: 100ms to 30s. A timeout closes only that association.
+    link_write_timeout: 3s
 
-  # Optional. Maximum blocked Data Link frame write. Defaults to 3s.
-  # Valid range: 100ms to 30s. A timeout closes only that association.
-  link_write_timeout: 3s
+    # Optional. Maximum UDP payload. Defaults to 8192 bytes; protocol hard maximum: 65507.
+    # Startup rejects values above a detected platform UDP Socket limit.
+    max_datagram_size: 8192
 
-  # Optional. Maximum UDP payload. Defaults to 8192 bytes; protocol hard maximum: 65507.
-  # Startup rejects values above a detected platform UDP Socket limit.
-  max_datagram_size: 8192
+    # Optional association capacity. Hard maxima: 4096, 512, 256, 1024.
+    max_associations: 4096
+    max_associations_per_client: 512
+    max_associations_per_proxy: 256
+    max_associations_per_source_ip: 64
 
-  # Optional association capacity. Hard maxima: 4096, 512, 256, 1024.
-  max_associations: 4096
-  max_associations_per_client: 512
-  max_associations_per_proxy: 256
-  max_associations_per_source_ip: 64
+    # Optional pending association capacity. Hard maxima: 1024, 128, 64.
+    max_pending_associations: 1024
+    max_pending_associations_per_client: 128
+    max_pending_associations_per_proxy: 64
 
-  # Optional pending association capacity. Hard maxima: 1024, 128, 64.
-  max_pending_associations: 1024
-  max_pending_associations_per_client: 128
-  max_pending_associations_per_proxy: 64
+    # Optional new-association rates per second. Hard maxima: 10000, 2000, 1000.
+    max_new_associations_per_second: 1000
+    max_new_associations_per_second_per_client: 200
+    max_new_associations_per_second_per_proxy: 100
 
-  # Optional new-association rates per second. Hard maxima: 10000, 2000, 1000.
-  max_new_associations_per_second: 1000
-  max_new_associations_per_second_per_client: 200
-  max_new_associations_per_second_per_proxy: 100
+    # Optional bounded queue limits. Hard maxima: 256 datagrams, 4 MiB per
+    # association, and 512 MiB globally. Queue saturation drops the newest
+    # datagram and never blocks the public UDP socket read loop.
+    max_queued_datagrams_per_association: 32
+    max_queued_bytes_per_association: 262144
+    max_queued_bytes: 67108864
 
-  # Optional bounded queue limits. Hard maxima: 256 datagrams, 4 MiB per
-  # association, and 512 MiB globally. Queue saturation drops the newest
-  # datagram and never blocks the public UDP socket read loop.
-  max_queued_datagrams_per_association: 32
-  max_queued_bytes_per_association: 262144
-  max_queued_bytes: 67108864
+# Forward is disabled by default. When enabled, rules are mandatory and form a
+# server-wide allowlist that Shared, Governed, and Managed clients cannot bypass.
+# Every IP rule binds that CIDR to its own TCP and/or UDP port ranges; an IP and
+# port must match the same rule. CIDRs in one rule set must not overlap or
+# contain one another. Exact IPv4/IPv6 targets use /32 and /128. Target hostnames
+# are not supported. All forwards fields and client Forward permissions are
+# hot-reloadable as one candidate snapshot. A successful reload automatically
+# closes affected Forward connections; invalid candidates preserve the previous
+# snapshot. Existing Proxy connections are not affected by unrelated changes.
+# Disabling the global switch leaves Governed permissions and Managed desired
+# configurations intact but dormant. Online clients close only their Forward
+# listeners and links, remain connected, and automatically restore authorized
+# Forward listeners from the latest rules when the switch is enabled again.
+forwards:
+  # Optional. Defaults to false. Rules may be retained while disabled so the
+  # feature can be enabled later by hot reload without redesigning the policy.
+  # Client-specific Forward rules and configurations may also remain present.
+  enabled: false
+  # Optional server-controlled UDP Forward lifecycle and capacity limits.
+  # These limits are hot-reloaded and sent to authenticated clients with each
+  # UDP Forward Binding. Defaults and hard maxima match proxies.udp.
+  udp:
+    association_idle_timeout: 60s
+    link_write_timeout: 3s
+    max_datagram_size: 8192
+    max_associations: 4096
+    max_associations_per_client: 512
+    max_associations_per_proxy: 256
+    max_associations_per_source_ip: 64
+    max_pending_associations: 1024
+    max_pending_associations_per_client: 128
+    max_pending_associations_per_proxy: 64
+    max_new_associations_per_second: 1000
+    max_new_associations_per_second_per_client: 200
+    max_new_associations_per_second_per_proxy: 100
+    max_queued_datagrams_per_association: 32
+    max_queued_bytes_per_association: 262144
+    max_queued_bytes: 67108864
+  # Required and non-empty whenever the forwards section is configured.
+  rules:
+    - ip_range: 10.0.0.0/8
+      tcp:
+        # Inclusive ranges in 1-65535; sorted and non-overlapping.
+        port_ranges:
+          - start: 22
+            end: 22
+          - start: 5432
+            end: 5432
+      udp:
+        port_ranges:
+          - start: 53
+            end: 53
+    - ip_range: 192.168.10.0/24
+      tcp:
+        port_ranges:
+          - start: 8000
+            end: 8999
 
 # Optional. Server-wide source IP security controls.
 security:
   # Optional. IPv4/IPv6 deny-list file. Defaults to empty, which disables
-  # source IP filtering. Relative paths are resolved from the working
-  # directory. The configured file must exist and be valid at startup.
+  # source IP filtering. Relative paths are resolved from the main server
+  # configuration file's directory. The file must exist and be valid at startup.
   # Each non-comment line may contain one IP address or CIDR prefix.
   # ip_deny_file: "./ip_block.txt"
 
@@ -209,41 +332,10 @@ security:
   # Never enable this when clients can bypass the trusted upstream proxy.
   http_client_ip_header: ""
 
-# Optional authentication entries. TCP and QUIC use the same immutable
-# authentication snapshot. All configured Tokens and ClientIDs must be globally
-# unique across shared, governed, and managed entries. The Shared Token and both
-# client directories are hot-reloaded as one atomic snapshot. Adding, removing,
-# replacing, or reassigning any Token disconnects every active and recoverable
-# client after the new snapshot is published; clients with unchanged credentials
-# may reconnect with the same Token. Governed policy-only changes remain selective,
-# while Managed configuration-only changes use online rollout.
-authentication:
-  # Optional. When present but empty, generate a cryptographically random
-  # 32-byte Token at startup and log it once. Later configuration scans reuse
-  # that effective Token instead of silently generating another value. Configure
-  # an explicit new value to rotate it. Omit this field to disable shared
-  # authentication when either client directory is configured.
-  shared_token: ""
-
-  # Optional. Every *.yaml file defines one ClientID, unique Token, proxy type
-  # allowlist, public port/domain policy, and resource limits. Omitted limit
-  # fields use production-safe defaults; explicit values must remain within
-  # their documented program hard limits. File names are operator-facing labels
-  # and do not need to match ClientID. Any Token change in this directory triggers
-  # the deployment-wide disconnect described above.
-  # The http permission separately allows public_schemes and domains for
-  # type=http declarations; listeners and HTTPS certificates remain global.
-  # See config/governed/governed-client.yaml for a complete record example.
-  # governed_clients_path: "./governed"
-
-  # Optional. Every *.yaml file defines one ClientID, unique Token, revision,
-  # and complete server-owned proxy configuration. A client may have at most
-  # 128 managed proxies across TCP, UDP, and HTTP. Across all Managed files,
-  # TCP ports, UDP ports, and HTTP domains must each be globally unique.
-  # Any Token change in this directory triggers the deployment-wide disconnect
-  # described above; proxy configuration-only changes retain online rollout.
-  # Managed type=http entries explicitly select public_schemes. Every selected
-  # listener must be enabled globally; HTTPS certificates are configured above,
-  # while each managed local target still speaks HTTP.
-  # See config/managed/managed-client.yaml for a complete record example.
-  # managed_clients_path: "./managed"
+# Optional. Local operations HTTP listener for /healthz, /readyz, and /metrics.
+# Defaults to empty, which disables it. Bind this to loopback or a protected
+# management network; the endpoints do not implement application authentication.
+# The address must not duplicate any transport, HTTP, or HTTPS listener.
+# Changing this value requires restarting portwayd.
+operations:
+  listen_address: ""

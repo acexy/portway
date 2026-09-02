@@ -1,15 +1,32 @@
 # Managed 服务端客户端记录完整示例，对应 ../../../config/managed/managed-client.yaml。
 # 文件名只是操作者标签，无需匹配 client_id。所有独立 ClientID 和 Token 必须唯一。
 
-client_id: managed-client
-# 必须包含大于 32 个 UTF-8 字符且保持唯一；推荐使用自动生成的 256-bit 随机值。
-# 禁止提交生产 Token。热加载时新增、删除、替换或重新分配任一 Token 都会断开
-# 全部活动及恢复窗口内的客户端；凭证未变化的客户端可使用原 Token 重连。
-# 仅代理配置变化时仍使用在线切换。
-token: PORTWAY_TOKEN_REQUIRED
+authentication:
+  client_id: managed-client
+  # 必须包含大于 32 个 UTF-8 字符且保持全局唯一；推荐使用自动生成的 256-bit
+  # 随机值。禁止提交生产 Token。热加载修改本记录 Token 时，只断开本 ClientID。
+  token: PORTWAY_TOKEN_REQUIRED
 
+# Managed Forward 可选权限边界。Managed Forward 始终受全局 forwards.rules 约束；
+# 此可选规则只能进一步收紧，不能扩张。省略时仅使用全局边界；只有本记录包含
+# configuration.forwards 时才允许配置。只修改权限会随服务端原子快照热加载，
+# 不要求增加 configuration.revision。若收紧后的规则不再允许任一已配置目标，
+# 服务端会拒绝完整候选，而不是静默删除该 Forward。
+permissions:
+  forwards:
+    rules:
+      - ip_range: 10.40.0.0/16
+        tcp:
+          port_ranges:
+            - start: 5432
+              end: 5432
+
+# 必填。服务端所有的完整客户端配置。Managed 客户端禁止在 client.yaml 中配置
+# 本地 proxies 或 forwards；认证后由服务端下发两个完整集合，客户端不能覆盖。
 configuration:
-  # 必填。正整数；每次修改配置都必须递增，不能以相同 revision 修改内容。
+  # 必填。大于 0 的单调递增整数。每次修改 configuration.proxies 或
+  # configuration.forwards 都必须递增；相同 revision 对应不同内容或降低 revision
+  # 会拒绝完整热加载候选。只修改 permissions 不要求递增。
   revision: 1
 
   # 可选，默认空。TCP/UDP/HTTP 合计硬上限 128；HTTPS 复用 type=http，
@@ -22,29 +39,51 @@ configuration:
       # 可选值：tcp、udp、http。公网 TLS 在 portwayd 终止，不存在 https 类型。
       type: tcp
       # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
-      local_ip: 127.0.0.1
-      local_port: 22
-      remote_port: 22022
+      local:
+        ip: 127.0.0.1
+        port: 22
+      public:
+        port: 22022
 
     # UDP 示例。
     - name: dns
       type: udp
       # 可选，默认 127.0.0.1。
-      local_ip: 127.0.0.1
-      local_port: 53
-      remote_port: 5353
+      local:
+        ip: 127.0.0.1
+        port: 53
+      public:
+        port: 5353
 
     # 公网 HTTP/HTTPS 示例。同一域名绑定由所有已启用的 HTTP/HTTPS Listener
     # 共用；HTTPS 还要求服务端 SNI 证书覆盖该域名。TLS 在 portwayd 终止，
     # 并始终以明文 HTTP 回源 Managed 客户端的本地目标。
     - name: web
       type: http
-      # HTTP 可选；留空或省略默认 [http]。显式值可为 http、https 且不得重复；
-      # 每个所选入口都必须全局启用。TCP/UDP 禁止配置。
-      public_schemes:
-        - https
-      # 可选，默认 127.0.0.1。
-      local_ip: 127.0.0.1
-      local_port: 8080
-      # HTTP 必填：规范化小写 DNS 域名；TCP/UDP 禁止配置。
-      domain: app.example.com
+      local:
+        ip: 127.0.0.1
+        port: 8080
+      public:
+        # HTTP 可选；留空或省略默认 [http]。显式值可为 http、https 且不得重复；
+        # 每个所选入口都必须全局启用。TCP/UDP 禁止配置。
+        schemes:
+          - https
+        domain: app.example.com
+
+  # 可选，默认空。Managed Forward 完整期望集合。客户端禁止在 client.yaml 中
+  # 配置本地 forwards。
+  # listen_ip/listen_port 只在客户端使用；target_ip/target_port 同时受全局规则和
+  # 可选 Managed 规则审批。修改或删除条目使用 Prepare/Activate，并自动断开
+  # 受影响连接。
+  forwards:
+    - name: database
+      # 必填。可选值：tcp、udp。
+      type: tcp
+      # 必填。客户端明确监听 IP，不接受主机名。
+      listen:
+        ip: 127.0.0.1
+        port: 15432
+      # 必填。portwayd 所在网络可达的明确 IP，不接受主机名。
+      target:
+        ip: 10.40.1.20
+        port: 5432

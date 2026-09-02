@@ -53,18 +53,22 @@ The current implementation reloads:
 - Governed and Managed directory paths and contents;
 - Governed permissions and quotas;
 - complete Managed client configurations.
+- `forwards.enabled`, global Forward rules, and client Forward permissions.
 
 Changing authentication state has immediate runtime effects:
 
-- adding, removing, replacing, or reassigning any Shared, Governed, or Managed
-  Token disconnects every client, including sessions waiting in the recovery
-  window;
-- clients whose credentials did not change may reconnect with the same Token;
-  clients whose credentials changed must use the newly published Token;
+- changing Shared Token disconnects all Shared sessions; changing a Governed or
+  Managed Token disconnects only that ClientID, including recovery state;
+- unrelated authentication records retain their generation and Sessions;
 - changing Governed permissions closes that client's session and resources so
   it reconnects under the new policy;
 - a Managed configuration-only change still uses online rollout and does not
   disconnect unrelated clients.
+
+Disabling `forwards.enabled` keeps all client declarations and permissions as
+dormant state. Online and newly started clients remain connected, close only
+Forward listeners and links, and log `forward_disabled`. Re-enabling restores
+still-authorized listeners in the same Session from the latest rules.
 
 ## Settings that require restart
 
@@ -72,15 +76,15 @@ The following are validated but not applied online:
 
 - `transport.type` and `transport.listen_address`;
 - QUIC certificate and private-key settings;
-- `tunnel.bind_ip`, `tunnel.http_listen_address`, and
-  `tunnel.https_listen_address`;
+- `proxies.bind_ip`, `proxies.http.listen_address`, and
+  `proxies.https.listen_address`;
 - HTTP, UDP, security, and other runtime-component limits.
 
 If any of these fields changes, Portway rejects the complete candidate with
 `restart_required`. Reloadable fields included in the same candidate are not
 partially applied.
 
-Public HTTPS certificate contents, paths, and `https.certificates` entries are
+Public HTTPS certificate contents, paths, and `proxies.https.certificates` entries are
 exceptions: a complete valid SNI certificate set is published atomically without
 replacing the HTTPS listener. Invalid candidates keep the previous set active.
 

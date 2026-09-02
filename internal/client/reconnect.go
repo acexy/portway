@@ -65,11 +65,9 @@ func (s *Service) Run(ctx context.Context) error {
 		if transport.IsPermanent(err) {
 			return err
 		}
-		var registrationError *proxyRegistrationError
-		if errors.As(err, &registrationError) {
-			if !registrationError.retryable {
-				return err
-			}
+		var configurationError *configurationRegistrationError
+		if errors.As(err, &configurationError) && !configurationError.retryable {
+			return err
 		}
 		if established {
 			sessionID = establishedSessionID

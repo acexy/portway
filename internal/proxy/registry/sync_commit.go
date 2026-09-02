@@ -3,6 +3,7 @@ package registry
 import (
 	"crypto/sha256"
 	"net"
+	"net/netip"
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
@@ -16,7 +17,7 @@ type syncCommitPreparation struct {
 	clientID              string
 	sessionID             string
 	requestID             string
-	request               protocol.SyncProxies
+	request               SyncRequest
 	fingerprint           [sha256.Size]byte
 	baseRevision          uint64
 	authenticationMode    authentication.Mode
@@ -35,7 +36,7 @@ type syncCommitPreparation struct {
 	declarationsByUDPPort map[uint16]protocol.ProxyDeclaration
 }
 
-func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.SyncResult {
+func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResult {
 	clientID := preparation.clientID
 	sessionID := preparation.sessionID
 	requestID := preparation.requestID
@@ -59,9 +60,9 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
-	result := protocol.SyncResult{
+	result := SyncResult{
 		Revision: request.Revision,
-		Status:   protocol.ProxySyncStatusApplied,
+		Status:   SyncStatusApplied,
 		Proxies:  results,
 	}
 	manager.mutex.Lock()
@@ -78,7 +79,7 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 		)
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorSessionInactive,
+			ErrorSessionInactive,
 			"",
 			"client session changed during registration",
 		)
@@ -100,17 +101,20 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 		return *reservationRejection
 	}
 	for port, endpoint := range reusableEndpoints {
-		if manager.endpoints[port] != endpoint ||
-			manager.endpointBindings[port] == nil ||
-			manager.endpointBindings[port].clientID != clientID ||
-			existingProxies[manager.endpointBindings[port].declaration.Name] != manager.endpointBindings[port] {
+		group := manager.tcpMirrorGroups[port]
+		mirrorOwned := group != nil && group.tcpEndpoint == endpoint &&
+			group.allows(clientID, manager.clients[clientID])
+		ordinaryOwned := manager.endpointBindings[port] != nil &&
+			manager.endpointBindings[port].clientID == clientID &&
+			existingProxies[manager.endpointBindings[port].declaration.Name] == manager.endpointBindings[port]
+		if manager.endpoints[port] != endpoint || !mirrorOwned && !ordinaryOwned {
 			manager.mutex.Unlock()
 			closeTCPEndpoints(newEndpoints)
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declarationsByPort[port].Name,
 				"remote port ownership changed during registration",
 			)
@@ -118,17 +122,19 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 	}
 	for port, endpoint := range reusableUDPEndpoints {
 		currentBinding := manager.udpEndpointBindings[port]
-		if manager.udpEndpoints[port] != endpoint ||
-			currentBinding == nil ||
-			currentBinding.clientID != clientID ||
-			existingUDPProxies[currentBinding.declaration.Name] != currentBinding {
+		group := manager.udpMirrorGroups[port]
+		mirrorOwned := group != nil && group.udpEndpoint == endpoint &&
+			group.allows(clientID, manager.clients[clientID])
+		ordinaryOwned := currentBinding != nil && currentBinding.clientID == clientID &&
+			existingUDPProxies[currentBinding.declaration.Name] == currentBinding
+		if manager.udpEndpoints[port] != endpoint || !mirrorOwned && !ordinaryOwned {
 			manager.mutex.Unlock()
 			closeTCPEndpoints(newEndpoints)
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declarationsByUDPPort[port].Name,
 				"UDP remote port ownership changed during registration",
 			)
@@ -142,7 +148,7 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
-			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration")
+			return rejectedSyncResult(request.Revision, ErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration")
 		}
 	}
 
@@ -162,18 +168,35 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 	nextEndpoints := make(map[uint16]*proxytcp.Endpoint, len(request.Proxies))
 	for _, binding := range nextProxies {
 		binding.sessionID = sessionID
-		binding.endpoint.SetHandler(func(visitor net.Conn) {
-			manager.openVisitor(binding.endpoint, binding, visitor)
-		})
+		if group := manager.tcpMirrorGroups[binding.declaration.RemotePort]; group != nil &&
+			group.allows(clientID, state) {
+			if group.tcpEndpoint == nil {
+				group.tcpEndpoint = binding.endpoint
+				groupSnapshot := group
+				group.tcpEndpoint.SetHandler(func(visitor net.Conn) {
+					go manager.openMirrorVisitor(groupSnapshot, visitor)
+				})
+			}
+			group.tcpMembers[clientID] = binding
+			delete(manager.endpointBindings, binding.declaration.RemotePort)
+		} else {
+			binding.endpoint.SetHandler(func(visitor net.Conn) {
+				manager.openVisitor(binding.endpoint, binding, visitor)
+			})
+			manager.endpointBindings[binding.declaration.RemotePort] = binding
+		}
 		nextEndpoints[binding.declaration.RemotePort] = binding.endpoint
 		manager.endpoints[binding.declaration.RemotePort] = binding.endpoint
-		manager.endpointBindings[binding.declaration.RemotePort] = binding
 	}
 	removedEndpoints := make(map[uint16]*proxytcp.Endpoint)
 	for _, existing := range existingProxies {
 		endpoint := existing.endpoint
 		remotePort := existing.declaration.RemotePort
-		if nextEndpoints[remotePort] != endpoint {
+		if group := manager.tcpMirrorGroups[remotePort]; group != nil &&
+			group.tcpMembers[clientID] == existing && nextProxies[existing.declaration.Name] != existing {
+			delete(group.tcpMembers, clientID)
+		}
+		if nextEndpoints[remotePort] != endpoint && manager.tcpMirrorGroups[remotePort] == nil {
 			if manager.endpoints[remotePort] == endpoint {
 				delete(manager.endpoints, existing.declaration.RemotePort)
 				delete(manager.endpointBindings, existing.declaration.RemotePort)
@@ -184,16 +207,34 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) protocol.
 	nextUDPEndpoints := make(map[uint16]*proxyudp.Endpoint, len(nextUDPProxies))
 	for _, binding := range nextUDPProxies {
 		binding.sessionID = sessionID
-		binding.endpoint.SetHandler(binding.runtime.HandleDatagram)
+		if group := manager.udpMirrorGroups[binding.declaration.RemotePort]; group != nil &&
+			group.allows(clientID, state) {
+			if group.udpEndpoint == nil {
+				group.udpEndpoint = binding.endpoint
+				groupSnapshot := group
+				group.udpEndpoint.SetHandler(func(source netip.AddrPort, payload []byte) {
+					manager.handleMirrorDatagram(groupSnapshot, source, payload)
+				})
+			}
+			binding.runtime.SetResponseEnabled(clientID == group.configuration.PrimaryClientID)
+			group.udpMembers[clientID] = binding
+			delete(manager.udpEndpointBindings, binding.declaration.RemotePort)
+		} else {
+			binding.endpoint.SetHandler(binding.runtime.HandleDatagram)
+			manager.udpEndpointBindings[binding.declaration.RemotePort] = binding
+		}
 		nextUDPEndpoints[binding.declaration.RemotePort] = binding.endpoint
 		manager.udpEndpoints[binding.declaration.RemotePort] = binding.endpoint
-		manager.udpEndpointBindings[binding.declaration.RemotePort] = binding
 	}
 	removedUDPEndpoints := make(map[uint16]*proxyudp.Endpoint)
 	for _, existing := range existingUDPProxies {
 		endpoint := existing.endpoint
 		remotePort := existing.declaration.RemotePort
-		if nextUDPEndpoints[remotePort] != endpoint {
+		if group := manager.udpMirrorGroups[remotePort]; group != nil &&
+			group.udpMembers[clientID] == existing && nextUDPProxies[existing.declaration.Name] != existing {
+			delete(group.udpMembers, clientID)
+		}
+		if nextUDPEndpoints[remotePort] != endpoint && manager.udpMirrorGroups[remotePort] == nil {
 			if manager.udpEndpoints[remotePort] == endpoint {
 				delete(manager.udpEndpoints, remotePort)
 				delete(manager.udpEndpointBindings, remotePort)

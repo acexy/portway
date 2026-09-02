@@ -12,13 +12,13 @@ import (
 )
 
 func (manager *Registry) prepareSyncEndpoints(
-	request protocol.SyncProxies,
+	request SyncRequest,
 	reusableEndpoints map[uint16]*proxytcp.Endpoint,
 	reusableUDPEndpoints map[uint16]*proxyudp.Endpoint,
 ) (
 	map[uint16]*proxytcp.Endpoint,
 	map[uint16]*proxyudp.Endpoint,
-	*protocol.SyncResult,
+	*SyncResult,
 ) {
 	newEndpoints := make(map[uint16]*proxytcp.Endpoint)
 	for _, declaration := range request.Proxies {
@@ -40,7 +40,7 @@ func (manager *Registry) prepareSyncEndpoints(
 			closeTCPEndpoints(newEndpoints)
 			result := rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"remote port is unavailable",
 			)
@@ -71,7 +71,7 @@ func (manager *Registry) prepareSyncEndpoints(
 			closeUDPEndpoints(newUDPEndpoints)
 			result := rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"UDP remote port is unavailable",
 			)

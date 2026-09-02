@@ -51,7 +51,13 @@ func LoadServer(path string, allowMissing bool) (ServerConfig, error) {
 	if err := loadServerAuthenticationFiles(&configuration); err != nil {
 		return ServerConfig{}, err
 	}
+	if err := validateProxyMirrorConfiguration(configuration); err != nil {
+		return ServerConfig{}, err
+	}
 	if err := validateConfiguredPublicSchemeAvailability(configuration); err != nil {
+		return ServerConfig{}, err
+	}
+	if err := validateForwardConfiguration(configuration); err != nil {
 		return ServerConfig{}, err
 	}
 	after, err := serverSourceManifest(configuration)

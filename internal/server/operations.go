@@ -33,17 +33,29 @@ func (s *Service) writeMetrics(response http.ResponseWriter, _ *http.Request) {
 		ready = 1
 	}
 	sessions := s.clientRegistry.SnapshotStats()
-	linksPending, linksActive := 0, 0
+	linksPending, linksActive, forwardLinksPending, forwardLinksActive := 0, 0, 0, 0
 	if s.linkBroker != nil {
 		links := s.linkBroker.SnapshotStats()
 		linksPending, linksActive = links.Pending, links.Active
+		forwardLinksPending, forwardLinksActive = links.ForwardPending, links.ForwardActive
+	}
+	var forwardBindings, activeForwardBindings, tcpForwards, udpForwards int
+	if s.forwardRegistry != nil {
+		forwards := s.forwardRegistry.SnapshotStats()
+		forwardBindings = forwards.Bindings
+		activeForwardBindings = forwards.ActiveBindings
+		tcpForwards = forwards.TCPBindings
+		udpForwards = forwards.UDPBindings
 	}
 	var tcpProxies, udpProxies, httpProxies int
+	var tcpMirrorGroups, udpMirrorGroups, tcpMirrorMembers, udpMirrorMembers int
 	var httpRequests, httpUpgrades int
 	var udpAssociations, udpPending, udpQueuedBytes int
 	if s.proxyRegistry != nil {
 		proxies := s.proxyRegistry.SnapshotStats()
 		tcpProxies, udpProxies, httpProxies = proxies.TCPProxies, proxies.UDPProxies, proxies.HTTPProxies
+		tcpMirrorGroups, udpMirrorGroups = proxies.TCPMirrorGroups, proxies.UDPMirrorGroups
+		tcpMirrorMembers, udpMirrorMembers = proxies.TCPMirrorMembers, proxies.UDPMirrorMembers
 		httpRequests, httpUpgrades = proxies.HTTPActiveRequests, proxies.HTTPActiveUpgrades
 		udpAssociations = proxies.UDP.Associations
 		udpPending = proxies.UDP.PendingAssociations
@@ -62,8 +74,18 @@ func (s *Service) writeMetrics(response http.ResponseWriter, _ *http.Request) {
 		{"portway_sessions_suspended", "Current suspended control sessions.", uint64(sessions.Suspended)},
 		{"portway_links_pending", "Current pending data links.", uint64(linksPending)},
 		{"portway_links_active", "Current active data links.", uint64(linksActive)},
+		{"portway_forward_links_pending", "Current pending Forward data links.", uint64(forwardLinksPending)},
+		{"portway_forward_links_active", "Current active Forward data links.", uint64(forwardLinksActive)},
+		{"portway_forward_bindings", "Current registered Forward bindings.", uint64(forwardBindings)},
+		{"portway_forward_bindings_active", "Current active Forward bindings.", uint64(activeForwardBindings)},
+		{"portway_tcp_forwards", "Current registered TCP Forwards.", uint64(tcpForwards)},
+		{"portway_udp_forwards", "Current registered UDP Forwards.", uint64(udpForwards)},
 		{"portway_tcp_proxies", "Current registered TCP proxies.", uint64(tcpProxies)},
 		{"portway_udp_proxies", "Current registered UDP proxies.", uint64(udpProxies)},
+		{"portway_tcp_mirror_groups", "Current configured TCP mirror groups.", uint64(tcpMirrorGroups)},
+		{"portway_udp_mirror_groups", "Current configured UDP mirror groups.", uint64(udpMirrorGroups)},
+		{"portway_tcp_mirror_members", "Current registered TCP mirror members.", uint64(tcpMirrorMembers)},
+		{"portway_udp_mirror_members", "Current registered UDP mirror members.", uint64(udpMirrorMembers)},
 		{"portway_http_proxies", "Current registered HTTP proxies.", uint64(httpProxies)},
 		{"portway_http_active_requests", "Current active HTTP requests.", uint64(httpRequests)},
 		{"portway_http_active_upgrades", "Current active upgraded HTTP connections.", uint64(httpUpgrades)},

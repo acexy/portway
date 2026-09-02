@@ -35,12 +35,12 @@ func TestApplicationDispatchesCommand(t *testing.T) {
 		_ io.Writer,
 		_ io.Writer,
 	) int {
-		called = len(arguments) == 1 && arguments[0] == "--config=test.yaml"
+		called = len(arguments) == 1 && arguments[0] == "test.yaml"
 		return 7
 	}
 
 	exitCode := application.Run(
-		[]string{"run", "--config=test.yaml"},
+		[]string{"run", "test.yaml"},
 		io.Discard,
 		io.Discard,
 	)

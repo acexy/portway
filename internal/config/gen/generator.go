@@ -45,9 +45,11 @@ authentication:
 proxies:
   - name: ssh
     type: tcp
-    local_ip: 127.0.0.1
-    local_port: 22
-    remote_port: 22022
+    local:
+      ip: 127.0.0.1
+      port: 22
+    public:
+      port: 22022
 `
 
 const clientTokenPlaceholder = "PORTWAY_TOKEN_REQUIRED"
@@ -60,7 +62,8 @@ transport:
   listen_address: 0.0.0.0:7000
 
 authentication:
-  # The generated Token is logged once at startup. Persist it here before restart.
+  # An empty value generates a Token at startup and reuses it during hot reload.
+  # Save the logged Token here before restarting the server.
   shared_token: ""
 `
 

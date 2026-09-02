@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,16 +20,22 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
+func mirrorPublic(port uint16) config.ProxyMirrorPublicConfig {
+	return config.ProxyMirrorPublicConfig{
+		PortRanges: []config.PortRange{{Start: port, End: port}},
+	}
+}
+
 func TestManagedReservationRejectsSharedClientBinding(t *testing.T) {
 	manager := newTestTCPProxyManager(t)
 	port := uint16(reserveTCPAddress(t).Port)
 	if err := manager.ConfigureManagedReservations(
 		map[string]config.ManagedClientConfig{
 			"managed-client": {
-				ClientID: "managed-client",
+				Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 				Configuration: config.ManagedConfiguration{
 					Proxies: []config.ProxyConfig{{
-						Name: "managed", Type: "tcp", RemotePort: port,
+						Name: "managed", Type: "tcp", Public: config.ProxyPublicConfig{Port: port},
 					}},
 				},
 			},
@@ -42,17 +49,332 @@ func TestManagedReservationRejectsSharedClientBinding(t *testing.T) {
 		"shared-client",
 		"shared-session",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("shared", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
+	if result.Status != SyncStatusRejected ||
 		result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorPortConflict {
+		result.Error.Code != ErrorPortConflict {
 		t.Fatalf("managed reservation did not reject shared binding: %+v", result)
+	}
+}
+
+func TestMirrorGroupAllowsGovernedClientsToShareTCPPort(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          mirrorPublic(port),
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a", "client-b"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, clientID := range []string{"client-a", "client-b"} {
+		manager.AttachAuthenticated(
+			clientID,
+			"session-"+clientID,
+			nil,
+			authentication.Context{Mode: authentication.ModeGoverned, ClientID: clientID},
+			10,
+		)
+		result := manager.Sync(
+			clientID,
+			"session-"+clientID,
+			"request-"+clientID,
+			SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration("proxy-"+clientID, port),
+			}},
+		)
+		if result.Status != SyncStatusApplied {
+			t.Fatalf("register %s: %+v", clientID, result)
+		}
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	group := manager.tcpMirrorGroups[port]
+	if group == nil || len(group.tcpMembers) != 2 {
+		t.Fatalf("unexpected mirror members: %+v", group)
+	}
+	if manager.endpointBindings[port] != nil {
+		t.Fatal("mirror endpoint was assigned an exclusive binding")
+	}
+}
+
+func TestMirrorGroupCreatesTCPPortLazilyAndReleasesLastMember(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	firstPort := uint16(reserveTCPAddress(t).Port)
+	secondPort := uint16(reserveTCPAddress(t).Port)
+	if firstPort > secondPort {
+		firstPort, secondPort = secondPort, firstPort
+	}
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public: config.ProxyMirrorPublicConfig{PortRanges: []config.PortRange{
+				{Start: firstPort, End: firstPort},
+				{Start: secondPort, End: secondPort},
+			}},
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	for _, port := range []uint16{firstPort, secondPort} {
+		group := manager.tcpMirrorGroups[port]
+		if group == nil || group.port != port {
+			manager.mutex.Unlock()
+			t.Fatalf("mirror group %d was not configured", port)
+		}
+		if group.tcpEndpoint != nil || manager.endpoints[port] != nil {
+			manager.mutex.Unlock()
+			t.Fatalf("mirror endpoint %d was created without a member", port)
+		}
+	}
+	manager.mutex.Unlock()
+
+	manager.AttachAuthenticated(
+		"client-a", "session-a", nil,
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-a"}, 10,
+	)
+	result := manager.Sync(
+		"client-a", "session-a", "request-a",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			tcpProxyDeclaration("proxy-a", firstPort),
+		}},
+	)
+	if result.Status != SyncStatusApplied {
+		t.Fatalf("register mirror member: %+v", result)
+	}
+	manager.mutex.Lock()
+	if manager.tcpMirrorGroups[firstPort].tcpEndpoint == nil || manager.endpoints[firstPort] == nil {
+		manager.mutex.Unlock()
+		t.Fatal("first mirror member did not create its endpoint")
+	}
+	if manager.tcpMirrorGroups[secondPort].tcpEndpoint != nil || manager.endpoints[secondPort] != nil {
+		manager.mutex.Unlock()
+		t.Fatal("unused mirror port unexpectedly created an endpoint")
+	}
+	manager.mutex.Unlock()
+
+	manager.Remove("client-a", "session-a")
+	manager.mutex.Lock()
+	endpoint := manager.tcpMirrorGroups[firstPort].tcpEndpoint
+	registeredEndpoint := manager.endpoints[firstPort]
+	manager.mutex.Unlock()
+	if endpoint != nil || registeredEndpoint != nil {
+		t.Fatal("last mirror member removal did not release its endpoint")
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(firstPort))))
+	if err != nil {
+		t.Fatalf("released mirror port cannot be rebound: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMirrorGroupCreatesUDPPortLazilyAndReleasesLastMember(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveUDPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeUDP,
+			Public:          mirrorPublic(port),
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	group := manager.udpMirrorGroups[port]
+	endpoint := manager.udpEndpoints[port]
+	manager.mutex.Unlock()
+	if group == nil || group.udpEndpoint != nil || endpoint != nil {
+		t.Fatal("UDP mirror endpoint was created without a member")
+	}
+
+	manager.AttachAuthenticated(
+		"client-a", "session-a", nil,
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-a"}, 10,
+	)
+	result := manager.Sync(
+		"client-a", "session-a", "request-a",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			udpProxyDeclaration("proxy-a", port),
+		}},
+	)
+	if result.Status != SyncStatusApplied {
+		t.Fatalf("register UDP mirror member: %+v", result)
+	}
+	manager.mutex.Lock()
+	endpoint = manager.udpEndpoints[port]
+	manager.mutex.Unlock()
+	if endpoint == nil {
+		t.Fatal("first UDP mirror member did not create its endpoint")
+	}
+
+	manager.Remove("client-a", "session-a")
+	manager.mutex.Lock()
+	groupEndpoint := manager.udpMirrorGroups[port].udpEndpoint
+	registeredEndpoint := manager.udpEndpoints[port]
+	manager.mutex.Unlock()
+	if groupEndpoint != nil || registeredEndpoint != nil {
+		t.Fatal("last UDP mirror member removal did not release its endpoint")
+	}
+	connection, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP: net.ParseIP("127.0.0.1"), Port: int(port),
+	})
+	if err != nil {
+		t.Fatalf("released UDP mirror port cannot be rebound: %v", err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMirrorGroupRejectsUnlistedClient(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          mirrorPublic(port),
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.AttachAuthenticated(
+		"client-b", "session-b", control.NewWriter(&bytes.Buffer{}),
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-b"}, 10,
+	)
+	result := manager.Sync(
+		"client-b", "session-b", "request-b",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			tcpProxyDeclaration("proxy-b", port),
+		}},
+	)
+	if result.Status != SyncStatusRejected || result.Error == nil ||
+		result.Error.Code != ErrorMirrorMemberNotAllowed {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestMirrorGroupHotReloadReusesEndpointAndChangesPrimary(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	configuration := func(primary string) config.ProxyMirrorConfig {
+		return config.ProxyMirrorConfig{Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          mirrorPublic(port),
+			PrimaryClientID: primary, ClientIDs: []string{"client-a", "client-b"},
+		}}}
+	}
+	if err := manager.ConfigureMirrorGroups(configuration("client-a")); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	endpoint := manager.tcpMirrorGroups[port].tcpEndpoint
+	manager.mutex.Unlock()
+	if err := manager.ConfigureMirrorGroups(configuration("client-b")); err != nil {
+		t.Fatal(err)
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	group := manager.tcpMirrorGroups[port]
+	if group.tcpEndpoint != endpoint {
+		t.Fatal("hot reload replaced an unchanged public endpoint")
+	}
+	if group.configuration.PrimaryClientID != "client-b" {
+		t.Fatal("hot reload did not replace the primary ClientID")
+	}
+}
+
+func TestManagedMirrorGroupAllowsSharedReservationAndBindings(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	groupConfiguration := config.ProxyMirrorConfig{Managed: []config.ProxyMirrorGroupConfig{{
+		Name: "managed-mirror", Type: protocol.ProxyTypeTCP,
+		Public:          mirrorPublic(port),
+		PrimaryClientID: "managed-a", ClientIDs: []string{"managed-a", "managed-b"},
+	}}}
+	if err := manager.ConfigureMirrorGroups(groupConfiguration); err != nil {
+		t.Fatal(err)
+	}
+	clients := map[string]config.ManagedClientConfig{}
+	for _, clientID := range []string{"managed-a", "managed-b"} {
+		clients[clientID] = config.ManagedClientConfig{
+			Authentication: config.ClientAuthenticationConfig{ClientID: clientID},
+			Configuration: config.ManagedConfiguration{Revision: 1, Proxies: []config.ProxyConfig{{
+				Name: clientID + "-proxy", Type: protocol.ProxyTypeTCP,
+				Public: config.ProxyPublicConfig{Port: port},
+			}}},
+		}
+	}
+	if err := manager.ConfigureManagedReservations(clients); err != nil {
+		t.Fatal(err)
+	}
+	for _, clientID := range []string{"managed-a", "managed-b"} {
+		manager.AttachAuthenticated(
+			clientID, "session-"+clientID, nil,
+			authentication.Context{Mode: authentication.ModeManaged, ClientID: clientID}, 10,
+		)
+		result := manager.SyncAllowEmpty(
+			clientID, "session-"+clientID, "request-"+clientID,
+			SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+				tcpProxyDeclaration(clientID+"-proxy", port),
+			}},
+		)
+		if result.Status != SyncStatusApplied {
+			t.Fatalf("register %s: %+v", clientID, result)
+		}
+	}
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	if len(manager.tcpMirrorGroups[port].tcpMembers) != 2 {
+		t.Fatal("managed mirror members were not registered")
+	}
+}
+
+func TestMirrorSnapshotHasNoResponderWhenPrimaryIsOffline(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	port := uint16(reserveTCPAddress(t).Port)
+	if err := manager.ConfigureMirrorGroups(config.ProxyMirrorConfig{
+		Governed: []config.ProxyMirrorGroupConfig{{
+			Name: "mirror", Type: protocol.ProxyTypeTCP,
+			Public:          mirrorPublic(port),
+			PrimaryClientID: "client-a", ClientIDs: []string{"client-a", "client-b"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.AttachAuthenticated(
+		"client-b", "session-b", control.NewWriter(&bytes.Buffer{}),
+		authentication.Context{Mode: authentication.ModeGoverned, ClientID: "client-b"}, 10,
+	)
+	result := manager.Sync(
+		"client-b", "session-b", "request-b",
+		SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{
+			tcpProxyDeclaration("proxy-b", port),
+		}},
+	)
+	if result.Status != SyncStatusApplied {
+		t.Fatalf("register mirror: %+v", result)
+	}
+	manager.Activate("client-b", "session-b")
+	manager.mutex.Lock()
+	group := manager.tcpMirrorGroups[port]
+	manager.mutex.Unlock()
+	targets := manager.snapshotMirrorTCPTargets(group)
+	if len(targets) != 1 || targets[0].primary {
+		t.Fatalf("offline Primary unexpectedly elected a responder: %+v", targets)
 	}
 }
 
@@ -65,11 +387,11 @@ func TestProxySyncRejectsEmptyDeclaration(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{Revision: 1},
+		SyncRequest{Revision: 1},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
+	if result.Status != SyncStatusRejected ||
 		result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorInvalidProxy ||
+		result.Error.Code != ErrorInvalidProxy ||
 		result.Error.Retryable {
 		t.Fatalf("expected permanent empty proxy rejection, got %+v", result)
 	}
@@ -82,10 +404,10 @@ func TestProxySyncRejectsOversizedRequestIDWithoutCaching(t *testing.T) {
 		"client-a",
 		"session-a",
 		strings.Repeat("x", 129),
-		protocol.SyncProxies{Revision: 1},
+		SyncRequest{Revision: 1},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
-		result.Error == nil || result.Error.Code != protocol.ProxyErrorInvalidRequest {
+	if result.Status != SyncStatusRejected ||
+		result.Error == nil || result.Error.Code != ErrorInvalidRequest {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	manager.mutex.Lock()
@@ -100,9 +422,9 @@ func TestManagedReservationTransactionPublishesOnlyOnCommit(t *testing.T) {
 	transaction, err := manager.BeginManagedReservationUpdate(
 		map[string]config.ManagedClientConfig{
 			"managed-a": {
-				ClientID: "managed-a",
+				Authentication: config.ClientAuthenticationConfig{ClientID: "managed-a"},
 				Configuration: config.ManagedConfiguration{Proxies: []config.ProxyConfig{{
-					Name: "ssh", Type: protocol.ProxyTypeTCP, RemotePort: 22022,
+					Name: "ssh", Type: protocol.ProxyTypeTCP, Public: config.ProxyPublicConfig{Port: 22022},
 				}}},
 			},
 		},
@@ -132,23 +454,23 @@ func TestProxySyncRejectsReusedRequestIDWithDifferentPayload(t *testing.T) {
 	manager.Attach("client-one", "session-one", nil)
 	first := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("first", port)},
 		},
 	)
-	if first.Status != protocol.ProxySyncStatusApplied {
+	if first.Status != SyncStatusApplied {
 		t.Fatalf("initial synchronization failed: %+v", first.Error)
 	}
 	second := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("second", port)},
 		},
 	)
-	if second.Status != protocol.ProxySyncStatusRejected ||
-		second.Error == nil || second.Error.Code != protocol.ProxyErrorInvalidRequest {
+	if second.Status != SyncStatusRejected ||
+		second.Error == nil || second.Error.Code != ErrorInvalidRequest {
 		t.Fatalf("changed request ID payload was not rejected: %+v", second)
 	}
 	if manager.clients["client-one"].revision != 1 ||
@@ -166,27 +488,27 @@ func TestProxySyncReturnsBoundedCachedResultForHistoricalRequest(t *testing.T) {
 	declaration := tcpProxyDeclaration("proxy", port)
 	first := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies:  []protocol.ProxyDeclaration{declaration},
 		},
 	)
-	if first.Status != protocol.ProxySyncStatusApplied {
+	if first.Status != SyncStatusApplied {
 		t.Fatalf("first synchronization failed: %+v", first.Error)
 	}
 	second := manager.Sync(
 		"client-one", "session-one", "request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies:  []protocol.ProxyDeclaration{declaration},
 		},
 	)
-	if second.Status != protocol.ProxySyncStatusApplied {
+	if second.Status != SyncStatusApplied {
 		t.Fatalf("second synchronization failed: %+v", second.Error)
 	}
 	replayed := manager.Sync(
 		"client-one", "session-one", "request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies:  []protocol.ProxyDeclaration{declaration},
 		},
@@ -200,7 +522,7 @@ func TestProxySyncReturnsBoundedCachedResultForHistoricalRequest(t *testing.T) {
 }
 
 func TestHTTPClientCapacityUsesAggregateCounter(t *testing.T) {
-	configuration := config.DefaultServer().HTTP
+	configuration := config.DefaultServer().Proxies.HTTP.HTTPConfig
 	configuration.MaxConcurrentRequestsPerClient = 1
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -242,10 +564,10 @@ func TestManagedReservationAllowsOwningManagedClient(t *testing.T) {
 	port := uint16(reserveTCPAddress(t).Port)
 	clients := map[string]config.ManagedClientConfig{
 		"managed-client": {
-			ClientID: "managed-client",
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 			Configuration: config.ManagedConfiguration{
 				Proxies: []config.ProxyConfig{{
-					Name: "managed", Type: "tcp", RemotePort: port,
+					Name: "managed", Type: "tcp", Public: config.ProxyPublicConfig{Port: port},
 				}},
 			},
 		},
@@ -268,14 +590,14 @@ func TestManagedReservationAllowsOwningManagedClient(t *testing.T) {
 		"managed-client",
 		"managed-session",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("managed", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("managed owner could not claim its reservation: %+v", result.Error)
 	}
 }
@@ -288,24 +610,24 @@ func TestManagedReservationRejectsHotReloadOverActiveSharedBinding(t *testing.T)
 		"shared-client",
 		"shared-session",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("shared", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("shared binding setup failed: %+v", result.Error)
 	}
 
 	err := manager.ConfigureManagedReservations(
 		map[string]config.ManagedClientConfig{
 			"managed-client": {
-				ClientID: "managed-client",
+				Authentication: config.ClientAuthenticationConfig{ClientID: "managed-client"},
 				Configuration: config.ManagedConfiguration{
 					Proxies: []config.ProxyConfig{{
-						Name: "managed", Type: "tcp", RemotePort: port,
+						Name: "managed", Type: "tcp", Public: config.ProxyPublicConfig{Port: port},
 					}},
 				},
 			},
@@ -327,14 +649,14 @@ func TestTCPProxySyncReusesEndpointWhenProxyIsRenamed(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("old-name", port),
 			},
 		},
 	)
-	if first.Status != protocol.ProxySyncStatusApplied {
+	if first.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", first.Error)
 	}
 	originalEndpoint := manager.endpoints[port]
@@ -343,14 +665,14 @@ func TestTCPProxySyncReusesEndpointWhenProxyIsRenamed(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("new-name", port),
 			},
 		},
 	)
-	if second.Status != protocol.ProxySyncStatusApplied {
+	if second.Status != SyncStatusApplied {
 		t.Fatalf("proxy rename failed: %+v", second.Error)
 	}
 	if manager.endpoints[port] != originalEndpoint {
@@ -378,7 +700,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("first", firstPort),
@@ -386,7 +708,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 			},
 		},
 	)
-	if initial.Status != protocol.ProxySyncStatusApplied {
+	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", initial.Error)
 	}
 	firstEndpoint := manager.endpoints[firstPort]
@@ -396,7 +718,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("first", secondPort),
@@ -404,7 +726,7 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 			},
 		},
 	)
-	if swapped.Status != protocol.ProxySyncStatusApplied {
+	if swapped.Status != SyncStatusApplied {
 		t.Fatalf("proxy endpoint swap failed: %+v", swapped.Error)
 	}
 	if manager.endpoints[firstPort] != firstEndpoint ||
@@ -429,14 +751,14 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("existing", existingPort),
 			},
 		},
 	)
-	if initial.Status != protocol.ProxySyncStatusApplied {
+	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", initial.Error)
 	}
 	originalEndpoint := manager.endpoints[existingPort]
@@ -451,7 +773,7 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("existing", existingPort),
@@ -459,9 +781,9 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 			},
 		},
 	)
-	if rejected.Status != protocol.ProxySyncStatusRejected ||
+	if rejected.Status != SyncStatusRejected ||
 		rejected.Error == nil ||
-		rejected.Error.Code != protocol.ProxyErrorPortConflict {
+		rejected.Error.Code != ErrorPortConflict {
 		t.Fatalf("expected port conflict, got %+v", rejected)
 	}
 	state := manager.clients["client-one"]
@@ -481,11 +803,11 @@ func TestProxySyncReportsInactiveSessionAsRetryable(t *testing.T) {
 		"missing-client",
 		"missing-session",
 		"request-one",
-		protocol.SyncProxies{Revision: 1},
+		SyncRequest{Revision: 1},
 	)
-	if result.Status != protocol.ProxySyncStatusRejected ||
+	if result.Status != SyncStatusRejected ||
 		result.Error == nil ||
-		result.Error.Code != protocol.ProxyErrorSessionInactive ||
+		result.Error.Code != ErrorSessionInactive ||
 		!result.Error.Retryable {
 		t.Fatalf("expected retryable inactive session rejection, got %+v", result)
 	}
@@ -501,14 +823,14 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				udpProxyDeclaration("existing", existingPort),
 			},
 		},
 	)
-	if initial.Status != protocol.ProxySyncStatusApplied {
+	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial UDP synchronization failed: %+v", initial.Error)
 	}
 	originalEndpoint := manager.udpEndpoints[existingPort]
@@ -525,7 +847,7 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-two",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 2,
 			Proxies: []protocol.ProxyDeclaration{
 				udpProxyDeclaration("existing", existingPort),
@@ -533,9 +855,9 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 			},
 		},
 	)
-	if rejected.Status != protocol.ProxySyncStatusRejected ||
+	if rejected.Status != SyncStatusRejected ||
 		rejected.Error == nil ||
-		rejected.Error.Code != protocol.ProxyErrorPortConflict {
+		rejected.Error.Code != ErrorPortConflict {
 		t.Fatalf("expected UDP port conflict, got %+v", rejected)
 	}
 	state := manager.clients["client-one"]
@@ -557,7 +879,7 @@ func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				tcpProxyDeclaration("tcp-service", port),
@@ -565,7 +887,7 @@ func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("TCP and UDP numeric port sharing failed: %+v", result.Error)
 	}
 	if manager.endpoints[port] == nil || manager.udpEndpoints[port] == nil {
@@ -585,14 +907,14 @@ func TestUDPSuspensionPreservesBindingForOriginalSessionRecovery(t *testing.T) {
 		"client-one",
 		"session-one",
 		"request-one",
-		protocol.SyncProxies{
+		SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
 				udpProxyDeclaration("udp-service", port),
 			},
 		},
 	)
-	if result.Status != protocol.ProxySyncStatusApplied {
+	if result.Status != SyncStatusApplied {
 		t.Fatalf("UDP synchronization failed: %+v", result.Error)
 	}
 	manager.Activate("client-one", "session-one")
@@ -622,7 +944,7 @@ func newTestTCPProxyManager(t testing.TB) *Registry {
 		"127.0.0.1",
 		link.NewBroker(ctx),
 		false,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 	)
 	t.Cleanup(func() {
 		cancel()

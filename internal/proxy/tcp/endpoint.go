@@ -47,9 +47,7 @@ func (endpoint *Endpoint) SetHandler(handler func(net.Conn)) {
 // Start starts the accept loop once.
 func (endpoint *Endpoint) Start() {
 	endpoint.startOnce.Do(func() {
-		endpoint.waitGroup.Add(1)
-		go func() {
-			defer endpoint.waitGroup.Done()
+		endpoint.waitGroup.Go(func() {
 			for {
 				connection, err := endpoint.listener.Accept()
 				if err != nil {
@@ -68,7 +66,7 @@ func (endpoint *Endpoint) Start() {
 				}
 				handler(connection)
 			}
-		}()
+		})
 	})
 }
 

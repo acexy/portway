@@ -4,17 +4,19 @@ import (
 	"net"
 	"sync"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
 
 type managedSession struct {
-	sessionID  string
-	connection net.Conn
-	writer     *control.Writer
-	prepared   chan protocol.ManagedConfigStatus
-	applied    chan protocol.ManagedConfigStatus
-	mutex      sync.Mutex
+	sessionID      string
+	connection     net.Conn
+	writer         *control.Writer
+	prepared       chan protocol.ManagedConfigStatus
+	applied        chan protocol.ManagedConfigStatus
+	mutex          sync.Mutex
+	authentication authentication.Context
 }
 
 // managedCoordinator owns the online managed-session index and status delivery.

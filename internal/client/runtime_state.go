@@ -24,3 +24,15 @@ func (s *Service) setRuntimeProxies(proxies []config.ProxyConfig) {
 	s.runtimeProxies = append([]config.ProxyConfig(nil), proxies...)
 	s.runtimeMutex.Unlock()
 }
+
+func (s *Service) runtimeForwardSnapshot() []config.ForwardConfig {
+	s.runtimeMutex.RLock()
+	defer s.runtimeMutex.RUnlock()
+	return append([]config.ForwardConfig(nil), s.runtimeForwards...)
+}
+
+func (s *Service) setRuntimeForwards(forwards []config.ForwardConfig) {
+	s.runtimeMutex.Lock()
+	s.runtimeForwards = append([]config.ForwardConfig(nil), forwards...)
+	s.runtimeMutex.Unlock()
+}

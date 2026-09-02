@@ -15,6 +15,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/session"
 )
@@ -100,6 +101,12 @@ func (s *Service) applyConfigurationCandidateContext(
 	}()
 
 	current := s.configuration.snapshot()
+	if err := config.ValidateForwardConfiguration(candidate); err != nil {
+		return err
+	}
+	if err := config.ValidateProxyMirrorConfiguration(candidate); err != nil {
+		return err
+	}
 
 	if serverTokenRequiresGeneration(candidate) &&
 		current.Authentication.SharedToken != nil {
@@ -118,34 +125,47 @@ func (s *Service) applyConfigurationCandidateContext(
 			field: changedYAMLField("transport", current.Transport, candidate.Transport),
 		}
 	}
-	if !reflect.DeepEqual(candidate.Tunnel, current.Tunnel) {
+	if candidate.Proxies.BindIP != current.Proxies.BindIP {
 		return restartRequiredError{
-			field: changedYAMLField("tunnel", current.Tunnel, candidate.Tunnel),
+			field: "proxies.bind_ip",
 		}
 	}
-	if !reflect.DeepEqual(candidate.HTTP, current.HTTP) {
+	if candidate.Proxies.HTTP.ListenAddress != current.Proxies.HTTP.ListenAddress {
+		return restartRequiredError{field: "proxies.http.listen_address"}
+	}
+	if candidate.Proxies.HTTPS.ListenAddress != current.Proxies.HTTPS.ListenAddress {
+		return restartRequiredError{field: "proxies.https.listen_address"}
+	}
+	if !reflect.DeepEqual(candidate.Proxies.HTTP.HTTPConfig, current.Proxies.HTTP.HTTPConfig) {
 		return restartRequiredError{
-			field: changedYAMLField("http", current.HTTP, candidate.HTTP),
+			field: changedYAMLField(
+				"proxies.http",
+				current.Proxies.HTTP.HTTPConfig,
+				candidate.Proxies.HTTP.HTTPConfig,
+			),
 		}
 	}
-	httpsChanged := !reflect.DeepEqual(candidate.HTTPS, current.HTTPS)
+	httpsChanged := !reflect.DeepEqual(
+		candidate.Proxies.HTTPS.Certificates,
+		current.Proxies.HTTPS.Certificates,
+	)
 	var candidateHTTPSCertificates *httpsCertificateSnapshot
 	var candidateHTTPSDigest string
 	if httpsChanged {
 		if s.httpsCertificates == nil {
 			return restartRequiredError{
-				field: changedYAMLField("https", current.HTTPS, candidate.HTTPS),
+				field: "proxies.https.certificates",
 			}
 		}
 		var err error
-		candidateHTTPSCertificates, candidateHTTPSDigest, err = loadHTTPSCertificates(candidate.HTTPS)
+		candidateHTTPSCertificates, candidateHTTPSDigest, err = loadHTTPSCertificates(candidate.Proxies.HTTPS)
 		if err != nil {
 			return fmt.Errorf("reload HTTPS certificate: %w", err)
 		}
 	}
-	if !reflect.DeepEqual(candidate.UDP, current.UDP) {
+	if !reflect.DeepEqual(candidate.Proxies.UDP, current.Proxies.UDP) {
 		return restartRequiredError{
-			field: changedYAMLField("udp", current.UDP, candidate.UDP),
+			field: changedYAMLField("proxies.udp", current.Proxies.UDP, candidate.Proxies.UDP),
 		}
 	}
 	if !reflect.DeepEqual(candidate.Security, current.Security) {
@@ -164,6 +184,8 @@ func (s *Service) applyConfigurationCandidateContext(
 	if reflect.DeepEqual(candidate.Authentication, current.Authentication) &&
 		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
 		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
+		reflect.DeepEqual(candidate.Forwards, current.Forwards) &&
+		reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror) &&
 		!httpsChanged &&
 		candidate.LogLevel == current.LogLevel {
 		s.configuration.updateSourceDigest(candidate.SourceDigest)
@@ -180,26 +202,14 @@ func (s *Service) applyConfigurationCandidateContext(
 	tokensChanged := authenticationTokensChanged(current, candidate)
 
 	currentAuthenticationSnapshot := s.authenticationStore.Load()
-	var revokedContexts []authentication.Context
-	if tokensChanged {
-		// A Token generation is a deployment-wide authentication boundary. Rotate
-		// every existing context so active and recoverable clients must all prove
-		// their credentials again against the newly published snapshot.
-		revokedContexts = currentAuthenticationSnapshot.Contexts()
-	} else {
-		revokedContexts = revokedAuthenticationContexts(
-			currentAuthenticationSnapshot,
-			snapshot,
-			current,
-			candidate,
-		)
-	}
+	revokedContexts := revokedAuthenticationContexts(
+		currentAuthenticationSnapshot,
+		snapshot,
+		current,
+		candidate,
+	)
 	managedChanges := changedManagedClients(current, candidate)
-	if tokensChanged {
-		// Disconnected Managed clients receive the latest desired configuration
-		// during their next authenticated session instead of an online rollout.
-		managedChanges = []string{}
-	}
+	mirrorChanged := !reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror)
 	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
 		current.GovernedClients,
 		candidate.GovernedClients,
@@ -212,11 +222,17 @@ func (s *Service) applyConfigurationCandidateContext(
 	if s.proxyRegistry != nil {
 		reservationTransaction, err = s.proxyRegistry.BeginManagedReservationUpdate(
 			candidate.ManagedClients,
+			candidate.Proxies.Mirror,
 		)
 		if err != nil {
 			return fmt.Errorf("validate managed reservations: %w", err)
 		}
 		defer reservationTransaction.Rollback()
+	}
+	if mirrorChanged && reservationTransaction != nil {
+		if err := reservationTransaction.ConfigureMirrorGroups(candidate.Proxies.Mirror); err != nil {
+			return fmt.Errorf("prepare proxy mirror groups: %w", err)
+		}
 	}
 	// Change only the level of the initialized logger after every fallible
 	// candidate validation has succeeded. EnableConsole is startup-only and the
@@ -230,14 +246,16 @@ func (s *Service) applyConfigurationCandidateContext(
 
 	if httpsChanged {
 		s.httpsCertificates.publish(
-			candidate.HTTPS,
+			candidate.Proxies.HTTPS,
 			candidateHTTPSCertificates,
 			candidateHTTPSDigest,
 		)
 	}
 	s.configuration.publish(candidate)
 	s.authenticationStore.ReplaceRevoking(snapshot, revokedContexts)
-	reservationTransaction.Commit()
+	if reservationTransaction != nil {
+		reservationTransaction.Commit()
+	}
 
 	var revokedSessions []session.ExpiredClient
 	cleanupCallbacks := make([]func(), 0)
@@ -262,9 +280,23 @@ func (s *Service) applyConfigurationCandidateContext(
 		cleanup()
 	}
 	for _, revoked := range revokedSessions {
+		if s.forwardRegistry != nil {
+			s.forwardRegistry.Remove(revoked.ClientID, revoked.SessionID)
+		}
 		if revoked.Connection != nil {
 			_ = revoked.Connection.Close()
 		}
+	}
+	if s.forwardRegistry != nil &&
+		(!reflect.DeepEqual(current.Forwards, candidate.Forwards) ||
+			!reflect.DeepEqual(current.GovernedClients, candidate.GovernedClients) ||
+			!reflect.DeepEqual(current.ManagedClients, candidate.ManagedClients)) {
+		s.forwardRegistry.ApplyPolicy(
+			candidate.Generation,
+			func(context authentication.Context, declaration protocol.ForwardDeclaration) bool {
+				return forwardPolicyChanged(current, candidate, context, declaration)
+			},
+		)
 	}
 	s.rolloutManagedConfigurations(ctx, managedChanges, candidate)
 	s.logger.WithComponent("config_reload").InfoWithFields(
@@ -290,7 +322,7 @@ func (s *Service) applyConfigurationCandidateContext(
 			"managed_removed":          managedRemoved,
 			"managed_rollouts":         len(managedChanges),
 			"tokens_changed":           tokensChanged,
-			"all_clients_disconnected": tokensChanged,
+			"all_clients_disconnected": len(revokedContexts) == len(currentAuthenticationSnapshot.Contexts()) && len(revokedContexts) != 0,
 			"revoked_authentications":  len(revokedContexts),
 			"revoked_sessions":         len(revokedSessions),
 		},
@@ -324,10 +356,10 @@ func authenticationTokenRecords(configuration config.ServerConfig) map[string]st
 		records[string(authentication.ModeShared)] = *configuration.Authentication.SharedToken
 	}
 	for _, client := range configuration.GovernedClients {
-		records[string(authentication.ModeGoverned)+":"+client.ClientID] = client.Token
+		records[string(authentication.ModeGoverned)+":"+client.Authentication.ClientID] = client.Authentication.Token
 	}
 	for _, client := range configuration.ManagedClients {
-		records[string(authentication.ModeManaged)+":"+client.ClientID] = client.Token
+		records[string(authentication.ModeManaged)+":"+client.Authentication.ClientID] = client.Authentication.Token
 	}
 	return records
 }
@@ -345,9 +377,7 @@ func (s *Service) rolloutManagedConfigurations(
 		if managed == nil {
 			continue
 		}
-		waitGroup.Add(1)
-		go func(clientID string, managed *managedSession) {
-			defer waitGroup.Done()
+		waitGroup.Go(func() {
 			if err := s.rolloutManagedConfiguration(
 				rolloutContext,
 				clientID,
@@ -360,7 +390,7 @@ func (s *Service) rolloutManagedConfigurations(
 					"generation": candidate.Generation,
 				}).Error("managed configuration rollout failed", err)
 			}
-		}(clientID, managed)
+		})
 	}
 	waitGroup.Wait()
 }
@@ -371,7 +401,7 @@ func validateManagedRevisionTransitions(
 ) error {
 	for clientID, next := range candidate.ManagedClients {
 		previous, exists := current.ManagedClients[clientID]
-		if !exists || previous.Token != next.Token ||
+		if !exists || previous.Authentication.Token != next.Authentication.Token ||
 			reflect.DeepEqual(previous.Configuration, next.Configuration) {
 			continue
 		}
@@ -427,7 +457,7 @@ func changedYAMLValue(prefix string, current reflect.Value, candidate reflect.Va
 		return prefix
 	}
 	valueType := current.Type()
-	for index := 0; index < current.NumField(); index++ {
+	for index := range current.NumField() {
 		if reflect.DeepEqual(current.Field(index).Interface(), candidate.Field(index).Interface()) {
 			continue
 		}
@@ -482,7 +512,7 @@ func changedManagedClients(
 ) []string {
 	changed := coll.MapFilterToSlice(candidate.ManagedClients, func(clientID string, next config.ManagedClientConfig) (string, bool) {
 		previous, exists := current.ManagedClients[clientID]
-		if !exists || previous.Token != next.Token {
+		if !exists || previous.Authentication.Token != next.Authentication.Token {
 			return "", false
 		}
 		return clientID, !reflect.DeepEqual(previous.Configuration, next.Configuration)

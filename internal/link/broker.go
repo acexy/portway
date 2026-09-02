@@ -33,17 +33,25 @@ type Target struct {
 	WriteTimeout    time.Duration
 	Authentication  authentication.Context
 	MaxActiveLinks  int
+	Direction       protocol.LinkDirection
 }
 
+// StreamHandler handles one authenticated active Link.
+type StreamHandler func(context.Context, string, net.Conn) error
+
+// StreamHandlerFactory prepares target-side resources before Bind is accepted.
+type StreamHandlerFactory func(context.Context) (StreamHandler, error)
+
 type brokerPendingLink struct {
-	target       Target
-	linkID       string
-	ticketDigest [sha256.Size]byte
-	expiresAt    time.Time
-	timer        *time.Timer
-	onCancel     func(string)
-	ready        chan linkOpenResult
-	handler      func(context.Context, string, net.Conn) error
+	target         Target
+	linkID         string
+	ticketDigest   [sha256.Size]byte
+	expiresAt      time.Time
+	timer          *time.Timer
+	onCancel       func(string)
+	ready          chan linkOpenResult
+	handler        func(context.Context, string, net.Conn) error
+	handlerFactory StreamHandlerFactory
 }
 
 type brokerActiveLink struct {
@@ -58,39 +66,56 @@ type linkOpenResult struct {
 
 // Stats is a low-cardinality snapshot of logical link state.
 type Stats struct {
-	Pending int
-	Active  int
+	Pending        int
+	Active         int
+	ForwardPending int
+	ForwardActive  int
 }
 
 // SnapshotStats returns aggregate link counts.
 func (broker *Broker) SnapshotStats() Stats {
 	broker.mutex.Lock()
 	defer broker.mutex.Unlock()
-	return Stats{Pending: len(broker.pending), Active: len(broker.active)}
+	stats := Stats{Pending: len(broker.pending), Active: len(broker.active)}
+	for _, pending := range broker.pending {
+		if pending.target.Direction == protocol.LinkDirectionForward {
+			stats.ForwardPending++
+		}
+	}
+	for _, active := range broker.active {
+		if active.target.Direction == protocol.LinkDirectionForward {
+			stats.ForwardActive++
+		}
+	}
+	return stats
 }
 
 // Broker owns pending and active logical data links.
 type Broker struct {
-	mutex          sync.Mutex
-	pending        map[string]*brokerPendingLink
-	active         map[string]*brokerActiveLink
-	pendingClients map[string]int
-	pendingProxies map[string]int
-	activeClients  map[string]int
-	activeProxies  map[string]int
-	closed         bool
-	closeOnce      sync.Once
+	mutex             sync.Mutex
+	pending           map[string]*brokerPendingLink
+	active            map[string]*brokerActiveLink
+	pendingClients    map[string]int
+	pendingProxies    map[string]int
+	activeClients     map[string]int
+	activeProxies     map[string]int
+	pendingDirections map[string]int
+	activeDirections  map[string]int
+	closed            bool
+	closeOnce         sync.Once
 }
 
 // NewBroker creates a link broker.
 func NewBroker(ctx context.Context) *Broker {
 	broker := &Broker{
-		pending:        make(map[string]*brokerPendingLink),
-		active:         make(map[string]*brokerActiveLink),
-		pendingClients: make(map[string]int),
-		pendingProxies: make(map[string]int),
-		activeClients:  make(map[string]int),
-		activeProxies:  make(map[string]int),
+		pending:           make(map[string]*brokerPendingLink),
+		active:            make(map[string]*brokerActiveLink),
+		pendingClients:    make(map[string]int),
+		pendingProxies:    make(map[string]int),
+		activeClients:     make(map[string]int),
+		activeProxies:     make(map[string]int),
+		pendingDirections: make(map[string]int),
+		activeDirections:  make(map[string]int),
 	}
 	context.AfterFunc(ctx, broker.Close)
 	return broker
@@ -102,6 +127,14 @@ func (broker *Broker) ServeStream(
 	handler func(context.Context, string, net.Conn) error,
 ) (string, error) {
 	return broker.request(target, onCancel, nil, handler)
+}
+
+// OfferStream creates a client-originated pending Link without sending open_link.
+func (broker *Broker) OfferStream(
+	target Target,
+	factory StreamHandlerFactory,
+) (protocol.OpenLink, error) {
+	return broker.createPending(target, nil, nil, nil, factory)
 }
 
 // ServeStreamContext requests one stream and cancels its pending or active
@@ -146,31 +179,50 @@ func (broker *Broker) request(
 	ready chan linkOpenResult,
 	handler func(context.Context, string, net.Conn) error,
 ) (string, error) {
+	offer, err := broker.createPending(target, onCancel, ready, handler, nil)
+	if err != nil {
+		return "", err
+	}
+	if err := target.Writer.Write(protocol.MessageOpenLink, offer); err != nil {
+		broker.cancel(offer.LinkID, false, err)
+		return offer.LinkID, err
+	}
+	return offer.LinkID, nil
+}
+
+func (broker *Broker) createPending(
+	target Target,
+	onCancel func(string),
+	ready chan linkOpenResult,
+	handler StreamHandler,
+	handlerFactory StreamHandlerFactory,
+) (protocol.OpenLink, error) {
 	broker.mutex.Lock()
 	if broker.closed || broker.limitReachedLocked(target) {
 		broker.mutex.Unlock()
-		return "", ErrCapacityReached
+		return protocol.OpenLink{}, ErrCapacityReached
 	}
 	broker.mutex.Unlock()
 
 	linkID, ticket, digest, err := newBrokerLinkCredentials()
 	if err != nil {
-		return "", err
+		return protocol.OpenLink{}, err
 	}
 	broker.mutex.Lock()
 	if broker.closed || broker.limitReachedLocked(target) {
 		broker.mutex.Unlock()
-		return "", ErrCapacityReached
+		return protocol.OpenLink{}, ErrCapacityReached
 	}
 	expiresAt := time.Now().Add(pendingTimeout)
 	pending := &brokerPendingLink{
-		target:       target,
-		linkID:       linkID,
-		ticketDigest: digest,
-		expiresAt:    expiresAt,
-		onCancel:     onCancel,
-		ready:        ready,
-		handler:      handler,
+		target:         target,
+		linkID:         linkID,
+		ticketDigest:   digest,
+		expiresAt:      expiresAt,
+		onCancel:       onCancel,
+		ready:          ready,
+		handler:        handler,
+		handlerFactory: handlerFactory,
 	}
 	broker.pending[linkID] = pending
 	broker.incrementPendingLocked(target)
@@ -179,7 +231,7 @@ func (broker *Broker) request(
 	})
 	broker.mutex.Unlock()
 
-	if err := target.Writer.Write(protocol.MessageOpenLink, protocol.OpenLink{
+	return protocol.OpenLink{
 		LinkID:          linkID,
 		ProxyName:       target.ProxyName,
 		ProxyType:       target.ProxyType,
@@ -188,11 +240,7 @@ func (broker *Broker) request(
 		ExpiresAtUnixMS: expiresAt.UnixMilli(),
 		MaxDatagramSize: uint32(target.MaxDatagramSize),
 		WriteTimeoutMS:  uint32(target.WriteTimeout.Milliseconds()),
-	}); err != nil {
-		broker.cancel(linkID, false, err)
-		return linkID, err
-	}
-	return linkID, nil
+	}, nil
 }
 
 func (broker *Broker) Bind(
@@ -246,6 +294,8 @@ func (broker *Broker) BindWithActivation(
 		pending.target.ProxyType != binding.ProxyType ||
 		pending.target.BindingID != binding.BindingID ||
 		pending.target.Authentication != authenticationContext ||
+		normalizeLinkDirection(pending.target.Direction) !=
+			normalizeLinkDirection(binding.Direction) ||
 		subtle.ConstantTimeCompare(digest[:], pending.ticketDigest[:]) != 1 {
 		broker.mutex.Unlock()
 		return broker.rejectBinding(connection, binding.LinkID, protocol.LinkErrorInvalidBinding)
@@ -260,6 +310,24 @@ func (broker *Broker) BindWithActivation(
 	}
 	broker.incrementActiveLocked(pending.target)
 	broker.mutex.Unlock()
+	if pending.handlerFactory != nil {
+		handler, prepareError := pending.handlerFactory(ctx)
+		if prepareError != nil {
+			code := protocol.LinkErrorLocalDialFailed
+			if pending.target.Direction == protocol.LinkDirectionForward {
+				code = protocol.LinkErrorTargetDialFailed
+			}
+			rejectionError := broker.rejectBinding(
+				connection,
+				binding.LinkID,
+				code,
+			)
+			managed.Close()
+			broker.finish(binding.LinkID)
+			return fmt.Errorf("prepare data link target: %w: %v", rejectionError, prepareError)
+		}
+		pending.handler = handler
+	}
 	if onActivated != nil {
 		onActivated()
 	}
@@ -293,6 +361,13 @@ func (broker *Broker) BindWithActivation(
 	return err
 }
 
+func normalizeLinkDirection(direction protocol.LinkDirection) protocol.LinkDirection {
+	if direction == "" {
+		return protocol.LinkDirectionProxy
+	}
+	return direction
+}
+
 func (broker *Broker) rejectBinding(
 	connection net.Conn,
 	linkID string,
@@ -324,10 +399,7 @@ func (broker *Broker) cancel(linkID string, notify bool, err error) {
 		pending.ready <- linkOpenResult{err: err}
 	}
 	if notify {
-		_ = pending.target.Writer.Write(protocol.MessageCancelLink, protocol.CancelLink{
-			LinkID: linkID,
-			Reason: "link_cancelled",
-		})
+		broker.notifyCancellation(pending.target, linkID)
 	}
 }
 
@@ -354,7 +426,21 @@ func (broker *Broker) cancelAny(linkID string, err error) {
 	if pending.ready != nil {
 		pending.ready <- linkOpenResult{err: err}
 	}
-	_ = pending.target.Writer.Write(protocol.MessageCancelLink, protocol.CancelLink{
+	broker.notifyCancellation(pending.target, linkID)
+}
+
+func (broker *Broker) notifyCancellation(target Target, linkID string) {
+	if target.Writer == nil {
+		return
+	}
+	if normalizeLinkDirection(target.Direction) == protocol.LinkDirectionForward {
+		_ = target.Writer.Write(
+			protocol.MessageCancelForwardLink,
+			protocol.CancelForwardLink{LinkID: linkID},
+		)
+		return
+	}
+	_ = target.Writer.Write(protocol.MessageCancelLink, protocol.CancelLink{
 		LinkID: linkID,
 		Reason: "link_cancelled",
 	})
@@ -404,6 +490,11 @@ func (broker *Broker) CancelBinding(bindingID string) {
 	for _, connection := range active {
 		connection.Close()
 	}
+}
+
+// CancelLink cancels one pending or active Link by identifier.
+func (broker *Broker) CancelLink(linkID string) {
+	broker.cancelAny(linkID, context.Canceled)
 }
 
 func (broker *Broker) ReportFailure(
@@ -462,10 +553,13 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 	pendingProxy := broker.pendingProxies[proxyKey]
 	activeClient := broker.activeClients[target.ClientID]
 	activeProxy := broker.activeProxies[proxyKey]
+	directionKey := brokerDirectionKey(target)
+	pendingDirection := broker.pendingDirections[directionKey]
+	activeDirection := broker.activeDirections[directionKey]
 	return pendingClient >= maxPendingPerClient ||
 		pendingProxy >= maxPendingPerProxy ||
 		(target.MaxActiveLinks > 0 &&
-			pendingClient+activeClient >= target.MaxActiveLinks) ||
+			pendingDirection+activeDirection >= target.MaxActiveLinks) ||
 		pendingClient+activeClient >= maxActivePerClient ||
 		pendingProxy+activeProxy >= maxActivePerProxy
 }
@@ -473,25 +567,33 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 func (broker *Broker) incrementPendingLocked(target Target) {
 	broker.pendingClients[target.ClientID]++
 	broker.pendingProxies[brokerProxyKey(target)]++
+	broker.pendingDirections[brokerDirectionKey(target)]++
 }
 
 func (broker *Broker) decrementPendingLocked(target Target) {
 	decrementBrokerCount(broker.pendingClients, target.ClientID)
 	decrementBrokerCount(broker.pendingProxies, brokerProxyKey(target))
+	decrementBrokerCount(broker.pendingDirections, brokerDirectionKey(target))
 }
 
 func (broker *Broker) incrementActiveLocked(target Target) {
 	broker.activeClients[target.ClientID]++
 	broker.activeProxies[brokerProxyKey(target)]++
+	broker.activeDirections[brokerDirectionKey(target)]++
 }
 
 func (broker *Broker) decrementActiveLocked(target Target) {
 	decrementBrokerCount(broker.activeClients, target.ClientID)
 	decrementBrokerCount(broker.activeProxies, brokerProxyKey(target))
+	decrementBrokerCount(broker.activeDirections, brokerDirectionKey(target))
 }
 
 func brokerProxyKey(target Target) string {
 	return target.ClientID + "\x00" + target.ProxyName
+}
+
+func brokerDirectionKey(target Target) string {
+	return target.ClientID + "\x00" + string(normalizeLinkDirection(target.Direction))
 }
 
 func decrementBrokerCount(counts map[string]int, key string) {

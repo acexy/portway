@@ -13,12 +13,21 @@ const (
 // LinkErrorCode identifies a stable data-link failure.
 type LinkErrorCode string
 
+// LinkDirection binds a Ticket to one data-flow direction.
+type LinkDirection string
+
 const (
-	LinkErrorLocalDialFailed LinkErrorCode = "local_dial_failed"
-	LinkErrorTransportFailed LinkErrorCode = "transport_failed"
-	LinkErrorInvalidBinding  LinkErrorCode = "invalid_binding"
-	LinkErrorExpired         LinkErrorCode = "link_expired"
-	LinkErrorCancelled       LinkErrorCode = "link_cancelled"
+	LinkDirectionProxy   LinkDirection = "proxy"
+	LinkDirectionForward LinkDirection = "forward"
+)
+
+const (
+	LinkErrorLocalDialFailed  LinkErrorCode = "local_dial_failed"
+	LinkErrorTransportFailed  LinkErrorCode = "transport_failed"
+	LinkErrorInvalidBinding   LinkErrorCode = "invalid_binding"
+	LinkErrorExpired          LinkErrorCode = "link_expired"
+	LinkErrorCancelled        LinkErrorCode = "link_cancelled"
+	LinkErrorTargetDialFailed LinkErrorCode = "target_dial_failed"
 )
 
 // OpenLink asks a client to create one RoleData stream and local connection.
@@ -47,12 +56,13 @@ type LinkFailed struct {
 
 // BindLink is the first encrypted frame on a RoleData connection.
 type BindLink struct {
-	ClientID  string    `json:"client_id"`
-	SessionID string    `json:"session_id"`
-	LinkID    string    `json:"link_id"`
-	ProxyType ProxyType `json:"proxy_type"`
-	BindingID string    `json:"binding_id"`
-	Ticket    string    `json:"ticket"`
+	ClientID  string        `json:"client_id"`
+	SessionID string        `json:"session_id"`
+	LinkID    string        `json:"link_id"`
+	ProxyType ProxyType     `json:"proxy_type"`
+	BindingID string        `json:"binding_id"`
+	Ticket    string        `json:"ticket"`
+	Direction LinkDirection `json:"direction,omitempty"`
 }
 
 // BindResult confirms or rejects a RoleData binding.

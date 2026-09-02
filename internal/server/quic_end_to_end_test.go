@@ -53,8 +53,8 @@ func TestHTTPProxyOverQUICEndToEnd(t *testing.T) {
 	serverConfiguration.Transport.ListenAddress = quicAddress.String()
 	serverConfiguration.Transport.QUIC.CertFile = certificateFile
 	serverConfiguration.Transport.QUIC.KeyFile = keyFile
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.Tunnel.HTTPListenAddress = httpAddress.String()
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.HTTP.ListenAddress = httpAddress.String()
 	serverConfiguration.Authentication.SharedToken = &token
 	serverContext, cancelServer := context.WithCancel(context.Background())
 	serverErrors := make(chan error, 1)
@@ -64,19 +64,17 @@ func TestHTTPProxyOverQUICEndToEnd(t *testing.T) {
 	}()
 
 	clientConfiguration := config.DefaultClient()
-	clientConfiguration.ClientID = "http-quic-end-to-end-client"
+	clientConfiguration.Authentication.ClientID = "http-quic-end-to-end-client"
 	clientConfiguration.Transport.Type = transport.TypeQUIC
 	clientConfiguration.Transport.ServerAddress = quicAddress.String()
 	clientConfiguration.Transport.QUIC.ServerName = "localhost"
 	clientConfiguration.Transport.QUIC.CAFile = certificateFile
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Proxies = []config.ProxyConfig{{
-		Name:          "web",
-		Type:          "http",
-		Domain:        "app.example.com",
-		LocalIP:       "127.0.0.1",
-		LocalPort:     uint16(backendAddress.Port),
-		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+		Name: "web", Type: "http",
+		Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(backendAddress.Port)},
+		Public: config.ProxyPublicConfig{Domain: "app.example.com",
+			Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
 	}}
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)
@@ -151,7 +149,7 @@ func TestTCPProxyOverQUICEndToEnd(t *testing.T) {
 	serverConfiguration.Transport.ListenAddress = quicAddress.String()
 	serverConfiguration.Transport.QUIC.CertFile = certificateFile
 	serverConfiguration.Transport.QUIC.KeyFile = keyFile
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
 	serverConfiguration.Authentication.SharedToken = &token
 	serverContext, cancelServer := context.WithCancel(context.Background())
 	serverErrors := make(chan error, 1)
@@ -161,18 +159,16 @@ func TestTCPProxyOverQUICEndToEnd(t *testing.T) {
 	}()
 
 	clientConfiguration := config.DefaultClient()
-	clientConfiguration.ClientID = "quic-end-to-end-client"
+	clientConfiguration.Authentication.ClientID = "quic-end-to-end-client"
 	clientConfiguration.Transport.Type = transport.TypeQUIC
 	clientConfiguration.Transport.ServerAddress = quicAddress.String()
 	clientConfiguration.Transport.QUIC.ServerName = "localhost"
 	clientConfiguration.Transport.QUIC.CAFile = certificateFile
 	clientConfiguration.Authentication.Token = token
 	clientConfiguration.Proxies = []config.ProxyConfig{{
-		Name:       "echo",
-		Type:       "tcp",
-		LocalIP:    "127.0.0.1",
-		LocalPort:  uint16(echoAddress.Port),
-		RemotePort: uint16(proxyAddress.Port),
+		Name: "echo", Type: "tcp",
+		Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+		Public: config.ProxyPublicConfig{Port: uint16(proxyAddress.Port)},
 	}}
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)

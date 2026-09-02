@@ -15,8 +15,28 @@ func (manager *Registry) Sync(
 	clientID string,
 	sessionID string,
 	requestID string,
-	request protocol.SyncProxies,
-) protocol.SyncResult {
+	request SyncRequest,
+) SyncResult {
+	return manager.sync(clientID, sessionID, requestID, request, false)
+}
+
+// SyncAllowEmpty applies a Proxy set that may be empty when a Forward exists.
+func (manager *Registry) SyncAllowEmpty(
+	clientID string,
+	sessionID string,
+	requestID string,
+	request SyncRequest,
+) SyncResult {
+	return manager.sync(clientID, sessionID, requestID, request, true)
+}
+
+func (manager *Registry) sync(
+	clientID string,
+	sessionID string,
+	requestID string,
+	request SyncRequest,
+	allowEmpty bool,
+) SyncResult {
 	manager.registrationMutex.Lock()
 	registrationLocked := true
 	defer func() {
@@ -28,14 +48,14 @@ func (manager *Registry) Sync(
 	if err := protocol.ValidateRequestID(requestID); err != nil {
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			err.Error(),
 		)
 	}
 	fingerprintBytes, err := json.Marshal(request.Proxies)
 	if err != nil {
-		return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidRequest, "", "encode proxy declaration")
+		return rejectedSyncResult(request.Revision, ErrorInvalidRequest, "", "encode proxy declaration")
 	}
 	fingerprint := sha256.Sum256(fingerprintBytes)
 
@@ -44,7 +64,7 @@ func (manager *Registry) Sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorSessionInactive,
+			ErrorSessionInactive,
 			"",
 			"proxy registry is closed",
 		)
@@ -54,7 +74,7 @@ func (manager *Registry) Sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorSessionInactive,
+			ErrorSessionInactive,
 			"",
 			"client session is not active",
 		)
@@ -68,7 +88,7 @@ func (manager *Registry) Sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			"proxy request ID payload changed",
 		)
@@ -77,7 +97,7 @@ func (manager *Registry) Sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			"proxy revision is stale",
 		)
@@ -91,7 +111,7 @@ func (manager *Registry) Sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidRequest,
+			ErrorInvalidRequest,
 			"",
 			"proxy revision payload changed",
 		)
@@ -100,7 +120,7 @@ func (manager *Registry) Sync(
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorCapacityExceeded,
+			ErrorCapacityExceeded,
 			"",
 			"proxy limit exceeded",
 		)
@@ -121,10 +141,10 @@ func (manager *Registry) Sync(
 	baseRevision := state.revision
 	manager.mutex.Unlock()
 
-	if authenticationMode != authentication.ModeManaged && len(request.Proxies) == 0 {
+	if !allowEmpty && authenticationMode != authentication.ModeManaged && len(request.Proxies) == 0 {
 		return rejectedSyncResult(
 			request.Revision,
-			protocol.ProxyErrorInvalidProxy,
+			ErrorInvalidProxy,
 			"",
 			"at least one proxy declaration is required",
 		)
@@ -165,6 +185,22 @@ func (manager *Registry) Sync(
 			continue
 		}
 		endpoint := manager.endpoints[declaration.RemotePort]
+		state := manager.clients[clientID]
+		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil {
+			if endpoint != nil && group.tcpEndpoint == endpoint {
+				reusableEndpoints[declaration.RemotePort] = endpoint
+			}
+			continue
+		}
+		if manager.tcpMirrorGroups[declaration.RemotePort] != nil {
+			manager.mutex.Unlock()
+			return rejectedSyncResult(
+				request.Revision,
+				ErrorMirrorMemberNotAllowed,
+				declaration.Name,
+				"mirror group membership is not allowed",
+			)
+		}
 		if endpoint == nil {
 			continue
 		}
@@ -173,7 +209,7 @@ func (manager *Registry) Sync(
 			manager.mutex.Unlock()
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"remote port is unavailable",
 			)
@@ -182,7 +218,7 @@ func (manager *Registry) Sync(
 			manager.mutex.Unlock()
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"remote port is unavailable",
 			)
@@ -198,6 +234,22 @@ func (manager *Registry) Sync(
 			continue
 		}
 		endpoint := manager.udpEndpoints[declaration.RemotePort]
+		state := manager.clients[clientID]
+		if group := manager.mirrorGroupLocked(clientID, state, declaration); group != nil {
+			if endpoint != nil && group.udpEndpoint == endpoint {
+				reusableUDPEndpoints[declaration.RemotePort] = endpoint
+			}
+			continue
+		}
+		if manager.udpMirrorGroups[declaration.RemotePort] != nil {
+			manager.mutex.Unlock()
+			return rejectedSyncResult(
+				request.Revision,
+				ErrorMirrorMemberNotAllowed,
+				declaration.Name,
+				"mirror group membership is not allowed",
+			)
+		}
 		if endpoint == nil {
 			continue
 		}
@@ -207,7 +259,7 @@ func (manager *Registry) Sync(
 			manager.mutex.Unlock()
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorPortConflict,
+				ErrorPortConflict,
 				declaration.Name,
 				"UDP remote port is unavailable",
 			)
@@ -258,7 +310,7 @@ func (manager *Registry) Sync(
 			closeUDPEndpoints(newUDPEndpoints)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorInvalidRequest,
+				ErrorInvalidRequest,
 				declaration.Name,
 				"generate proxy binding ID",
 			)
@@ -313,12 +365,17 @@ func (manager *Registry) Sync(
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
-				protocol.ProxyErrorInvalidRequest,
+				ErrorInvalidRequest,
 				declaration.Name,
 				"create UDP proxy binding",
 			)
 		}
 		nextUDPProxies[declaration.Name] = binding
+		manager.mutex.Lock()
+		if group := manager.mirrorGroupLocked(clientID, manager.clients[clientID], declaration); group != nil {
+			binding.runtime.SetResponseEnabled(clientID == group.configuration.PrimaryClientID)
+		}
+		manager.mutex.Unlock()
 		results = append(results, protocol.ProxyResult{
 			Name:       declaration.Name,
 			Status:     protocol.ProxyStatusActive,
@@ -337,7 +394,7 @@ func (manager *Registry) Sync(
 			closeTCPEndpoints(newEndpoints)
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
-			return rejectedSyncResult(request.Revision, protocol.ProxyErrorDomainConflict, declaration.Name, "HTTP domain is unavailable")
+			return rejectedSyncResult(request.Revision, ErrorDomainConflict, declaration.Name, "HTTP domain is unavailable")
 		}
 	}
 	manager.mutex.Unlock()
@@ -363,7 +420,7 @@ func (manager *Registry) Sync(
 			closeUDPEndpoints(newUDPEndpoints)
 			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
-			return rejectedSyncResult(request.Revision, protocol.ProxyErrorInvalidRequest, declaration.Name, "create HTTP proxy binding")
+			return rejectedSyncResult(request.Revision, ErrorInvalidRequest, declaration.Name, "create HTTP proxy binding")
 		}
 		nextHTTPProxies[declaration.Name] = binding
 		results = append(results, protocol.ProxyResult{

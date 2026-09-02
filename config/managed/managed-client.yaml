@@ -8,25 +8,41 @@
 # All ClientIDs and Tokens must be globally unique across Shared, Governed, and
 # Managed authentication records.
 
-# * Required. Server-owned identity returned to the authenticated client.
-# Length: 1-64 characters.
-# Allowed characters: ASCII letters, digits, dots, underscores, and hyphens.
-client_id: managed-client
+authentication:
+  # * Required. Server-owned identity returned to the authenticated client.
+  client_id: managed-client
+  # * Required. Independent Token configured by the client. It must contain
+  # more than 32 UTF-8 characters and remain globally unique. Prefer an
+  # automatically generated 256-bit value and never commit a production Token.
+  # Hot-reloading this Token disconnects only this ClientID.
+  token: PORTWAY_TOKEN_REQUIRED
 
-# * Required. Independent Token configured as authentication.token on this
-# client. It must contain more than 32 UTF-8 characters; prefer an automatically
-# generated 256-bit value. Never commit or log a real Token. Hot-reloading any
-# Token addition, removal, replacement, or reassignment disconnects every active
-# and recoverable client; clients with unchanged credentials may reconnect with
-# their existing Token. Proxy configuration-only changes retain online rollout.
-token: PORTWAY_TOKEN_REQUIRED
+# Optional Managed Forward permission boundary.
+# Managed Forward targets always remain inside server.yaml forwards.rules. This
+# optional rule set may narrow that global boundary further, but never expand
+# it. Omit it to use only the global boundary. Rules are allowed only when this
+# record contains at least one configuration.forwards entry. Permission-only
+# changes are part of the atomic server snapshot and do not require a revision
+# increase. If a tighter rule no longer authorizes any configured target, the
+# complete reload candidate is rejected rather than silently removing it.
+permissions:
+  forwards:
+    rules:
+      - ip_range: 10.40.0.0/16
+        tcp:
+          port_ranges:
+            - start: 5432
+              end: 5432
 
 # * Required. Complete server-owned client configuration.
-# A managed client must not define local proxies in client.yaml; it receives
-# this complete list after authentication and cannot override it.
+# A managed client must not define local proxies or forwards in client.yaml; it
+# receives both complete sets after authentication and cannot override them.
 configuration:
   # * Required. Monotonically increasing configuration revision.
-  # Allowed values: positive integers greater than zero.
+  # Allowed values: positive integers greater than zero. Increment it whenever
+  # configuration.proxies or configuration.forwards changes. Reusing a revision
+  # with different content or decreasing it rejects the complete reload
+  # candidate. Permission-only changes do not require an increment.
   revision: 1
 
   # Optional. Complete desired proxy set. Defaults to empty, which means that
@@ -48,20 +64,21 @@ configuration:
       type: tcp
       # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
       # by the client.
-      local_ip: 127.0.0.1
-      # * Required. Local target port, range 1-65535.
-      local_port: 22
-      # * Required for tcp and udp. Public server port, range 1-65535.
-      # Not allowed for http.
-      remote_port: 22022
+      local:
+        ip: 127.0.0.1
+        port: 22
+      public:
+        port: 22022
 
     # UDP example.
     - name: dns
       type: udp
       # Optional. Defaults to 127.0.0.1.
-      local_ip: 127.0.0.1
-      local_port: 53
-      remote_port: 5353
+      local:
+        ip: 127.0.0.1
+        port: 53
+      public:
+        port: 5353
 
     # HTTP/HTTPS public entry example. This one domain binding is served by
     # every enabled public HTTP or HTTPS listener. HTTPS additionally requires
@@ -69,15 +86,34 @@ configuration:
     # portwayd, which always forwards plain HTTP to the managed local target.
     - name: web
       type: http
-      # Optional for http. Empty or omitted defaults to [http]. Explicit values
-      # must be unique and may be http or https. Every requested listener must
-      # be enabled globally. Not allowed for tcp or udp.
-      public_schemes:
-        - https
-      # Optional. Defaults to 127.0.0.1.
-      local_ip: 127.0.0.1
-      local_port: 8080
-      # * Required for http. Canonical lowercase DNS name without a scheme,
-      # port, path, wildcard, IP literal, or trailing dot.
-      # Not allowed for tcp or udp.
-      domain: app.example.com
+      local:
+        ip: 127.0.0.1
+        port: 8080
+      public:
+        # Optional for http. Empty or omitted defaults to [http]. Explicit values
+        # must be unique and may be http or https. Every requested listener must
+        # be enabled globally. Not allowed for tcp or udp.
+        schemes:
+          - https
+        domain: app.example.com
+
+# Optional. Complete desired Managed Forward set. Defaults to empty. The client
+# must not define local forwards.
+  # Names are unique across this record's proxies and forwards. listen remains
+  # client-side; target is checked
+  # against the server-wide and optional Managed rule sets. Changing or removing
+  # an entry uses Prepare/Activate and automatically closes affected connections.
+  forwards:
+    - name: database
+      # * Required. Allowed values: tcp, udp.
+      type: tcp
+      # * Required. Explicit client-side listening IP; no hostname.
+      listen:
+        ip: 127.0.0.1
+        # * Required. Range 1-65535.
+        port: 15432
+      # * Required. Explicit IP reachable from portwayd; no hostname.
+      target:
+        ip: 10.40.1.20
+        # * Required. Range 1-65535.
+        port: 5432

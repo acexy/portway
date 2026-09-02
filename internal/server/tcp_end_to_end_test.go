@@ -15,6 +15,12 @@ import (
 	"github.com/acexy/portway/internal/transport"
 )
 
+func mirrorPublicConfig(port uint16) config.ProxyMirrorPublicConfig {
+	return config.ProxyMirrorPublicConfig{
+		PortRanges: []config.PortRange{{Start: port, End: port}},
+	}
+}
+
 func TestTCPProxyEndToEnd(t *testing.T) {
 	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -38,8 +44,10 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 			Type:          transport.TypeTCP,
 			ListenAddress: serverAddress.String(),
 		},
-		Tunnel: config.TunnelConfig{
+		Proxies: config.ServerProxyConfig{
 			BindIP: "127.0.0.1",
+			HTTP:   config.DefaultServer().Proxies.HTTP,
+			UDP:    config.DefaultServer().Proxies.UDP,
 		},
 		LogLevel: config.LogLevelInfo,
 		Authentication: config.ServerAuthenticationConfig{
@@ -53,22 +61,21 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 	clientContext, cancelClient := context.WithCancel(context.Background())
 	clientErrors := make(chan error, 1)
 	clientService := client.NewService(logging.New("test-client"), config.ClientConfig{
-		ClientID: "end-to-end-client",
 		Transport: config.ClientTransportConfig{
 			Type:          transport.TypeTCP,
 			ServerAddress: serverAddress.String(),
 		},
 		LogLevel: config.LogLevelInfo,
 		Authentication: config.ClientAuthenticationConfig{
-			Token: token,
+			ClientID: "end-to-end-client",
+			Token:    token,
 		},
 		Proxies: []config.ProxyConfig{
 			{
-				Name:       "echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoAddress.Port),
-				RemotePort: proxyPort,
+				Name:   "echo",
+				Type:   "tcp",
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+				Public: config.ProxyPublicConfig{Port: proxyPort},
 			},
 		},
 	})
@@ -111,6 +118,157 @@ func TestTCPProxyEndToEnd(t *testing.T) {
 	}
 }
 
+func TestTCPMirrorProxyEndToEnd(t *testing.T) {
+	primaryListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primaryListener.Close()
+	primaryContext, cancelPrimary := context.WithCancel(context.Background())
+	defer cancelPrimary()
+	go runEchoServer(primaryContext, primaryListener)
+
+	mirrorListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mirrorListener.Close()
+	mirrorReceived := make(chan []byte, 1)
+	go func() {
+		connection, acceptError := mirrorListener.Accept()
+		if acceptError != nil {
+			return
+		}
+		defer connection.Close()
+		payload := make([]byte, len("mirror-payload"))
+		if _, readError := io.ReadFull(connection, payload); readError == nil {
+			mirrorReceived <- payload
+			_, _ = connection.Write([]byte("response-from-mirror"))
+		}
+	}()
+
+	serverAddress := reserveTCPAddress(t)
+	proxyAddress := reserveTCPAddress(t)
+	proxyPort := uint16(proxyAddress.Port)
+	primaryToken := "primary-token-with-at-least-32-random-bytes"
+	mirrorToken := "mirror-token-with-at-least-32-random-bytes"
+	serverConfiguration := config.DefaultServer()
+	serverConfiguration.Transport.ListenAddress = serverAddress.String()
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Authentication.SharedToken = nil
+	permission := func(clientID string, token string) config.GovernedClientConfig {
+		limits := config.DefaultProxyPermissionLimits()
+		return config.GovernedClientConfig{
+			Authentication: config.ClientAuthenticationConfig{ClientID: clientID, Token: token},
+			Permissions: config.GovernedPermissions{Proxies: config.GovernedProxyPermissions{
+				TCP:    &config.ProxyPermission{RemotePortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
+				Limits: limits,
+			}},
+		}
+	}
+	serverConfiguration.GovernedClients = map[string]config.GovernedClientConfig{
+		"primary-client": permission("primary-client", primaryToken),
+		"mirror-client":  permission("mirror-client", mirrorToken),
+	}
+	serverConfiguration.Proxies.Mirror.Governed = []config.ProxyMirrorGroupConfig{{
+		Name: "mirror-group", Type: "tcp",
+		Public:          mirrorPublicConfig(proxyPort),
+		PrimaryClientID: "primary-client", ClientIDs: []string{"primary-client", "mirror-client"},
+	}}
+
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverErrors := make(chan error, 1)
+	serverService := NewService(logging.New("test-mirror-server"), serverConfiguration)
+	go func() { serverErrors <- serverService.Run(serverContext) }()
+
+	type runningMirrorClient struct {
+		cancel context.CancelFunc
+		errors chan error
+	}
+	startClient := func(clientID string, token string, localPort uint16) runningMirrorClient {
+		clientContext, cancel := context.WithCancel(context.Background())
+		errors := make(chan error, 1)
+		configuration := config.DefaultClient()
+		configuration.Transport.ServerAddress = serverAddress.String()
+		configuration.Authentication = config.ClientAuthenticationConfig{ClientID: clientID, Token: token}
+		configuration.Proxies = []config.ProxyConfig{{
+			Name: clientID + "-proxy", Type: "tcp",
+			Local:  config.EndpointConfig{IP: "127.0.0.1", Port: localPort},
+			Public: config.ProxyPublicConfig{Port: proxyPort},
+		}}
+		service := client.NewService(logging.New("test-mirror-client"), configuration)
+		go func() { errors <- service.Run(clientContext) }()
+		return runningMirrorClient{cancel: cancel, errors: errors}
+	}
+	clients := []runningMirrorClient{
+		startClient("primary-client", primaryToken, uint16(primaryListener.Addr().(*net.TCPAddr).Port)),
+	}
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		nil,
+		protocol.ProxyTypeTCP,
+		1,
+	)
+	clients = append(
+		clients,
+		startClient("mirror-client", mirrorToken, uint16(mirrorListener.Addr().(*net.TCPAddr).Port)),
+	)
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		clients[1].errors,
+		protocol.ProxyTypeTCP,
+		2,
+	)
+
+	payload := []byte("mirror-payload")
+	visitor, err := net.DialTimeout("tcp", proxyAddress.String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer visitor.Close()
+	if err := visitor.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := visitor.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, len(payload))
+	if _, err := io.ReadFull(visitor, response); err != nil {
+		t.Fatal(err)
+	}
+	if string(response) != string(payload) {
+		t.Fatalf("unexpected primary response %q", response)
+	}
+	select {
+	case mirrored := <-mirrorReceived:
+		if string(mirrored) != string(payload) {
+			t.Fatalf("mirror received %q", mirrored)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("mirror client did not receive payload")
+	}
+	visitor.Close()
+
+	for _, running := range clients {
+		running.cancel()
+	}
+	for _, running := range clients {
+		if err := waitServiceResult(running.errors); err != nil {
+			t.Fatalf("client stopped with error: %v", err)
+		}
+	}
+	cancelServer()
+	if err := waitServiceResult(serverErrors); err != nil {
+		t.Fatalf("server stopped with error: %v", err)
+	}
+}
+
 func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -132,34 +290,32 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 
 	serverConfiguration := config.DefaultServer()
 	serverConfiguration.Transport.ListenAddress = serverAddress.String()
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
 	serverConfiguration.Authentication.SharedToken = &sharedToken
 	serverConfiguration.GovernedClients = map[string]config.GovernedClientConfig{
 		"governed-authority": {
-			ClientID: "governed-authority",
-			Token:    governedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "governed-authority", Token: governedToken},
 			Permissions: config.GovernedPermissions{
-				ProxyTypes: []protocol.ProxyType{protocol.ProxyTypeTCP},
-				TCP: config.ProxyPermission{RemotePortRanges: []config.PortRange{{
-					Start: uint16(governedProxyAddress.Port),
-					End:   uint16(governedProxyAddress.Port),
-				}}},
-				Limits: config.PermissionLimits{MaxProxies: 1},
+				Proxies: config.GovernedProxyPermissions{
+					TCP: &config.ProxyPermission{RemotePortRanges: []config.PortRange{{
+						Start: uint16(governedProxyAddress.Port),
+						End:   uint16(governedProxyAddress.Port),
+					}}},
+					Limits: config.ProxyPermissionLimits{MaxTotal: 1},
+				},
 			},
 		},
 	}
 	serverConfiguration.ManagedClients = map[string]config.ManagedClientConfig{
 		"managed-authority": {
-			ClientID: "managed-authority",
-			Token:    managedToken,
+			Authentication: config.ClientAuthenticationConfig{ClientID: "managed-authority", Token: managedToken},
 			Configuration: config.ManagedConfiguration{
 				Revision: 1,
 				Proxies: []config.ProxyConfig{{
-					Name:       "managed-echo",
-					Type:       "tcp",
-					LocalIP:    "127.0.0.1",
-					LocalPort:  uint16(echoAddress.Port),
-					RemotePort: uint16(managedProxyAddress.Port),
+					Name:   "managed-echo",
+					Type:   "tcp",
+					Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+					Public: config.ProxyPublicConfig{Port: uint16(managedProxyAddress.Port)},
 				}},
 			},
 		},
@@ -191,7 +347,7 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 		proxies []config.ProxyConfig,
 	) config.ClientConfig {
 		configuration := config.DefaultClient()
-		configuration.ClientID = clientID
+		configuration.Authentication.ClientID = clientID
 		configuration.Transport.ServerAddress = serverAddress.String()
 		configuration.Authentication.Token = token
 		configuration.Proxies = proxies
@@ -203,22 +359,20 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 			"shared-instance",
 			sharedToken,
 			[]config.ProxyConfig{{
-				Name:       "shared-echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoAddress.Port),
-				RemotePort: uint16(sharedProxyAddress.Port),
+				Name:   "shared-echo",
+				Type:   "tcp",
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+				Public: config.ProxyPublicConfig{Port: uint16(sharedProxyAddress.Port)},
 			}},
 		)),
 		startClient(clientConfiguration(
 			"governed-authority",
 			governedToken,
 			[]config.ProxyConfig{{
-				Name:       "governed-echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoAddress.Port),
-				RemotePort: uint16(governedProxyAddress.Port),
+				Name:   "governed-echo",
+				Type:   "tcp",
+				Local:  config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoAddress.Port)},
+				Public: config.ProxyPublicConfig{Port: uint16(governedProxyAddress.Port)},
 			}},
 		)),
 		startClient(clientConfiguration(
@@ -276,6 +430,45 @@ func reserveTCPAddress(t testing.TB) *net.TCPAddr {
 		t.Fatal(err)
 	}
 	return address
+}
+
+func waitForMirrorMembers(
+	t *testing.T,
+	service *Service,
+	serverErrors <-chan error,
+	primaryErrors <-chan error,
+	mirrorErrors <-chan error,
+	proxyType protocol.ProxyType,
+	expected int,
+) {
+	t.Helper()
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if service.ready.Load() {
+			stats := service.proxyRegistry.SnapshotStats()
+			members := stats.TCPMirrorMembers
+			if proxyType == protocol.ProxyTypeUDP {
+				members = stats.UDPMirrorMembers
+			}
+			if members == expected {
+				return
+			}
+		}
+		select {
+		case err := <-serverErrors:
+			t.Fatalf("server stopped before %s mirror members became ready: %v", proxyType, err)
+		case err := <-primaryErrors:
+			t.Fatalf("primary client stopped before %s mirror members became ready: %v", proxyType, err)
+		case err := <-mirrorErrors:
+			t.Fatalf("mirror client stopped before %s mirror members became ready: %v", proxyType, err)
+		case <-deadline.C:
+			t.Fatalf("%s mirror members did not become ready", proxyType)
+		case <-ticker.C:
+		}
+	}
 }
 
 func dialWithRetry(t testing.TB, address string, timeout time.Duration) net.Conn {

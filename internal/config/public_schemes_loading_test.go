@@ -19,21 +19,21 @@ func TestLoadClientStrictHTTPPublicSchemes(t *testing.T) {
 		wantError   string
 	}{
 		{name: "omitted defaults to HTTP", proxyType: "http", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
-		{name: "empty defaults to HTTP", field: "    public_schemes: []\n", proxyType: "http", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
-		{name: "explicit HTTPS", field: "    public_schemes: [https]\n", proxyType: "http", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS}},
-		{name: "both schemes", field: "    public_schemes: [http, https]\n", proxyType: "http", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP, protocol.HTTPPublicSchemeHTTPS}},
-		{name: "duplicate", field: "    public_schemes: [http, http]\n", proxyType: "http", wantError: "duplicate scheme"},
-		{name: "unknown", field: "    public_schemes: [ftp]\n", proxyType: "http", wantError: "must be http or https"},
-		{name: "wrong YAML type", field: "    public_schemes: https\n", proxyType: "http", wantError: "cannot unmarshal"},
-		{name: "forbidden for TCP", field: "    public_schemes: [http]\n", proxyType: "tcp", wantError: "invalid tcp fields"},
+		{name: "empty defaults to HTTP", field: "      schemes: []\n", proxyType: "http", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
+		{name: "explicit HTTPS", field: "      schemes: [https]\n", proxyType: "http", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS}},
+		{name: "both schemes", field: "      schemes: [http, https]\n", proxyType: "http", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP, protocol.HTTPPublicSchemeHTTPS}},
+		{name: "duplicate", field: "      schemes: [http, http]\n", proxyType: "http", wantError: "duplicate scheme"},
+		{name: "unknown", field: "      schemes: [ftp]\n", proxyType: "http", wantError: "must be http or https"},
+		{name: "wrong YAML type", field: "      schemes: https\n", proxyType: "http", wantError: "cannot unmarshal"},
+		{name: "forbidden for TCP", field: "      schemes: [http]\n", proxyType: "tcp", wantError: "invalid tcp fields"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "client.yaml")
 			remoteField := ""
-			domainField := "    domain: app.example.com\n"
+			domainField := "      domain: app.example.com\n"
 			if testCase.proxyType == "tcp" {
-				remoteField = "    remote_port: 22022\n"
+				remoteField = "      port: 22022\n"
 				domainField = ""
 			}
 			writeTestConfiguration(t, path, fmt.Sprintf(`
@@ -42,8 +42,11 @@ authentication:
 proxies:
   - name: web
     type: %s
-%s%s%s    local_ip: 127.0.0.1
-    local_port: 8080
+    local:
+      ip: 127.0.0.1
+      port: 8080
+    public:
+%s%s%s
 `, testCase.proxyType, testCase.field, domainField, remoteField))
 
 			configuration, err := LoadClient(path, false)
@@ -56,8 +59,8 @@ proxies:
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !equalPublicSchemes(configuration.Proxies[0].PublicSchemes, testCase.wantSchemes) {
-				t.Fatalf("public schemes = %v, want %v", configuration.Proxies[0].PublicSchemes, testCase.wantSchemes)
+			if !equalPublicSchemes(configuration.Proxies[0].Public.Schemes, testCase.wantSchemes) {
+				t.Fatalf("public schemes = %v, want %v", configuration.Proxies[0].Public.Schemes, testCase.wantSchemes)
 			}
 		})
 	}
@@ -66,20 +69,18 @@ proxies:
 func TestLoadGovernedStrictHTTPPublicSchemes(t *testing.T) {
 	testCases := []struct {
 		name        string
-		proxyTypes  string
 		httpFields  string
 		enableHTTPS bool
 		wantSchemes []protocol.HTTPPublicScheme
 		wantError   string
 	}{
-		{name: "omitted defaults to HTTP", proxyTypes: "[http]", httpFields: "    domains: [app.example.com]\n", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
-		{name: "empty defaults to HTTP", proxyTypes: "[http]", httpFields: "    public_schemes: []\n    domains: [app.example.com]\n", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
-		{name: "explicit HTTPS", proxyTypes: "[http]", httpFields: "    public_schemes: [https]\n    domains: [app.example.com]\n", enableHTTPS: true, wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS}},
-		{name: "duplicate scheme", proxyTypes: "[http]", httpFields: "    public_schemes: [https, https]\n    domains: [app.example.com]\n", wantError: "duplicate scheme"},
-		{name: "unknown scheme", proxyTypes: "[http]", httpFields: "    public_schemes: [ftp]\n    domains: [app.example.com]\n", wantError: "must be http or https"},
-		{name: "wrong YAML type", proxyTypes: "[http]", httpFields: "    public_schemes: https\n    domains: [app.example.com]\n", wantError: "cannot unmarshal"},
-		{name: "scheme without HTTP type", proxyTypes: "[]", httpFields: "    public_schemes: [https]\n", wantError: "must be empty when http is not allowed"},
-		{name: "duplicate domain", proxyTypes: "[http]", httpFields: "    domains: [app.example.com, app.example.com]\n", wantError: "duplicate domain"},
+		{name: "omitted defaults to HTTP", httpFields: "      domains: [app.example.com]\n", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
+		{name: "empty defaults to HTTP", httpFields: "      public_schemes: []\n      domains: [app.example.com]\n", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
+		{name: "explicit HTTPS", httpFields: "      public_schemes: [https]\n      domains: [app.example.com]\n", enableHTTPS: true, wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS}},
+		{name: "duplicate scheme", httpFields: "      public_schemes: [https, https]\n      domains: [app.example.com]\n", wantError: "duplicate scheme"},
+		{name: "unknown scheme", httpFields: "      public_schemes: [ftp]\n      domains: [app.example.com]\n", wantError: "must be http or https"},
+		{name: "wrong YAML type", httpFields: "      public_schemes: https\n      domains: [app.example.com]\n", wantError: "cannot unmarshal"},
+		{name: "duplicate domain", httpFields: "      domains: [app.example.com, app.example.com]\n", wantError: "duplicate domain"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -89,16 +90,18 @@ func TestLoadGovernedStrictHTTPPublicSchemes(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeTestConfiguration(t, filepath.Join(governedDirectory, "client.yaml"), fmt.Sprintf(`
-client_id: governed-client
-token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
+authentication:
+  client_id: governed-client
+  token: cG9ydHdheS10ZXN0LWdvdmVybmVkLXRva2VuLTAwMDE
 permissions:
-  proxy_types: %s
-  http:
-%s`, testCase.proxyTypes, testCase.httpFields))
+  proxies:
+    http:
+%s`, testCase.httpFields))
 			serverPath := filepath.Join(directory, "server.yaml")
 			serverConfiguration := `
-tunnel:
-  http_listen_address: 127.0.0.1:8080
+proxies:
+  http:
+    listen_address: 127.0.0.1:8080
 authentication:
   governed_clients_path: governed
 `
@@ -108,14 +111,15 @@ authentication:
 				writeTestConfiguration(t, certificatePath, "test certificate")
 				writeTestConfiguration(t, keyPath, "test key")
 				serverConfiguration = fmt.Sprintf(`
-tunnel:
-  http_listen_address: 127.0.0.1:8080
-  https_listen_address: 127.0.0.1:8443
-https:
-  certificates:
-    - domains: [app.example.com]
-      cert_file: %s
-      key_file: %s
+proxies:
+  http:
+    listen_address: 127.0.0.1:8080
+  https:
+    listen_address: 127.0.0.1:8443
+    certificates:
+      - domains: [app.example.com]
+        cert_file: %s
+        key_file: %s
 authentication:
   governed_clients_path: governed
 `, certificatePath, keyPath)
@@ -132,7 +136,7 @@ authentication:
 			if err != nil {
 				t.Fatal(err)
 			}
-			actual := configuration.GovernedClients["governed-client"].Permissions.HTTP.PublicSchemes
+			actual := configuration.GovernedClients["governed-client"].Permissions.Proxies.HTTP.PublicSchemes
 			if !equalPublicSchemes(actual, testCase.wantSchemes) {
 				t.Fatalf("public schemes = %v, want %v", actual, testCase.wantSchemes)
 			}
@@ -148,10 +152,10 @@ func TestLoadManagedStrictHTTPPublicSchemes(t *testing.T) {
 		wantError   string
 	}{
 		{name: "omitted defaults to HTTP", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
-		{name: "empty defaults to HTTP", field: "      public_schemes: []\n", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
-		{name: "duplicate", field: "      public_schemes: [http, http]\n", wantError: "duplicate scheme"},
-		{name: "unknown", field: "      public_schemes: [ftp]\n", wantError: "must be http or https"},
-		{name: "wrong YAML type", field: "      public_schemes: http\n", wantError: "cannot unmarshal"},
+		{name: "empty defaults to HTTP", field: "        schemes: []\n", wantSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
+		{name: "duplicate", field: "        schemes: [http, http]\n", wantError: "duplicate scheme"},
+		{name: "unknown", field: "        schemes: [ftp]\n", wantError: "must be http or https"},
+		{name: "wrong YAML type", field: "        schemes: http\n", wantError: "cannot unmarshal"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -161,21 +165,25 @@ func TestLoadManagedStrictHTTPPublicSchemes(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeTestConfiguration(t, filepath.Join(managedDirectory, "client.yaml"), fmt.Sprintf(`
-client_id: managed-client
-token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
+authentication:
+  client_id: managed-client
+  token: cG9ydHdheS10ZXN0LW1hbmFnZWQtdG9rZW4tMDAwMDE
 configuration:
   revision: 1
   proxies:
     - name: web
       type: http
-%s      domain: app.example.com
-      local_ip: 127.0.0.1
-      local_port: 8080
+      local:
+        ip: 127.0.0.1
+        port: 8080
+      public:
+%s        domain: app.example.com
 `, testCase.field))
 			serverPath := filepath.Join(directory, "server.yaml")
 			writeTestConfiguration(t, serverPath, `
-tunnel:
-  http_listen_address: 127.0.0.1:8080
+proxies:
+  http:
+    listen_address: 127.0.0.1:8080
 authentication:
   managed_clients_path: managed
 `)
@@ -190,7 +198,7 @@ authentication:
 			if err != nil {
 				t.Fatal(err)
 			}
-			actual := configuration.ManagedClients["managed-client"].Configuration.Proxies[0].PublicSchemes
+			actual := configuration.ManagedClients["managed-client"].Configuration.Proxies[0].Public.Schemes
 			if !equalPublicSchemes(actual, testCase.wantSchemes) {
 				t.Fatalf("public schemes = %v, want %v", actual, testCase.wantSchemes)
 			}
@@ -218,15 +226,19 @@ func TestConfiguredPublicSchemesRequireMatchingListeners(t *testing.T) {
 		for _, testCase := range testCases {
 			t.Run(mode+"/"+testCase.name, func(t *testing.T) {
 				configuration := DefaultServer()
-				configuration.Tunnel.HTTPListenAddress = testCase.httpListener
-				configuration.Tunnel.HTTPSListenAddress = testCase.httpsListener
+				configuration.Proxies.HTTP.ListenAddress = testCase.httpListener
+				configuration.Proxies.HTTPS.ListenAddress = testCase.httpsListener
 				if mode == "governed" {
 					configuration.GovernedClients = map[string]GovernedClientConfig{
-						"client": {Permissions: GovernedPermissions{HTTP: HTTPPermission{PublicSchemes: testCase.schemes}}},
+						"client": {Permissions: GovernedPermissions{
+							Proxies: GovernedProxyPermissions{HTTP: &HTTPPermission{PublicSchemes: testCase.schemes}},
+						}},
 					}
 				} else {
 					configuration.ManagedClients = map[string]ManagedClientConfig{
-						"client": {Configuration: ManagedConfiguration{Proxies: []ProxyConfig{{Name: "web", Type: "http", PublicSchemes: testCase.schemes}}}},
+						"client": {Configuration: ManagedConfiguration{Proxies: []ProxyConfig{{
+							Name: "web", Type: "http", Public: ProxyPublicConfig{Schemes: testCase.schemes},
+						}}}},
 					}
 				}
 

@@ -7,28 +7,29 @@ the complete wire protocol or internal state machines.
 ## Architecture
 
 ```text
-Public TCP/UDP/HTTP traffic
-          |
-          v
+Proxy visitors                                  Forward visitors
+      |                                                |
+      v                                                v
   +-----------------+        TCP or QUIC        +-----------------+
   |    portwayd     | <-----------------------> |     portway     |
-  | public server   |    control + data links   | private client  |
+  | server endpoint |    control + data links   | client endpoint |
   +-----------------+                           +-----------------+
           |                                              |
-          | Host/port routing                            | local TCP/UDP/HTTP
           v                                              v
-     public users                                  private services
+Forward targets                              Proxy local services
 ```
 
 Portway separates five responsibilities:
 
 - **Transport** establishes authenticated client-server connections over TCP or
   QUIC.
-- **Control plane** owns client identity, proxy registration, heartbeats,
-  recovery, and data-link requests.
-- **Data plane** carries independent logical streams for proxied traffic.
+- **Control plane** owns client identity, Proxy/Forward synchronization,
+  heartbeats, recovery, and data-link requests.
+- **Data plane** carries independent logical streams in either direction.
 - **Proxy runtime** maps public TCP/UDP ports or HTTP domains to authenticated
   client registrations.
+- **Forward runtime** maps client-side TCP/UDP listeners to server-authorized
+  target IP addresses and ports.
 - **Security controls** validate configuration, authenticate connections, and
   enforce source-address policy.
 
@@ -44,15 +45,15 @@ runtime ClientID for resource ownership, while Governed and Managed clients
 must also declare the ClientID bound to their independent Token before Session
 registration.
 
-Shared and Governed clients send their complete desired proxy set as one
-registration operation. Governed declarations are additionally constrained by
-server-owned proxy-type, port, domain, and quota rules. Managed clients receive
-their complete proxy configuration from the server and cannot register a
-replacement set.
+Shared and Governed clients send their complete desired Proxy and Forward sets
+as one configuration operation. Governed declarations are additionally
+constrained by server-owned type, address, port, domain, and quota rules.
+Managed clients receive their complete configuration from the server and
+cannot register a replacement set.
 
 A new Session becomes recoverable only after its mode-specific initial
-configuration succeeds: Shared and Governed require a non-empty proxy
-registration, while Managed requires the initial prepare/activate exchange.
+configuration succeeds: Shared and Governed require at least one Proxy or
+Forward, while Managed requires the initial prepare/activate exchange.
 Initialization failure removes the new Session instead of reserving a recovery
 window.
 
@@ -92,7 +93,7 @@ run before routing for both HTTP and HTTPS.
 
 The HTTP proxy type describes the request semantics carried through the tunnel,
 not an automatically enabled public scheme. Each HTTP proxy explicitly selects
-`http`, `https`, or both with `public_schemes`; unavailable listeners reject the
+`http`, `https`, or both with `public.schemes`; unavailable listeners reject the
 complete registration. Empty or omitted values default to HTTP only.
 
 The local application receives an ordinary HTTP request. It does not implement

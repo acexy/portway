@@ -26,6 +26,27 @@ func TestBrokerAppliesPerClientActiveLinkLimit(t *testing.T) {
 	}
 }
 
+func TestBrokerSeparatesConfiguredProxyAndForwardLinkLimits(t *testing.T) {
+	broker := NewBroker(context.Background())
+	proxyTarget := Target{ClientID: "client-a", MaxActiveLinks: 1}
+	forwardTarget := Target{
+		ClientID: "client-a", MaxActiveLinks: 1, Direction: protocol.LinkDirectionForward,
+	}
+	broker.active["proxy-active"] = &brokerActiveLink{target: proxyTarget}
+	broker.incrementActiveLocked(proxyTarget)
+	if !broker.limitReachedLocked(proxyTarget) {
+		t.Fatal("Proxy configured Link limit was not applied")
+	}
+	if broker.limitReachedLocked(forwardTarget) {
+		t.Fatal("Proxy configured Link usage consumed the Forward configured limit")
+	}
+	broker.active["forward-active"] = &brokerActiveLink{target: forwardTarget}
+	broker.incrementActiveLocked(forwardTarget)
+	if !broker.limitReachedLocked(forwardTarget) {
+		t.Fatal("Forward configured Link limit was not applied")
+	}
+}
+
 func TestBrokerRejectsTicketFromDifferentAuthenticationGeneration(t *testing.T) {
 	broker := NewBroker(context.Background())
 	defer broker.Close()

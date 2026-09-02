@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,5 +87,43 @@ func TestRunRejectsUnknownClientCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unknown command "unknown"`) {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunClientAllowsAtMostOneConfigurationFile(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"run", "client.yaml", "extra.yaml"},
+		{"run", "--config", "client.yaml"},
+	} {
+		var stderr bytes.Buffer
+		exitCode := run(arguments, io.Discard, &stderr)
+		if exitCode != 2 {
+			t.Fatalf("run(%v) exit code = %d, want 2", arguments, exitCode)
+		}
+		if !strings.Contains(stderr.String(), "at most one configuration file is allowed") {
+			t.Fatalf("run(%v) stderr = %q", arguments, stderr.String())
+		}
+	}
+}
+
+func TestRunClientUsesDefaultConfigurationFile(t *testing.T) {
+	path, valid := clientConfigurationPath(nil)
+	if !valid || path != "client.yaml" {
+		t.Fatalf("clientConfigurationPath(nil) = %q, %t", path, valid)
+	}
+
+	workingDirectory := t.TempDir()
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDirectory) })
+
+	exitCode := run([]string{"run"}, io.Discard, io.Discard)
+	if exitCode != 1 {
+		t.Fatalf("run() exit code = %d, want configuration load failure", exitCode)
 	}
 }

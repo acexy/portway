@@ -4,11 +4,6 @@
 # 可选，默认 info。可选值：trace、debug、info、warn、error。
 log_level: info
 
-# 可选运维 HTTP Listener，提供 /healthz、/readyz 和 /metrics；默认空并禁用。
-# 端点不提供应用层认证，应绑定到回环地址或受保护的管理网络。修改后需要重启。
-operations:
-  listen_address: ""
-
 transport:
   # 可选，默认 tcp。可选值：tcp、quic；服务端只启动选中的 Transport。
   type: tcp
@@ -22,99 +17,212 @@ transport:
     # transport.type=quic 时必填；私钥文件应仅允许 Portway 读取。
     key_file: /path/to/server.key
 
-tunnel:
+# TCP 与 QUIC 共用同一不可变认证快照。所有 Token 以及 Governed/Managed ClientID
+# 必须在当前服务端全局唯一。Shared Token 与两个客户端目录作为一个原子快照
+# 热加载。Token 变化只吊销对应认证记录：Shared Token 影响全部 Shared 客户端，
+# Governed/Managed Token 只影响对应 ClientID；其他 Session 保持在线。Managed
+# 配置变化使用在线 Prepare/Activate，不吊销 Session。
+authentication:
+  # 可选。字段存在但为空时，启动时生成 32 字节密码学随机 Token 并只记录一次；
+  # 后续配置扫描复用该有效 Token，不会静默生成新值。服务端重启前应把日志中的
+  # Token 保存到这里，否则重启会生成不同值；配置新的显式值才会轮换。
+  # 配置任一独立客户端目录时，可省略该字段以禁用 Shared 认证。
+  shared_token: ""
+
+  # 可选。目录内每个 *.yaml 定义一个 ClientID、唯一 Token、Proxy/Forward 权限
+  # 边界和资源限制。省略限制字段时使用面向生产的安全默认值，显式值不得超过
+  # 程序硬上限。文件名只是操作者标签，无需匹配 ClientID。Token 或权限变化只
+  # 断开对应 Governed ClientID；客户端重连后重新提交完整 Proxy 和 Forward 集合。
+  # http 权限分别约束 type=http 的 public_schemes 和域名；Listener 与 HTTPS
+  # 证书策略仍由服务端全局配置。相对路径以服务端主配置文件目录为基准。
+  # 完整中文记录见 ./governed/governed-client.yaml。
+  # governed_clients_path: "./governed"
+
+  # 可选。目录内每个 *.yaml 定义一个 ClientID、唯一 Token、可选 Forward 权限
+  # 边界、revision，以及服务端所有的完整 Proxy 和 Forward 配置。每个客户端的
+  # TCP/UDP/HTTP Managed Proxy 合计最多 128 个；所有 Managed 记录之间，TCP
+  # 端口、UDP 端口和 HTTP 域名分别必须全局唯一。Token 变化只断开对应 ClientID；
+  # Managed 配置变化使用在线切换。type=http 显式选择 public_schemes，所选
+  # Listener 必须全局启用；TLS 在服务端终止，本地目标仍提供 HTTP。
+  # 相对路径以服务端主配置文件目录为基准。
+  # 完整中文记录见 ./managed/managed-client.yaml。
+  # managed_clients_path: "./managed"
+
+proxies:
   # 公网 TCP/UDP 监听 IP，默认 0.0.0.0，必须是 IP 地址。
   bind_ip: 0.0.0.0
-  # 可选，默认空并禁用 HTTP；不能与 transport.listen_address 相同。
-  http_listen_address: ""
-  # 可选，默认空并禁用 HTTPS。portwayd 终止 TLS 后固定回源本地 HTTP 服务；
-  # 该地址不能与其他 TCP Listener 冲突。
-  https_listen_address: ""
 
-# 公网 HTTPS SNI 证书集合。启用 HTTPS Listener 时至少配置一项；精确域名优先于
-# 单层通配符，每个声明域名必须被对应证书 SAN 覆盖。缺少或未知 SNI 时拒绝握手。
-# 文件内容、路径和完整列表作为一个快照原子热更新；无效候选保留上一代快照。
-# QUIC Transport 证书与此配置相互独立。
-https:
-  certificates:
-    - domains:
-        - app.example.com
-        - "*.apps.example.com"
-      cert_file: /path/to/app-example-com.crt
-      # 私钥文件应仅允许 Portway 读取。
-      key_file: /path/to/app-example-com.key
+  # 可选，由服务端拥有的 TCP/UDP 镜像组。仅 Governed 和 Managed ClientID 可加入。
+  # 所有在线成员接收相同 Visitor 输入，只有 primary_client_id 可以回复。Primary
+  # 缺席时组保持只接收且不自动选举。组和成员支持热更新，只影响新 TCP 连接或
+  # UDP Association。
+  # mirror:
+  #   governed:
+  #     - name: telemetry
+  #       type: tcp
+  #       public:
+  #         port_ranges:
+  #           - start: 2233
+  #             end: 2233
+  #           - start: 2240
+  #             end: 2249
+  #       primary_client_id: governed-primary
+  #       client_ids:
+  #         - governed-primary
+  #         - governed-mirror
+  #   managed:
+  #     - name: discovery
+  #       type: udp
+  #       public:
+  #         port_ranges:
+  #           - start: 5353
+  #             end: 5353
+  #       primary_client_id: managed-primary
+  #       client_ids:
+  #         - managed-primary
+  #         - managed-mirror
 
-    - domains:
-        - service.example.net
-      cert_file: /path/to/service-example-net.crt
-      key_file: /path/to/service-example-net.key
+  # HTTP 安全、容量和业务超时，由公网 HTTP 与 TLS 终止后的 HTTPS 请求共享；
+  # 即使两个 Listener 均未启用也会校验。当前修改这些字段需要重启 portwayd。
+  http:
+    # 可选，默认空并禁用 HTTP；不能与 Transport、HTTPS 或运维 Listener 地址重复。
+    listen_address: ""
+    # 请求头读取超时，默认 0s 表示不限制；非零最大 60s。
+    read_header_timeout: 0s
+    # 完整请求体读取超时，默认 0s 表示不限制；非零最大 10m。
+    request_body_timeout: 0s
+    # 公网 HTTP/HTTPS Keep-Alive 空闲超时，默认 0s 表示不限制；非零最大 10m。
+    public_idle_timeout: 0s
+    # 优雅关闭：默认 30s，范围 (0s, 2m]。
+    graceful_shutdown_timeout: 30s
+    # 默认 0s，表示 Portway 不设置空闲超时；非零最大 10m。
+    idle_connection_timeout: 0s
+    # 默认 0s，允许流式响应；非零最大 10m。
+    response_header_timeout: 0s
+    # HTTP Upgrade 后的双向无活动超时；成功读写都会刷新。默认 0s；非零最大 24h。
+    upgrade_idle_timeout: 0s
+    # 请求体最大字节数，默认 0 表示不限制；启用时硬上限 1073741824（1 GiB）。
+    max_request_body_bytes: 0
 
-# HTTP 安全、容量和业务超时，由公网 HTTP 与 TLS 终止后的 HTTPS 请求共享；
-# 即使两个 Listener 均未启用也会校验。当前修改这些字段需要重启 portwayd。
-http:
-  # 请求头读取超时，默认 0s 表示不限制；非零最大 60s。
-  read_header_timeout: 0s
-  # 完整请求体读取超时，默认 0s 表示不限制；非零最大 10m。
-  request_body_timeout: 0s
-  # 公网 HTTP/HTTPS Keep-Alive 空闲超时，默认 0s 表示不限制；非零最大 10m。
-  public_idle_timeout: 0s
-  # 优雅关闭：默认 30s，范围 (0s, 2m]。
-  graceful_shutdown_timeout: 30s
-  # 默认 0s，表示 Portway 不设置空闲超时；非零最大 10m。
-  idle_connection_timeout: 0s
-  # 默认 0s，允许流式响应；非零最大 10m。
-  response_header_timeout: 0s
-  # HTTP Upgrade 后的双向无活动超时；成功读写都会刷新。默认 0s；非零最大 24h。
-  upgrade_idle_timeout: 0s
-  # 请求体最大字节数，默认 0 表示不限制；启用时硬上限 1073741824（1 GiB）。
-  max_request_body_bytes: 0
+    # 以下为默认值；必须大于 0 且不超过注释中的硬上限。
+    max_header_bytes: 65536                    # 硬上限 1048576 字节
+    max_concurrent_requests: 4096              # 硬上限 16384
+    max_concurrent_requests_per_client: 512    # 硬上限 2048
+    max_concurrent_requests_per_domain: 256    # 硬上限 1024
+    max_idle_connections: 1024                 # 全域名活动+空闲后端 Link 上限；硬上限 4096
+    max_idle_connections_per_domain: 32        # 单域名空闲池上限；硬上限 128
+    max_upgrade_connections: 1024              # 硬上限 4096
+    max_upgrade_connections_per_client: 128    # 硬上限 512
+    max_upgrade_connections_per_domain: 64     # 硬上限 256
+    max_concurrent_http2_streams: 128          # 硬上限 256
 
-  # 以下为默认值；必须大于 0 且不超过注释中的硬上限。
-  max_header_bytes: 65536                    # 硬上限 1048576 字节
-  max_concurrent_requests: 4096              # 硬上限 16384
-  max_concurrent_requests_per_client: 512    # 硬上限 2048
-  max_concurrent_requests_per_domain: 256    # 硬上限 1024
-  max_idle_connections: 1024                 # 全域名活动+空闲后端 Link 上限；硬上限 4096
-  max_idle_connections_per_domain: 32        # 单域名空闲池上限；硬上限 128
-  max_upgrade_connections: 1024              # 硬上限 4096
-  max_upgrade_connections_per_client: 128    # 硬上限 512
-  max_upgrade_connections_per_domain: 64     # 硬上限 256
-  max_concurrent_http2_streams: 128          # 硬上限 256
+  # 公网 HTTPS SNI 证书集合。启用 HTTPS Listener 时至少配置一项；精确域名优先于
+  # 单层通配符，每个声明域名必须被对应证书 SAN 覆盖。缺少或未知 SNI 时拒绝握手。
+  # 文件内容、路径和完整列表作为一个快照原子热更新；无效候选保留上一代快照。
+  # QUIC Transport 证书与此配置相互独立。
+  https:
+    # 可选，默认空并禁用 HTTPS；不能与 Transport、HTTP 或运维 Listener 地址重复。
+    listen_address: ""
+    certificates:
+      - domains:
+          - app.example.com
+          - "*.apps.example.com"
+        cert_file: /path/to/app-example-com.crt
+        # 私钥文件应仅允许 Portway 读取。
+        key_file: /path/to/app-example-com.key
 
-# UDP Association、队列、速率和内存安全限制。
-udp:
-  # 默认 60s，范围 5s-10m。
-  association_idle_timeout: 60s
-  # Data Link 帧写入超时，默认 3s，范围 100ms-30s。
-  link_write_timeout: 3s
-  # UDP Payload 最大值，默认 8192 字节，协议硬上限 65507 字节。
-  # 启动时会拒绝超过已探测平台 UDP Socket 上限的值。
-  max_datagram_size: 8192
+      - domains:
+          - service.example.net
+        cert_file: /path/to/service-example-net.crt
+        key_file: /path/to/service-example-net.key
 
-  # Association 容量；硬上限依次为 4096、512、256、1024。
-  max_associations: 4096
-  max_associations_per_client: 512
-  max_associations_per_proxy: 256
-  max_associations_per_source_ip: 64
+  # UDP Association、队列、速率和内存安全限制。
+  udp:
+    # 默认 60s，范围 5s-10m。
+    association_idle_timeout: 60s
+    # Data Link 帧写入超时，默认 3s，范围 100ms-30s。
+    link_write_timeout: 3s
+    # UDP Payload 最大值，默认 8192 字节，协议硬上限 65507 字节。
+    # 启动时会拒绝超过已探测平台 UDP Socket 上限的值。
+    max_datagram_size: 8192
 
-  # Pending Association 容量；硬上限依次为 1024、128、64。
-  max_pending_associations: 1024
-  max_pending_associations_per_client: 128
-  max_pending_associations_per_proxy: 64
+    # Association 容量；硬上限依次为 4096、512、256、1024。
+    max_associations: 4096
+    max_associations_per_client: 512
+    max_associations_per_proxy: 256
+    max_associations_per_source_ip: 64
 
-  # 每秒新建速率；硬上限依次为 10000、2000、1000。
-  max_new_associations_per_second: 1000
-  max_new_associations_per_second_per_client: 200
-  max_new_associations_per_second_per_proxy: 100
+    # Pending Association 容量；硬上限依次为 1024、128、64。
+    max_pending_associations: 1024
+    max_pending_associations_per_client: 128
+    max_pending_associations_per_proxy: 64
 
-  # 有界队列；硬上限为每 Association 256 个数据报、4 MiB及全局 512 MiB。
-  # 队列满时丢弃最新数据报，不能阻塞公网 UDP Socket 读取循环。
-  max_queued_datagrams_per_association: 32
-  max_queued_bytes_per_association: 262144
-  max_queued_bytes: 67108864
+    # 每秒新建速率；硬上限依次为 10000、2000、1000。
+    max_new_associations_per_second: 1000
+    max_new_associations_per_second_per_client: 200
+    max_new_associations_per_second_per_proxy: 100
+
+    # 有界队列；硬上限为每 Association 256 个数据报、4 MiB及全局 512 MiB。
+    # 队列满时丢弃最新数据报，不能阻塞公网 UDP Socket 读取循环。
+    max_queued_datagrams_per_association: 32
+    max_queued_bytes_per_association: 262144
+    max_queued_bytes: 67108864
+
+# Forward 默认关闭；开启时规则必填，并构成 Shared、Governed、Managed 均无法
+# 绕过的服务端全局 Allowlist。每条 IP 规则只绑定自身的 TCP/UDP 端口范围，目标
+# IP 和端口必须命中同一条规则。同一规则集合内 CIDR 不得重叠或相互包含；精确
+# IPv4/IPv6 地址分别使用 /32、/128；目标不支持主机名。
+# 所有 forwards 字段和客户端 Forward 权限均可作为完整候选快照热加载。成功发布
+# 后自动断开受影响的 Forward 连接；非法候选保留上一代快照；无关 Proxy 不受影响。
+# 全局关闭时，Governed 权限和 Managed 期望配置可以原样保留但暂不生效；在线
+# 客户端只关闭 Forward 监听和连接，不退出、不影响 Proxy。重新开启后，在线
+# 客户端按最新全局规则自动恢复仍获授权的 Forward。
+forwards:
+  # 可选，默认 false。关闭时可以保留全局规则及客户端 Forward 配置，之后热加载
+  # 开启时自动按最新规则恢复。
+  enabled: false
+  # 可选。服务端控制的 UDP Forward 生命周期与容量限制；热加载后随 UDP
+  # Forward Binding 下发给已认证客户端。默认值与硬上限同 proxies.udp。
+  udp:
+    association_idle_timeout: 60s
+    link_write_timeout: 3s
+    max_datagram_size: 8192
+    max_associations: 4096
+    max_associations_per_client: 512
+    max_associations_per_proxy: 256
+    max_associations_per_source_ip: 64
+    max_pending_associations: 1024
+    max_pending_associations_per_client: 128
+    max_pending_associations_per_proxy: 64
+    max_new_associations_per_second: 1000
+    max_new_associations_per_second_per_client: 200
+    max_new_associations_per_second_per_proxy: 100
+    max_queued_datagrams_per_association: 32
+    max_queued_bytes_per_association: 262144
+    max_queued_bytes: 67108864
+  # 配置 forwards 段时必须存在且非空。
+  rules:
+    - ip_range: 10.0.0.0/8
+      tcp:
+        # 端口闭区间，范围 1-65535；必须排序且不得重叠。
+        port_ranges:
+          - start: 22
+            end: 22
+          - start: 5432
+            end: 5432
+      udp:
+        port_ranges:
+          - start: 53
+            end: 53
+    - ip_range: 192.168.10.0/24
+      tcp:
+        port_ranges:
+          - start: 8000
+            end: 8999
 
 security:
-  # IPv4/IPv6 拒绝列表文件，默认空并禁用。每个非注释行是 IP 或 CIDR。
+  # IPv4/IPv6 拒绝列表文件，默认空并禁用。相对路径以服务端主配置文件目录为
+  # 基准；配置后文件必须在启动时存在且有效。每个非注释行是 IP 或 CIDR。
   ip_deny_file: ""
   # HTTP/HTTPS 共用的可信 HTTP 层来源 IP Header。默认空，此时根据 TCP socket
   # peer IP 过滤，HTTPS 在 TLS 握手前完成过滤。配置后，两种入口都改用该 Header
@@ -123,28 +231,8 @@ security:
   # 验证的来源链；客户端可以绕过可信上游时禁止启用。
   http_client_ip_header: ""
 
-# TCP 与 QUIC 共用同一认证快照。所有 Token 以及 Governed/Managed ClientID
-# 必须在当前服务端全局唯一。Shared Token 与两个客户端目录作为一个原子快照
-# 热加载。新增、删除、替换或重新分配任一 Token 后，服务端发布新快照并断开
-# 全部活动及恢复窗口内的客户端；凭证未变化的客户端可使用原 Token 重连。
-# 仅 Governed 策略变化时仍选择性吊销对应客户端，仅 Managed 配置变化时仍在线切换。
-authentication:
-  # 可选。字段存在但为空时启动时生成 32 字节 Token 并只记录一次；
-  # 后续配置扫描复用该有效 Token，不会静默生成新值；配置新的显式值才会轮换。
-  # 省略该字段可在配置独立客户端目录时禁用 Shared。
-  shared_token: ""
-
-  # 可选。目录内每个 *.yaml 定义独立 Governed 客户端。
-  # http 权限分别约束 type=http 的 public_schemes 和域名；Listener 与 HTTPS
-  # 证书策略仍由服务端全局配置。
-  # 目录内任一 Token 变化都会触发上述全量断连。
-  # 文件名无需匹配 ClientID；完整中文记录见 ./governed/governed-client.yaml。
-  # governed_clients_path: "./governed"
-
-  # 可选。目录内每个 *.yaml 定义独立 Managed 客户端及服务端锁定配置。
-  # 每客户端最多 128 个代理；所有记录的同协议端口和 HTTP 域名必须唯一。
-  # 目录内任一 Token 变化都会触发上述全量断连；仅代理配置变化仍在线切换。
-  # Managed type=http 显式选择 public_schemes，所选 Listener 必须全局启用；
-  # TLS 在服务端终止，本地目标仍提供 HTTP。
-  # 完整中文记录见 ./managed/managed-client.yaml。
-  # managed_clients_path: "./managed"
+# 可选运维 HTTP Listener，提供 /healthz、/readyz 和 /metrics；默认空并禁用。
+# 端点不提供应用层认证，应绑定到回环地址或受保护的管理网络。地址不能与
+# Transport、HTTP 或 HTTPS Listener 重复。修改后需要重启 portwayd。
+operations:
+  listen_address: ""

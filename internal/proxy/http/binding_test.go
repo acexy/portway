@@ -55,7 +55,7 @@ func TestReverseProxyReturnsGatewayTimeoutForUpstreamTimeout(t *testing.T) {
 	broker := link.NewBroker(ctx)
 	binding := NewBinding(
 		ctx,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 		"binding-one",
 		"app.example.com",
 		broker,
@@ -86,7 +86,7 @@ func TestReverseProxyReturnsGatewayTimeoutForUpstreamTimeout(t *testing.T) {
 }
 
 func TestReverseProxyRejectsOversizedRequestBody(t *testing.T) {
-	configuration := config.DefaultServer().HTTP
+	configuration := config.DefaultServer().Proxies.HTTP.HTTPConfig
 	configuration.MaxRequestBodyBytes = 4
 	binding, cleanup := newTestBinding(t, configuration)
 	defer cleanup()
@@ -106,7 +106,7 @@ func TestReverseProxyRejectsOversizedRequestBody(t *testing.T) {
 }
 
 func TestReverseProxyTimesOutRequestBody(t *testing.T) {
-	configuration := config.DefaultServer().HTTP
+	configuration := config.DefaultServer().Proxies.HTTP.HTTPConfig
 	configuration.RequestBodyTimeout = 20 * time.Millisecond
 	binding, cleanup := newTestBinding(t, configuration)
 	defer cleanup()
@@ -145,7 +145,7 @@ func TestReverseProxyForwardsValidatedClientIPChain(t *testing.T) {
 	broker := link.NewBroker(ctx)
 	binding := NewBinding(
 		ctx,
-		config.DefaultServer().HTTP,
+		config.DefaultServer().Proxies.HTTP.HTTPConfig,
 		"binding-one",
 		"app.example.com",
 		broker,

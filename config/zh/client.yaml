@@ -5,11 +5,6 @@
 # 可选。最低日志级别，默认 info。可选值：trace、debug、info、warn、error。
 log_level: info
 
-# Governed/Managed 必填，必须匹配服务端 Token 记录绑定的 ClientID。
-# Shared 可选；留空时为当前进程生成随机 ID。长度 1-64，可使用 ASCII
-# 字母、数字、点、下划线和连字符。
-client_id: ""
-
 transport:
   # 可选。TCP 与 QUIC 共用的服务端网络地址，可填写域名或 IP，默认
   # 127.0.0.1:7000；该地址与 QUIC 证书身份相互独立。
@@ -27,13 +22,16 @@ transport:
     ca_file: ""
 
 authentication:
+  # Governed/Managed 必填；Shared 可选，留空时生成进程级随机 ID。
+  client_id: ""
   # 必填。服务端根据全局唯一 Token 自动选择 Shared、Governed 或 Managed。
   # 必须包含大于 32 个 UTF-8 字符；推荐使用自动生成的 256-bit 随机值，
   # 不要使用人工构造字符串。禁止提交真实 Token。
   token: PORTWAY_TOKEN_REQUIRED
 
-# Shared/Governed 必须至少配置一项；Managed 必须留空，由服务端下发并锁定。
-# 同一 ClientID 下所有代理名称必须唯一。
+# Shared/Governed 自行维护完整 Proxy 集合；`proxies` 与 `forwards` 两个集合合计
+# 至少配置一项。Managed 必须将两个集合都留空，由服务端下发并锁定。
+# 同一 ClientID 下所有 Proxy 和 Forward 名称必须全局唯一。
 proxies:
   - name: ssh
     # 必填。表示 portwayd 与 portway 之间承载的端到端代理语义，而非公网入口
@@ -41,11 +39,11 @@ proxies:
     # 在 portwayd 终止，因此不存在 https 代理类型。
     type: tcp
     # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
-    local_ip: 127.0.0.1
-    # 必填，本地目标端口，范围 1-65535。
-    local_port: 22
-    # TCP/UDP 必填，HTTP 禁止配置；范围 1-65535。
-    remote_port: 22022
+    local:
+      ip: 127.0.0.1
+      port: 22
+    public:
+      port: 22022
 
   # 公网 HTTP/HTTPS 示例：public_schemes 显式选择允许的公网 Listener；任一声明
   # 的入口未在 portwayd 启用时，整批代理注册都会被拒绝。HTTPS 在 portwayd
@@ -54,18 +52,42 @@ proxies:
   # 服务端至少启用一个 HTTP/HTTPS Listener；使用 HTTPS 时证书映射还必须覆盖该域名。
   - name: web
     type: http
-    # type=http 时可选；留空或省略默认 [http]。显式值可为 http、https 且不得
-    # 重复。TCP/UDP 禁止配置。
-    public_schemes:
-      - https
-    # 必填：规范化小写 DNS 域名，不含协议、端口、路径、通配符或尾点。
-    domain: app.example.com
-    local_ip: 127.0.0.1
-    local_port: 8080
+    local:
+      ip: 127.0.0.1
+      port: 8080
+    public:
+      # type=http 时可选；留空或省略默认 [http]。显式值可为 http、https 且不得
+      # 重复。TCP/UDP 禁止配置。
+      schemes:
+        - https
+      domain: app.example.com
 
   # UDP 示例：
   - name: dns
     type: udp
-    local_ip: 127.0.0.1
-    local_port: 53
-    remote_port: 5353
+    local:
+      ip: 127.0.0.1
+      port: 53
+    public:
+      port: 5353
+
+# Shared/Governed 自行维护完整 Forward 集合；`proxies` 与 `forwards` 两个集合
+# 合计至少配置一项。Managed 必须将两个集合都留空，由服务端下发并锁定。
+# Forward 在 portway 客户端接收流量，经认证隧道访问 portwayd 所在网络中的
+# IP:端口。Shared/Governed 客户端自行维护完整集合；Managed 客户端禁止本地
+# 配置，由服务端下发。同一客户端的 Proxy 和 Forward 名称必须全局唯一。
+# 客户端 YAML 仅在进程启动时读取；修改 Forward 或其他本地配置后必须重启。
+forwards:
+  - name: database
+    # 必填。可选值：tcp、udp。
+    type: tcp
+    # 必填。客户端明确监听 IP，不接受主机名。除非需要供其他机器访问，
+    # 否则应绑定回环地址。
+    listen:
+      ip: 127.0.0.1
+      port: 15432
+    # 必填。portwayd 所在网络可达的明确目标 IP，不接受主机名。服务端会按
+    # 全局 Forward Allowlist 和 Governed 客户端权限共同审批。
+    target:
+      ip: 10.20.1.15
+      port: 5432

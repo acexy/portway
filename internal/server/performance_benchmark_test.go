@@ -49,14 +49,12 @@ func BenchmarkTCPLinkEstablishmentEndToEnd(b *testing.B) {
 
 			proxyAddress := reserveTCPAddress(b)
 			serverConfiguration, clientConfiguration := benchmarkTransportConfigurations(b, transportType)
-			serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-			clientConfiguration.ClientID = "benchmark-link-" + string(transportType)
+			serverConfiguration.Proxies.BindIP = "127.0.0.1"
+			clientConfiguration.Authentication.ClientID = "benchmark-link-" + string(transportType)
 			clientConfiguration.Proxies = []config.ProxyConfig{{
-				Name:       "echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoListener.Addr().(*net.TCPAddr).Port),
-				RemotePort: uint16(proxyAddress.Port),
+				Name: "echo", Type: "tcp",
+				Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoListener.Addr().(*net.TCPAddr).Port)},
+				Public: config.ProxyPublicConfig{Port: uint16(proxyAddress.Port)},
 			}}
 			startBenchmarkServices(b, serverConfiguration, clientConfiguration)
 
@@ -140,14 +138,12 @@ func BenchmarkTCPProxyEndToEnd(b *testing.B) {
 
 			proxyAddress := reserveTCPAddress(b)
 			serverConfiguration, clientConfiguration := benchmarkTransportConfigurations(b, transportType)
-			serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-			clientConfiguration.ClientID = "benchmark-tcp-" + string(transportType)
+			serverConfiguration.Proxies.BindIP = "127.0.0.1"
+			clientConfiguration.Authentication.ClientID = "benchmark-tcp-" + string(transportType)
 			clientConfiguration.Proxies = []config.ProxyConfig{{
-				Name:       "echo",
-				Type:       "tcp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoListener.Addr().(*net.TCPAddr).Port),
-				RemotePort: uint16(proxyAddress.Port),
+				Name: "echo", Type: "tcp",
+				Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoListener.Addr().(*net.TCPAddr).Port)},
+				Public: config.ProxyPublicConfig{Port: uint16(proxyAddress.Port)},
 			}}
 			startBenchmarkServices(b, serverConfiguration, clientConfiguration)
 
@@ -191,14 +187,12 @@ func BenchmarkUDPProxyEndToEnd(b *testing.B) {
 
 			proxyAddress := reserveUDPAddress(b)
 			serverConfiguration, clientConfiguration := benchmarkTransportConfigurations(b, transportType)
-			serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-			clientConfiguration.ClientID = "benchmark-udp-" + string(transportType)
+			serverConfiguration.Proxies.BindIP = "127.0.0.1"
+			clientConfiguration.Authentication.ClientID = "benchmark-udp-" + string(transportType)
 			clientConfiguration.Proxies = []config.ProxyConfig{{
-				Name:       "echo",
-				Type:       "udp",
-				LocalIP:    "127.0.0.1",
-				LocalPort:  uint16(echoConnection.LocalAddr().(*net.UDPAddr).Port),
-				RemotePort: uint16(proxyAddress.Port),
+				Name: "echo", Type: "udp",
+				Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(echoConnection.LocalAddr().(*net.UDPAddr).Port)},
+				Public: config.ProxyPublicConfig{Port: uint16(proxyAddress.Port)},
 			}}
 			startBenchmarkServices(b, serverConfiguration, clientConfiguration)
 
@@ -247,13 +241,14 @@ func BenchmarkHTTPProxyEndToEnd(b *testing.B) {
 			backendAddress := backend.Listener.Addr().(*net.TCPAddr)
 			httpAddress := reserveTCPAddress(b)
 			serverConfiguration, clientConfiguration := benchmarkTransportConfigurations(b, transportType)
-			serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-			serverConfiguration.Tunnel.HTTPListenAddress = httpAddress.String()
-			clientConfiguration.ClientID = "benchmark-http-" + string(transportType)
+			serverConfiguration.Proxies.BindIP = "127.0.0.1"
+			serverConfiguration.Proxies.HTTP.ListenAddress = httpAddress.String()
+			clientConfiguration.Authentication.ClientID = "benchmark-http-" + string(transportType)
 			clientConfiguration.Proxies = []config.ProxyConfig{{
-				Name: "web", Type: "http", Domain: "benchmark.example.com",
-				LocalIP: "127.0.0.1", LocalPort: uint16(backendAddress.Port),
-				PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP},
+				Name: "web", Type: "http",
+				Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(backendAddress.Port)},
+				Public: config.ProxyPublicConfig{Domain: "benchmark.example.com",
+					Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTP}},
 			}}
 			startBenchmarkServices(b, serverConfiguration, clientConfiguration)
 			benchmarkHTTPPayloads(b, "http://"+httpAddress.String(), "benchmark.example.com", &http.Client{
@@ -273,16 +268,17 @@ func BenchmarkHTTPSProxyEndToEnd(b *testing.B) {
 	httpsAddress := reserveTCPAddress(b)
 	certificateFile, keyFile := writeServerCertificateForDNSNames(b, "benchmark.example.com")
 	serverConfiguration, clientConfiguration := benchmarkTransportConfigurations(b, transport.TypeTCP)
-	serverConfiguration.Tunnel.BindIP = "127.0.0.1"
-	serverConfiguration.Tunnel.HTTPSListenAddress = httpsAddress.String()
-	serverConfiguration.HTTPS.Certificates = []config.HTTPSCertificateConfig{{
+	serverConfiguration.Proxies.BindIP = "127.0.0.1"
+	serverConfiguration.Proxies.HTTPS.ListenAddress = httpsAddress.String()
+	serverConfiguration.Proxies.HTTPS.Certificates = []config.HTTPSCertificateConfig{{
 		Domains: []string{"benchmark.example.com"}, CertFile: certificateFile, KeyFile: keyFile,
 	}}
-	clientConfiguration.ClientID = "benchmark-https"
+	clientConfiguration.Authentication.ClientID = "benchmark-https"
 	clientConfiguration.Proxies = []config.ProxyConfig{{
-		Name: "web", Type: "http", Domain: "benchmark.example.com",
-		LocalIP: "127.0.0.1", LocalPort: uint16(backendAddress.Port),
-		PublicSchemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS},
+		Name: "web", Type: "http",
+		Local: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(backendAddress.Port)},
+		Public: config.ProxyPublicConfig{Domain: "benchmark.example.com",
+			Schemes: []protocol.HTTPPublicScheme{protocol.HTTPPublicSchemeHTTPS}},
 	}}
 	startBenchmarkServices(b, serverConfiguration, clientConfiguration)
 	certificatePEM, err := os.ReadFile(certificateFile)

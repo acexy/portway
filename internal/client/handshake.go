@@ -69,13 +69,15 @@ func (s *Service) runControlSession(
 	)
 
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
-		ClientID:        s.configuration.ClientID,
+		ClientID:        s.configuration.Authentication.ClientID,
 		ResumeSessionID: resumeSessionID,
 		Capabilities: []protocol.Capability{
 			protocol.CapabilityTCP,
 			protocol.CapabilityUDP,
 			protocol.CapabilityHTTP,
 			protocol.CapabilityJSONControl,
+			protocol.CapabilityTCPForward,
+			protocol.CapabilityUDPForward,
 		},
 	}); err != nil {
 		return "", false, err
@@ -107,11 +109,11 @@ func (s *Service) runControlSession(
 	}
 	if serverHello.ManagementMode == "" ||
 		serverHello.ManagementMode == protocol.ManagementModeShared {
-		if serverHello.ClientID != s.configuration.ClientID {
+		if serverHello.ClientID != s.configuration.Authentication.ClientID {
 			return "", false, fmt.Errorf(
 				"%w: server returned unexpected client ID: expected %q, got %q",
 				transport.ErrProtocol,
-				s.configuration.ClientID,
+				s.configuration.Authentication.ClientID,
 				serverHello.ClientID,
 			)
 		}
@@ -122,7 +124,7 @@ func (s *Service) runControlSession(
 				transport.ErrProtocol,
 			)
 		}
-		if serverHello.ClientID != s.configuration.ClientID {
+		if serverHello.ClientID != s.configuration.Authentication.ClientID {
 			return "", false, fmt.Errorf(
 				"%w: server returned a client ID that does not match the configured identity",
 				transport.ErrProtocol,
@@ -146,27 +148,62 @@ func (s *Service) runControlSession(
 	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 		return "", false, fmt.Errorf("set proxy registration deadline: %w", err)
 	}
+	var forwardRuntime *forwardManager
 	switch serverHello.ManagementMode {
 	case "", protocol.ManagementModeShared, protocol.ManagementModeGoverned:
 		if err := validateLocalProxiesForManagementMode(
 			serverHello.ManagementMode,
 			len(s.configuration.Proxies),
+			len(s.configuration.Forwards),
 		); err != nil {
 			return "", false, err
 		}
-		if err := s.syncProxies(connection, writer); err != nil {
+		if err := validateForwardCapabilities(
+			s.configuration.Forwards,
+			serverHello.Capabilities,
+		); err != nil {
 			return "", false, err
+		}
+		result, err := s.syncConfiguration(connection, writer)
+		if err != nil {
+			return "", false, err
+		}
+		if len(s.configuration.Forwards) != 0 {
+			forwardRuntime, err = newForwardManager(
+				ctx,
+				s.logger,
+				s.runtimeIdentity(),
+				serverHello.SessionID,
+				writer,
+				transportSession,
+				s.runtimeForwardSnapshot(),
+			)
+			if err != nil {
+				return "", false, transport.Permanent(err)
+			}
+			defer func() { forwardRuntime.close() }()
+			if err := forwardRuntime.applyBindings(result.Forwards); err != nil {
+				return "", false, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
+			}
+			if err := forwardRuntime.start(); err != nil {
+				return "", false, transport.Permanent(err)
+			}
 		}
 	case protocol.ManagementModeManaged:
 		if err := validateLocalProxiesForManagementMode(
 			serverHello.ManagementMode,
 			len(s.configuration.Proxies),
+			len(s.configuration.Forwards),
 		); err != nil {
 			return "", false, err
 		}
-		if err := s.receiveManagedConfiguration(connection, writer); err != nil {
+		forwardRuntime, err = s.receiveManagedConfiguration(
+			ctx, connection, writer, serverHello.ClientID, serverHello.SessionID, transportSession,
+		)
+		if err != nil {
 			return "", false, err
 		}
+		defer func() { forwardRuntime.close() }()
 	default:
 		return "", false, fmt.Errorf(
 			"%w: server returned unsupported management mode %q",
@@ -196,18 +233,47 @@ func (s *Service) runControlSession(
 		writer,
 		transportSession,
 		serverHello.ManagementMode,
+		forwardRuntime,
 	)
 }
 
-func validateLocalProxiesForManagementMode(mode protocol.ManagementMode, proxyCount int) error {
+func validateLocalProxiesForManagementMode(
+	mode protocol.ManagementMode,
+	proxyCount int,
+	forwardCounts ...int,
+) error {
+	forwardCount := 0
+	if len(forwardCounts) != 0 {
+		forwardCount = forwardCounts[0]
+	}
 	switch mode {
 	case "", protocol.ManagementModeShared, protocol.ManagementModeGoverned:
-		if proxyCount == 0 {
+		if proxyCount == 0 && forwardCount == 0 {
 			return transport.Permanent(errClientDeclaredProxiesRequired)
 		}
 	case protocol.ManagementModeManaged:
-		if proxyCount != 0 {
+		if proxyCount != 0 || forwardCount != 0 {
 			return transport.Permanent(errManagedLocalProxies)
+		}
+	}
+	return nil
+}
+
+func validateForwardCapabilities(
+	forwards []config.ForwardConfig,
+	capabilities []protocol.Capability,
+) error {
+	for _, forward := range forwards {
+		required := protocol.CapabilityTCPForward
+		if forward.Type == protocol.ForwardTypeUDP {
+			required = protocol.CapabilityUDPForward
+		}
+		if !coll.SliceContains(capabilities, required) {
+			return transport.Permanent(fmt.Errorf(
+				"server did not negotiate %s for Forward %q",
+				required,
+				forward.Name,
+			))
 		}
 	}
 	return nil

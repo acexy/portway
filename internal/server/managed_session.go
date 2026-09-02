@@ -8,6 +8,7 @@ import (
 
 	"github.com/acexy/golang-toolkit/util/coll"
 
+	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
@@ -20,6 +21,7 @@ func (s *Service) applyManagedConfiguration(
 	sessionID string,
 	writer *control.Writer,
 	clientConfiguration config.ManagedClientConfig,
+	authenticationContext authentication.Context,
 ) error {
 	preparation, declarations, err := managedConfigurationPayload(clientConfiguration)
 	if err != nil {
@@ -31,6 +33,7 @@ func (s *Service) applyManagedConfiguration(
 		sessionID,
 		preparation,
 		declarations,
+		authenticationContext,
 		initialManagedExchange{connection: connection, writer: writer},
 		false,
 	)
@@ -63,13 +66,19 @@ func (s *Service) registerManagedSession(
 	sessionID string,
 	connection net.Conn,
 	writer *control.Writer,
+	authenticationContexts ...authentication.Context,
 ) {
+	authenticationContext := authentication.Context{Mode: authentication.ModeManaged, ClientID: clientID}
+	if len(authenticationContexts) != 0 {
+		authenticationContext = authenticationContexts[0]
+	}
 	s.managed.register(clientID, &managedSession{
-		sessionID:  sessionID,
-		connection: connection,
-		writer:     writer,
-		prepared:   make(chan protocol.ManagedConfigStatus, 1),
-		applied:    make(chan protocol.ManagedConfigStatus, 1),
+		sessionID:      sessionID,
+		connection:     connection,
+		writer:         writer,
+		prepared:       make(chan protocol.ManagedConfigStatus, 1),
+		applied:        make(chan protocol.ManagedConfigStatus, 1),
+		authentication: authenticationContext,
 	})
 }
 
@@ -88,18 +97,18 @@ func (s *Service) publishManagedStatus(
 
 func managedConfigurationPayload(
 	clientConfiguration config.ManagedClientConfig,
-) (protocol.ManagedConfigPrepare, protocol.SyncProxies, error) {
+) (protocol.ManagedConfigPrepare, protocol.SyncConfiguration, error) {
 	managedProxies := coll.SliceCollect(clientConfiguration.Configuration.Proxies, func(proxyConfiguration config.ProxyConfig) protocol.ManagedProxy {
 		return protocol.ManagedProxy{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
-			LocalIP:    proxyConfiguration.LocalIP,
-			LocalPort:  proxyConfiguration.LocalPort,
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			LocalIP:    proxyConfiguration.Local.IP,
+			LocalPort:  proxyConfiguration.Local.Port,
+			RemotePort: proxyConfiguration.Public.Port,
+			Domain:     proxyConfiguration.Public.Domain,
 			PublicSchemes: append(
 				[]protocol.HTTPPublicScheme(nil),
-				proxyConfiguration.PublicSchemes...,
+				proxyConfiguration.Public.Schemes...,
 			),
 		}
 	})
@@ -107,29 +116,46 @@ func managedConfigurationPayload(
 		return protocol.ProxyDeclaration{
 			Name:       proxyConfiguration.Name,
 			Type:       proxyConfiguration.Type,
-			RemotePort: proxyConfiguration.RemotePort,
-			Domain:     proxyConfiguration.Domain,
+			RemotePort: proxyConfiguration.Public.Port,
+			Domain:     proxyConfiguration.Public.Domain,
 			PublicSchemes: append(
 				[]protocol.HTTPPublicScheme(nil),
-				proxyConfiguration.PublicSchemes...,
+				proxyConfiguration.Public.Schemes...,
 			),
 		}
+	})
+	managedForwards := coll.SliceCollect(clientConfiguration.Configuration.Forwards, func(forward config.ForwardConfig) protocol.ManagedForward {
+		return protocol.ManagedForward{
+			Name: forward.Name, Type: forward.Type,
+			ListenIP: forward.Listen.IP, ListenPort: forward.Listen.Port,
+			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port,
+		}
+	})
+	forwardDeclarations := coll.SliceCollect(clientConfiguration.Configuration.Forwards, func(forward config.ForwardConfig) protocol.ForwardDeclaration {
+		return protocol.ForwardDeclaration{Name: forward.Name, Type: forward.Type,
+			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port}
 	})
 	if managedProxies == nil {
 		managedProxies = []protocol.ManagedProxy{}
 		declarations = []protocol.ProxyDeclaration{}
 	}
-	digest, err := protocol.ManagedConfigurationDigest(managedProxies)
+	if managedForwards == nil {
+		managedForwards = []protocol.ManagedForward{}
+		forwardDeclarations = []protocol.ForwardDeclaration{}
+	}
+	digest, err := protocol.ManagedConfigurationDigest(managedProxies, managedForwards)
 	if err != nil {
-		return protocol.ManagedConfigPrepare{}, protocol.SyncProxies{}, err
+		return protocol.ManagedConfigPrepare{}, protocol.SyncConfiguration{}, err
 	}
 	return protocol.ManagedConfigPrepare{
 			Revision: clientConfiguration.Configuration.Revision,
 			Digest:   digest,
 			Proxies:  managedProxies,
-		}, protocol.SyncProxies{
+			Forwards: managedForwards,
+		}, protocol.SyncConfiguration{
 			Revision: clientConfiguration.Configuration.Revision,
 			Proxies:  declarations,
+			Forwards: forwardDeclarations,
 		}, nil
 }
 
@@ -157,6 +183,7 @@ func (s *Service) rolloutManagedConfiguration(
 		current.sessionID,
 		preparation,
 		declarations,
+		current.authentication,
 		onlineManagedExchange{session: current},
 		true,
 	)

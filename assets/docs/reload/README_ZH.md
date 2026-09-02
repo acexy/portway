@@ -48,15 +48,19 @@ Binding 和代理行为均保持不变。
 - Governed/Managed 目录路径及内容；
 - Governed 权限和配额；
 - Managed 客户端完整配置。
+- `forwards.enabled`、全局 Forward 规则和客户端 Forward 权限。
 
 认证变化会立即影响运行时：
 
-- 新增、删除、替换或重新归属任意 Shared、Governed、Managed Token 时，全部客户端
-  都会被强制下线，包括处于恢复窗口的 Session；
-- 凭据未变化的客户端可使用原 Token 重连，凭据已变化的客户端必须使用新发布的
-  Token；
+- Shared Token 变化会断开全部 Shared Session；Governed/Managed Token 变化只
+  断开对应 ClientID，包括恢复窗口状态；
+- 无关认证记录保持原代际，其 Session 继续在线；
 - 修改 Governed 权限会关闭该客户端的 Session 和资源，使其按新策略重连；
 - 仅修改 Managed 配置仍使用在线切换，不会下线无关客户端。
+
+关闭 `forwards.enabled` 时，客户端声明和权限作为休眠状态保留。在线及关闭期间
+启动的客户端均保持连接，只关闭 Forward 监听和连接，并记录 `forward_disabled`；
+重新开启后在同一 Session 内按最新规则自动恢复仍获授权的监听。
 
 ## 必须重启的配置
 
@@ -64,14 +68,14 @@ Binding 和代理行为均保持不变。
 
 - `transport.type`、`transport.listen_address`；
 - QUIC 证书和私钥；
-- `tunnel.bind_ip`、`tunnel.http_listen_address`、
-  `tunnel.https_listen_address`；
+- `proxies.bind_ip`、`proxies.http.listen_address`、
+  `proxies.https.listen_address`；
 - HTTP、UDP、安全限制及其他运行时组件参数。
 
 其中任意字段发生变化时，整个候选以 `restart_required` 拒绝。同一候选里的
 其他可热加载字段也不会被部分应用。
 
-公网 HTTPS 证书内容、路径和 `https.certificates` 条目属于例外：完整有效的 SNI
+公网 HTTPS 证书内容、路径和 `proxies.https.certificates` 条目属于例外：完整有效的 SNI
 证书集合会原子发布而不替换 HTTPS Listener；无效候选继续使用上一代集合。
 
 ## Managed 在线切换
