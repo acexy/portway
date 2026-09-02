@@ -14,13 +14,15 @@ permissions:
   proxies:
     # 协议规则节点存在即表示允许该协议。仅允许 Forward 时可省略整个 proxies。
     tcp:
-      remote_port_ranges:
+      # 公网端口闭区间，范围 1-65535；必须排序且不得重叠。
+      port_ranges:
         - start: 20000
           end: 20999
         - start: 22000
           end: 22099
     udp:
-      remote_port_ranges:
+      # 公网端口闭区间，范围 1-65535；必须排序且不得重叠。
+      port_ranges:
         - start: 30000
           end: 30999
     http:

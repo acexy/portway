@@ -27,13 +27,15 @@ permissions:
     # A protocol is allowed only when its rule node is present. Omit the entire
     # proxies node when this client is allowed to declare Forwards only.
     tcp:
-      remote_port_ranges:
+      # Inclusive public-port ranges in 1-65535; sorted and non-overlapping.
+      port_ranges:
         - start: 20000
           end: 20999
         - start: 22000
           end: 22099
     udp:
-      remote_port_ranges:
+      # Inclusive public-port ranges in 1-65535; sorted and non-overlapping.
+      port_ranges:
         - start: 30000
           end: 30999
     http:

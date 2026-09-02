@@ -38,7 +38,7 @@ proxies:
     # scheme。可选值：tcp（字节流）、udp（数据报）、http（HTTP 请求）。公网 TLS
     # 在 portwayd 终止，因此不存在 https 代理类型。
     type: tcp
-    # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
+    # 可选，默认 127.0.0.1；也可以是客户端可访问的其他规范 IP，不接受主机名。
     local:
       ip: 127.0.0.1
       port: 22
@@ -52,6 +52,7 @@ proxies:
   # 服务端至少启用一个 HTTP/HTTPS Listener；使用 HTTPS 时证书映射还必须覆盖该域名。
   - name: web
     type: http
+    # 可选，默认 127.0.0.1；必须是规范 IP。
     local:
       ip: 127.0.0.1
       port: 8080
@@ -81,12 +82,12 @@ forwards:
   - name: database
     # 必填。可选值：tcp、udp。
     type: tcp
-    # 必填。客户端明确监听 IP，不接受主机名。除非需要供其他机器访问，
+    # 必填。客户端规范监听 IP，不接受主机名。除非需要供其他机器访问，
     # 否则应绑定回环地址。
     listen:
       ip: 127.0.0.1
       port: 15432
-    # 必填。portwayd 所在网络可达的明确目标 IP，不接受主机名。服务端会按
+    # 必填。portwayd 所在网络可达的规范目标 IP，不接受主机名。服务端会按
     # 全局 Forward Allowlist 和 Governed 客户端权限共同审批。
     target:
       ip: 10.20.1.15

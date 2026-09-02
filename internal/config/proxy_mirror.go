@@ -137,7 +137,7 @@ func validateProxyMirrorMember(
 			return fmt.Errorf("client_id %q is not permitted to use the mirror ports", clientID)
 		}
 		for _, port := range ports {
-			if !portAllowed(port, permission.RemotePortRanges) {
+			if !portAllowed(port, permission.PortRanges) {
 				return fmt.Errorf("client_id %q is not permitted to use mirror port %d", clientID, port)
 			}
 		}

@@ -62,8 +62,8 @@ configuration:
       # tcp, udp, http. Public TLS terminates at portwayd, so there is no https
       # proxy type.
       type: tcp
-      # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
-      # by the client.
+      # Optional. Defaults to 127.0.0.1. It may be another canonical IP address
+      # reachable by the client; hostnames are not accepted.
       local:
         ip: 127.0.0.1
         port: 22
@@ -73,7 +73,7 @@ configuration:
     # UDP example.
     - name: dns
       type: udp
-      # Optional. Defaults to 127.0.0.1.
+      # Optional. Defaults to 127.0.0.1. Must be a canonical IP address.
       local:
         ip: 127.0.0.1
         port: 53
@@ -86,6 +86,7 @@ configuration:
     # portwayd, which always forwards plain HTTP to the managed local target.
     - name: web
       type: http
+      # Optional. Defaults to 127.0.0.1. Must be a canonical IP address.
       local:
         ip: 127.0.0.1
         port: 8080
@@ -107,12 +108,12 @@ configuration:
     - name: database
       # * Required. Allowed values: tcp, udp.
       type: tcp
-      # * Required. Explicit client-side listening IP; no hostname.
+      # * Required. Canonical client-side listening IP; no hostname.
       listen:
         ip: 127.0.0.1
         # * Required. Range 1-65535.
         port: 15432
-      # * Required. Explicit IP reachable from portwayd; no hostname.
+      # * Required. Canonical IP reachable from portwayd; no hostname.
       target:
         ip: 10.40.1.20
         # * Required. Range 1-65535.

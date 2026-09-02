@@ -19,7 +19,8 @@ transport:
   type: tcp
 
   # Optional. Client control and data endpoint used by both TCP and QUIC.
-  # Defaults to 0.0.0.0:7000. The effective value must not be empty.
+  # Uses a host:port address. Defaults to 0.0.0.0:7000; the effective value
+  # must not be empty.
   listen_address: 0.0.0.0:7000
 
   # Optional when type=tcp. QUIC-specific TLS transport settings.
@@ -84,7 +85,7 @@ authentication:
 # Optional. Public proxy listener settings.
 proxies:
   # Optional. IP used by public TCP and UDP proxy listeners.
-  # Defaults to 0.0.0.0. Must be an IP address, not a hostname.
+  # Defaults to 0.0.0.0. Must be a canonical IP address, not a hostname.
   bind_ip: 0.0.0.0
 
   # Optional server-owned TCP/UDP mirror groups. Only Governed and Managed
@@ -123,8 +124,8 @@ proxies:
   # Defaults apply even when both public listeners are empty. Changing an
   # effective value currently requires restarting portwayd.
   http:
-    # Optional. Public HTTP listener. Empty disables HTTP. It must not duplicate
-    # the transport, HTTPS, or operations TCP listener address.
+    # Optional. Public HTTP host:port listener. Empty disables HTTP; :80 is
+    # valid. It must not duplicate the transport, HTTPS, or operations listener.
     listen_address: ""
     # Optional. Defaults to 0s, which disables the Portway deadline.
     # Maximum non-zero value: 60s.
@@ -199,8 +200,8 @@ proxies:
   # and the complete list are hot-reloadable as one atomic snapshot; invalid
   # updates keep the previous snapshot active. QUIC certificates are independent.
   https:
-    # Optional. Public HTTPS listener. Empty disables HTTPS. It must not
-    # duplicate the transport, HTTP, or operations TCP listener address.
+    # Optional. Public HTTPS host:port listener. Empty disables HTTPS; :443 is
+    # valid. It must not duplicate the transport, HTTP, or operations listener.
     listen_address: ""
     certificates:
       - domains:
@@ -332,7 +333,8 @@ security:
   # Never enable this when clients can bypass the trusted upstream proxy.
   http_client_ip_header: ""
 
-# Optional. Local operations HTTP listener for /healthz, /readyz, and /metrics.
+# Optional. Local operations HTTP host:port listener for /healthz, /readyz, and
+# /metrics.
 # Defaults to empty, which disables it. Bind this to loopback or a protected
 # management network; the endpoints do not implement application authentication.
 # The address must not duplicate any transport, HTTP, or HTTPS listener.

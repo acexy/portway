@@ -415,25 +415,25 @@ func managedBindingConflict(
 func validateGovernedPermissions(permissions GovernedPermissions) error {
 	proxies := permissions.Proxies
 	if proxies.TCP != nil {
-		if err := validatePortRanges(
-			"permissions.proxies.tcp.remote_port_ranges",
-			proxies.TCP.RemotePortRanges,
+		if err := validateSortedPortRanges(
+			"permissions.proxies.tcp.port_ranges",
+			proxies.TCP.PortRanges,
 		); err != nil {
 			return err
 		}
-		if len(proxies.TCP.RemotePortRanges) == 0 {
-			return errors.New("permissions.proxies.tcp.remote_port_ranges must not be empty")
+		if len(proxies.TCP.PortRanges) == 0 {
+			return errors.New("permissions.proxies.tcp.port_ranges must not be empty")
 		}
 	}
 	if proxies.UDP != nil {
-		if err := validatePortRanges(
-			"permissions.proxies.udp.remote_port_ranges",
-			proxies.UDP.RemotePortRanges,
+		if err := validateSortedPortRanges(
+			"permissions.proxies.udp.port_ranges",
+			proxies.UDP.PortRanges,
 		); err != nil {
 			return err
 		}
-		if len(proxies.UDP.RemotePortRanges) == 0 {
-			return errors.New("permissions.proxies.udp.remote_port_ranges must not be empty")
+		if len(proxies.UDP.PortRanges) == 0 {
+			return errors.New("permissions.proxies.udp.port_ranges must not be empty")
 		}
 	}
 	if err := validateForwardRules("permissions.forwards.rules", permissions.Forwards.Rules); err != nil {
@@ -608,22 +608,4 @@ func portRangesAreSubset(child []PortRange, parent []PortRange) bool {
 		}
 	}
 	return true
-}
-
-func validatePortRanges(field string, ranges []PortRange) error {
-	sortedRanges := append([]PortRange(nil), ranges...)
-	sort.Slice(sortedRanges, func(left int, right int) bool {
-		return sortedRanges[left].Start < sortedRanges[right].Start
-	})
-	var previousEnd uint16
-	for index, portRange := range sortedRanges {
-		if portRange.Start == 0 || portRange.End == 0 || portRange.Start > portRange.End {
-			return fmt.Errorf("%s[%d] is invalid", field, index)
-		}
-		if index > 0 && portRange.Start <= previousEnd {
-			return fmt.Errorf("%s contains overlapping ranges", field)
-		}
-		previousEnd = portRange.End
-	}
-	return nil
 }

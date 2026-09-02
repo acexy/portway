@@ -60,7 +60,7 @@ func TestUDPMirrorProxyEndToEnd(t *testing.T) {
 		return config.GovernedClientConfig{
 			Authentication: config.ClientAuthenticationConfig{ClientID: clientID, Token: token},
 			Permissions: config.GovernedPermissions{Proxies: config.GovernedProxyPermissions{
-				UDP:    &config.ProxyPermission{RemotePortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
+				UDP:    &config.ProxyPermission{PortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
 				Limits: config.DefaultProxyPermissionLimits(),
 			}},
 		}

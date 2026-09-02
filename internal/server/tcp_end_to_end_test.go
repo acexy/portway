@@ -161,7 +161,7 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 		return config.GovernedClientConfig{
 			Authentication: config.ClientAuthenticationConfig{ClientID: clientID, Token: token},
 			Permissions: config.GovernedPermissions{Proxies: config.GovernedProxyPermissions{
-				TCP:    &config.ProxyPermission{RemotePortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
+				TCP:    &config.ProxyPermission{PortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
 				Limits: limits,
 			}},
 		}
@@ -297,7 +297,7 @@ func TestTCPMultiModeAuthenticationEndToEnd(t *testing.T) {
 			Authentication: config.ClientAuthenticationConfig{ClientID: "governed-authority", Token: governedToken},
 			Permissions: config.GovernedPermissions{
 				Proxies: config.GovernedProxyPermissions{
-					TCP: &config.ProxyPermission{RemotePortRanges: []config.PortRange{{
+					TCP: &config.ProxyPermission{PortRanges: []config.PortRange{{
 						Start: uint16(governedProxyAddress.Port),
 						End:   uint16(governedProxyAddress.Port),
 					}}},
