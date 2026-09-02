@@ -91,8 +91,9 @@ proxies:
   # Optional server-owned TCP/UDP mirror groups. Only Governed and Managed
   # ClientIDs may participate. Every online member receives the same visitor
   # input, while only primary_client_id may reply. Missing Primary leaves the
-  # group receive-only; no replacement is elected. Group and member changes
-  # are hot-reloaded and affect new TCP connections or UDP associations.
+  # group receive-only; no replacement is elected. A member that becomes active
+  # joins current and future traffic immediately, without replay or TCP message
+  # boundaries; its local service must tolerate incomplete streams.
   # mirror:
   #   governed:
   #     - name: telemetry

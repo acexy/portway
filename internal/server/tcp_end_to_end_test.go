@@ -133,17 +133,24 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mirrorListener.Close()
-	mirrorReceived := make(chan []byte, 1)
+	mirrorReceived := make(chan []byte, 2)
+	mirrorConnected := make(chan int, 2)
+	mirrorPayloads := [][]byte{
+		[]byte("mirror-payload"),
+		[]byte("mirror-rejoin-payload"),
+	}
 	go func() {
-		connection, acceptError := mirrorListener.Accept()
-		if acceptError != nil {
-			return
-		}
-		defer connection.Close()
-		payload := make([]byte, len("mirror-payload"))
-		if _, readError := io.ReadFull(connection, payload); readError == nil {
-			mirrorReceived <- payload
-			_, _ = connection.Write([]byte("response-from-mirror"))
+		for index, expected := range mirrorPayloads {
+			connection, acceptError := mirrorListener.Accept()
+			if acceptError != nil {
+				return
+			}
+			mirrorConnected <- index
+			payload := make([]byte, len(expected))
+			if _, readError := io.ReadFull(connection, payload); readError == nil {
+				mirrorReceived <- payload
+			}
+			_ = connection.Close()
 		}
 	}()
 
@@ -253,12 +260,74 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("mirror client did not receive payload")
 	}
+	select {
+	case connected := <-mirrorConnected:
+		if connected != 0 {
+			t.Fatalf("unexpected initial mirror connection %d", connected)
+		}
+	default:
+		t.Fatal("initial mirror data link was not observed")
+	}
+
+	clients[1].cancel()
+	if err := waitServiceResult(clients[1].errors); err != nil {
+		t.Fatalf("mirror client stopped with error: %v", err)
+	}
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		nil,
+		protocol.ProxyTypeTCP,
+		1,
+	)
+	rejoined := startClient(
+		"mirror-client",
+		mirrorToken,
+		uint16(mirrorListener.Addr().(*net.TCPAddr).Port),
+	)
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		rejoined.errors,
+		protocol.ProxyTypeTCP,
+		2,
+	)
+	select {
+	case connected := <-mirrorConnected:
+		if connected != 1 {
+			t.Fatalf("unexpected rejoined mirror connection %d", connected)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("rejoined mirror client did not receive a live data link")
+	}
+	rejoinPayload := mirrorPayloads[1]
+	if _, err := visitor.Write(rejoinPayload); err != nil {
+		t.Fatal(err)
+	}
+	response = make([]byte, len(rejoinPayload))
+	if _, err := io.ReadFull(visitor, response); err != nil {
+		t.Fatal(err)
+	}
+	if string(response) != string(rejoinPayload) {
+		t.Fatalf("unexpected primary response after mirror rejoin %q", response)
+	}
+	select {
+	case mirrored := <-mirrorReceived:
+		if string(mirrored) != string(rejoinPayload) {
+			t.Fatalf("rejoined mirror received %q", mirrored)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("rejoined mirror client did not receive live visitor payload")
+	}
 	visitor.Close()
 
-	for _, running := range clients {
-		running.cancel()
-	}
-	for _, running := range clients {
+	clients[0].cancel()
+	rejoined.cancel()
+	for _, running := range []runningMirrorClient{clients[0], rejoined} {
 		if err := waitServiceResult(running.errors); err != nil {
 			t.Fatalf("client stopped with error: %v", err)
 		}

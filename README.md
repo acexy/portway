@@ -45,7 +45,9 @@ services that need a stable public entry.
 parallel processing, protocol migration, auditing, and validation against a
 shadow service. Every online member receives the same visitor input, but only
 the configured Primary can reply, so mirror clients cannot interfere with the
-visitor response. See [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md).
+visitor response. Members that join an active flow receive only subsequent
+traffic: TCP starts at an arbitrary byte offset, while UDP starts with the next
+datagram. See [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md).
 
 **Forward** is for consuming services from the server network. `portway` owns
 the local TCP/UDP listener and sends connections or datagrams to an explicitly

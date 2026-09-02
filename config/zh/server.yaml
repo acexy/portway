@@ -54,8 +54,8 @@ proxies:
 
   # 可选，由服务端拥有的 TCP/UDP 镜像组。仅 Governed 和 Managed ClientID 可加入。
   # 所有在线成员接收相同 Visitor 输入，只有 primary_client_id 可以回复。Primary
-  # 缺席时组保持只接收且不自动选举。组和成员支持热更新，只影响新 TCP 连接或
-  # UDP Association。
+  # 缺席时组保持只接收且不自动选举。成员激活后立即加入当前和后续流量，不回放历史
+  # 数据，也不保证 TCP 消息边界；本地服务必须能容忍不完整字节流。
   # mirror:
   #   governed:
   #     - name: telemetry

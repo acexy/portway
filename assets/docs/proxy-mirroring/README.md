@@ -32,10 +32,11 @@ Visitor -> portwayd TCP/UDP --+                                      +-> Visitor
                               +-> Mirror client  -> observer -------X
 ```
 
-For every new TCP connection or UDP visitor association:
+When a member becomes active, it joins both current and future visitor traffic:
 
-1. `portwayd` takes a snapshot of the online configured members.
-2. Visitor input is copied independently to every member in that snapshot.
+1. Visitor input is copied independently to every active member.
+2. A newly active member receives only traffic that arrives after its own Data
+   Link is ready; prior traffic is never replayed.
 3. Only `primary_client_id` has reply authority.
 4. Non-Primary replies are continuously read and discarded so their send
    buffers do not stall normal processing.
@@ -43,12 +44,14 @@ For every new TCP connection or UDP visitor association:
    response is sent to the visitor and no replacement Primary is elected.
 
 TCP preserves byte-stream and half-close behavior on each member link. A slow
-or failed member is isolated from the other members. UDP preserves datagram
-boundaries and creates an independent member link for each visitor association.
+or failed member is isolated from the other members. A member added to a live
+TCP connection can begin at any byte offset: Portway does not detect protocol
+or message boundaries and does not replay a handshake or request prefix. Its
+local service must tolerate incomplete stream context. UDP preserves datagram
+boundaries; a newly active member begins with the next datagram.
 
-Reply authority is fixed when a TCP connection or UDP association is created.
-A Primary change therefore affects new traffic units without mixing response
-sources inside an active connection or association.
+Only the configured Primary has reply authority; every non-Primary response is
+discarded even while that member joins or leaves an active flow.
 
 ## Configuration boundary
 
@@ -109,8 +112,9 @@ configuration.
 Mirror groups, membership, and Primary selection support fail-closed server
 configuration reload. An invalid candidate leaves the previous effective state
 unchanged. A same-port update reuses the public endpoint; removed members stop
-receiving new traffic, and new TCP connections or UDP associations use the new
-membership and Primary snapshot.
+receiving traffic. Newly active members begin receiving subsequent traffic on
+both current and new TCP connections or UDP associations, subject to the
+no-replay and TCP-boundary limitations above.
 
 The operations endpoint reports group and active-member counts separately for
 TCP and UDP. Existing Proxy capacity, link, queue, session, and UDP association

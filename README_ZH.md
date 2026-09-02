@@ -38,7 +38,8 @@ Portway
 **镜像 Proxy** 是受控的 TCP/UDP 代理变体，适合流量观测、并行处理、协议迁移、
 审计以及影子服务验证。所有在线成员收到相同的访问者输入，但只有指定 Primary
 能够回复，因此镜像客户端不会干扰访问者响应。详见
-[TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)。
+[TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)。加入活跃流量的
+成员只接收后续数据：TCP 会从任意字节偏移开始，UDP 从下一份数据报开始。
 
 **Forward** 用于使用服务端网络中的服务。本地 TCP/UDP Listener 由 `portway`
 持有，连接或数据报会发送到 `portwayd` 可达且明确获准的目标。典型场景包括私有
