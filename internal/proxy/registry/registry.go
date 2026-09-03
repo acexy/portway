@@ -164,6 +164,7 @@ type mirrorGroup struct {
 	udpEndpoint   *proxyudp.Endpoint
 	tcpMembers    map[string]*tcpProxyBinding
 	udpMembers    map[string]*udpProxyBinding
+	tcpSessions   map[*mirrorTCPSession]struct{}
 }
 
 func sameProxyDeclaration(

@@ -82,7 +82,7 @@ authentication:
 permissions:
   proxies:
     tcp:
-      remote_port_ranges:
+      port_ranges:
         - start: 20000
           end: 20999
     http:
@@ -121,7 +121,7 @@ complete update and closes the rejected control session; the server never
 silently publishes a partial set.
 
 Every protocol node present under `permissions.proxies` must have a non-empty rule:
-TCP and UDP require at least one `remote_port_ranges` entry. HTTP requires at
+TCP and UDP require at least one `port_ranges` entry. HTTP requires at
 least one domain; omitted or empty `public_schemes` authorizes HTTP only. Rules for a type not
 Omitting a protocol node denies that protocol. Multiple ranges allow disjoint public port allocations without
 granting the unused ports between them.

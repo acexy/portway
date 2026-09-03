@@ -31,6 +31,7 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 					mode:          mode,
 					tcpMembers:    make(map[string]*tcpProxyBinding),
 					udpMembers:    make(map[string]*udpProxyBinding),
+					tcpSessions:   make(map[*mirrorTCPSession]struct{}),
 				}
 				if groupConfiguration.Type == protocol.ProxyTypeTCP {
 					candidatesTCP[port] = group

@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"strings"
 	"unicode/utf8"
@@ -126,8 +125,9 @@ func validateServer(configuration ServerConfig) error {
 	if configuration.Proxies.BindIP == "" {
 		return errors.New("proxies.bind_ip is required")
 	}
-	if net.ParseIP(configuration.Proxies.BindIP) == nil {
-		return errors.New("proxies.bind_ip must be an IP address")
+	bindIP, err := netip.ParseAddr(configuration.Proxies.BindIP)
+	if err != nil || bindIP.String() != configuration.Proxies.BindIP {
+		return errors.New("proxies.bind_ip must be a canonical IP address")
 	}
 	return validateServerAuthentication(configuration.Authentication)
 }
@@ -362,8 +362,8 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 		}
 		if proxy.Local.IP == "" {
 			proxies[index].Local.IP = "127.0.0.1"
-		} else if net.ParseIP(proxy.Local.IP) == nil {
-			return fmt.Errorf("%s[%d].local.ip must be an IP address", field, index)
+		} else if localIP, err := netip.ParseAddr(proxy.Local.IP); err != nil || localIP.String() != proxy.Local.IP {
+			return fmt.Errorf("%s[%d].local.ip must be a canonical IP address", field, index)
 		}
 		if proxy.Local.Port == 0 {
 			return fmt.Errorf("%s[%d].local.port must be between 1 and 65535", field, index)

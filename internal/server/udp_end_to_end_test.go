@@ -36,15 +36,17 @@ func TestUDPMirrorProxyEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mirrorConnection.Close()
-	mirrorReceived := make(chan []byte, 1)
+	mirrorReceived := make(chan []byte, 32)
 	go func() {
 		buffer := make([]byte, 1024)
-		length, source, readError := mirrorConnection.ReadFromUDP(buffer)
-		if readError != nil {
-			return
+		for {
+			length, source, readError := mirrorConnection.ReadFromUDP(buffer)
+			if readError != nil {
+				return
+			}
+			mirrorReceived <- append([]byte(nil), buffer[:length]...)
+			_, _ = mirrorConnection.WriteToUDP([]byte("mirror-response"), source)
 		}
-		mirrorReceived <- append([]byte(nil), buffer[:length]...)
-		_, _ = mirrorConnection.WriteToUDP([]byte("mirror-response"), source)
 	}()
 
 	serverAddress := reserveTCPAddress(t).String()
@@ -60,7 +62,7 @@ func TestUDPMirrorProxyEndToEnd(t *testing.T) {
 		return config.GovernedClientConfig{
 			Authentication: config.ClientAuthenticationConfig{ClientID: clientID, Token: token},
 			Permissions: config.GovernedPermissions{Proxies: config.GovernedProxyPermissions{
-				UDP:    &config.ProxyPermission{RemotePortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
+				UDP:    &config.ProxyPermission{PortRanges: []config.PortRange{{Start: proxyPort, End: proxyPort}}},
 				Limits: config.DefaultProxyPermissionLimits(),
 			}},
 		}
@@ -161,11 +163,70 @@ func TestUDPMirrorProxyEndToEnd(t *testing.T) {
 			t.Fatalf("UDP mirror did not become ready: %v", readError)
 		}
 	}
-
-	for _, running := range clients {
-		running.cancel()
+	for {
+		select {
+		case <-mirrorReceived:
+		default:
+			goto mirrorQueueDrained
+		}
 	}
-	for _, running := range clients {
+
+mirrorQueueDrained:
+	clients[1].cancel()
+	if err := waitServiceResult(clients[1].errors); err != nil {
+		t.Fatalf("UDP mirror client stopped with error: %v", err)
+	}
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		nil,
+		protocol.ProxyTypeUDP,
+		1,
+	)
+	rejoined := startClient(
+		"mirror-client",
+		mirrorToken,
+		uint16(mirrorConnection.LocalAddr().(*net.UDPAddr).Port),
+	)
+	waitForMirrorMembers(
+		t,
+		serverService,
+		serverErrors,
+		clients[0].errors,
+		rejoined.errors,
+		protocol.ProxyTypeUDP,
+		2,
+	)
+	rejoinPayload := []byte("udp-mirror-rejoin-payload")
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		if _, err := visitor.Write(rejoinPayload); err != nil {
+			t.Fatal(err)
+		}
+		_ = visitor.SetReadDeadline(time.Now().Add(time.Second))
+		length, _, readError := visitor.ReadFromUDP(response)
+		if readError == nil && string(response[:length]) != string(rejoinPayload) {
+			t.Fatalf("visitor received non-primary response after rejoin %q", response[:length])
+		}
+		select {
+		case mirrored := <-mirrorReceived:
+			if string(mirrored) == string(rejoinPayload) {
+				goto rejoinedMirrorObserved
+			}
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rejoined UDP mirror did not receive live visitor datagram: %v", readError)
+		}
+	}
+
+rejoinedMirrorObserved:
+
+	clients[0].cancel()
+	rejoined.cancel()
+	for _, running := range []runningClient{clients[0], rejoined} {
 		if err := waitServiceResult(running.errors); err != nil {
 			t.Fatalf("UDP mirror client stopped with error: %v", err)
 		}

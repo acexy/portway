@@ -12,12 +12,17 @@ import (
 // Activate makes a fully registered client available to public traffic.
 func (manager *Registry) Activate(clientID string, sessionID string) {
 	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
 	state, exists := manager.clients[clientID]
 	if !exists || state.sessionID != sessionID {
+		manager.mutex.Unlock()
 		return
 	}
 	state.active = true
+	joins := manager.mirrorTCPJoinsLocked(clientID, state)
+	manager.mutex.Unlock()
+	for _, join := range joins {
+		join.session.addTarget(join.target)
+	}
 }
 
 // Active reports whether the specified Session currently accepts public traffic.

@@ -38,7 +38,7 @@ configuration:
       # 必填。表示 portwayd 与 portway 之间的代理语义，而非公网入口 scheme；
       # 可选值：tcp、udp、http。公网 TLS 在 portwayd 终止，不存在 https 类型。
       type: tcp
-      # 可选，默认 127.0.0.1；也可以是客户端可访问的其他 IP。
+      # 可选，默认 127.0.0.1；也可以是客户端可访问的其他规范 IP，不接受主机名。
       local:
         ip: 127.0.0.1
         port: 22
@@ -48,7 +48,7 @@ configuration:
     # UDP 示例。
     - name: dns
       type: udp
-      # 可选，默认 127.0.0.1。
+      # 可选，默认 127.0.0.1；必须是规范 IP。
       local:
         ip: 127.0.0.1
         port: 53
@@ -60,6 +60,7 @@ configuration:
     # 并始终以明文 HTTP 回源 Managed 客户端的本地目标。
     - name: web
       type: http
+      # 可选，默认 127.0.0.1；必须是规范 IP。
       local:
         ip: 127.0.0.1
         port: 8080
@@ -79,11 +80,11 @@ configuration:
     - name: database
       # 必填。可选值：tcp、udp。
       type: tcp
-      # 必填。客户端明确监听 IP，不接受主机名。
+      # 必填。客户端规范监听 IP，不接受主机名。
       listen:
         ip: 127.0.0.1
         port: 15432
-      # 必填。portwayd 所在网络可达的明确 IP，不接受主机名。
+      # 必填。portwayd 所在网络可达的规范 IP，不接受主机名。
       target:
         ip: 10.40.1.20
         port: 5432

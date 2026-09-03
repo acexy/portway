@@ -61,7 +61,7 @@ func TestValidateProxyMirrorConfigurationAllowsMultiplePorts(t *testing.T) {
 	configuration.GovernedClients["client-a"] = GovernedClientConfig{
 		Authentication: ClientAuthenticationConfig{ClientID: "client-a"},
 		Permissions: GovernedPermissions{Proxies: GovernedProxyPermissions{
-			TCP: &ProxyPermission{RemotePortRanges: []PortRange{{Start: 22000, End: 22002}}},
+			TCP: &ProxyPermission{PortRanges: []PortRange{{Start: 22000, End: 22002}}},
 		}},
 	}
 	configuration.Proxies.Mirror.Governed = []ProxyMirrorGroupConfig{{
@@ -82,7 +82,7 @@ func governedMirrorClient(clientID string, port uint16) GovernedClientConfig {
 	return GovernedClientConfig{
 		Authentication: ClientAuthenticationConfig{ClientID: clientID},
 		Permissions: GovernedPermissions{Proxies: GovernedProxyPermissions{
-			TCP: &ProxyPermission{RemotePortRanges: []PortRange{{Start: port, End: port}}},
+			TCP: &ProxyPermission{PortRanges: []PortRange{{Start: port, End: port}}},
 		}},
 	}
 }

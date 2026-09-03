@@ -157,7 +157,7 @@ func runRestrictedTCPForwardEndToEnd(t *testing.T, mode protocol.ManagementMode)
 				Permissions: config.GovernedPermissions{
 					Proxies: config.GovernedProxyPermissions{Limits: config.DefaultProxyPermissionLimits()},
 					Forwards: config.GovernedForwardPermissions{
-						Rules: loopbackForwardPolicy().Rules,
+						Rules:  loopbackForwardPolicy().Rules,
 						Limits: config.DefaultForwardPermissionLimits(),
 					},
 				},

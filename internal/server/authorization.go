@@ -192,7 +192,7 @@ func (s *Service) validateGovernedProxies(
 		typeCounts[declaration.Type]++
 		switch declaration.Type {
 		case protocol.ProxyTypeTCP:
-			if !portAllowed(declaration.RemotePort, permissions.TCP.RemotePortRanges) {
+			if !portAllowed(declaration.RemotePort, permissions.TCP.PortRanges) {
 				return governedRejection(
 					request.Revision,
 					proxyregistry.ErrorRemotePortNotAllowed,
@@ -201,7 +201,7 @@ func (s *Service) validateGovernedProxies(
 				)
 			}
 		case protocol.ProxyTypeUDP:
-			if !portAllowed(declaration.RemotePort, permissions.UDP.RemotePortRanges) {
+			if !portAllowed(declaration.RemotePort, permissions.UDP.PortRanges) {
 				return governedRejection(
 					request.Revision,
 					proxyregistry.ErrorRemotePortNotAllowed,

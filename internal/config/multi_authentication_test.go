@@ -28,7 +28,7 @@ authentication:
 permissions:
   proxies:
     tcp:
-      remote_port_ranges:
+      port_ranges:
         - start: 20000
           end: 20999
     http:
@@ -160,7 +160,7 @@ authentication:
 permissions:
   proxies:
     tcp:
-      remote_port_ranges:
+      port_ranges:
         - start: 20000
           end: 20999
 `)
@@ -291,6 +291,27 @@ func TestProxyLocalIPDefaultsConsistently(t *testing.T) {
 	}
 	if managedProxies[0].Local.IP != "127.0.0.1" {
 		t.Fatalf("unexpected managed local IP %q", managedProxies[0].Local.IP)
+	}
+}
+
+func TestValidateEndpointIPsRequireCanonicalForm(t *testing.T) {
+	clientConfiguration := DefaultClient()
+	clientConfiguration.Authentication.Token = "cG9ydHdheS10ZXN0LWNsaWVudC10b2tlbi0wMDAwMDA"
+	clientConfiguration.Proxies = []ProxyConfig{{
+		Name: "client-proxy", Type: "tcp",
+		Local:  EndpointConfig{IP: "2001:0db8::1", Port: 22},
+		Public: ProxyPublicConfig{Port: 22022},
+	}}
+	if err := validateClient(clientConfiguration); err == nil {
+		t.Fatal("expected non-canonical proxy local IP rejection")
+	}
+
+	serverConfiguration := DefaultServer()
+	sharedToken := "cG9ydHdheS10ZXN0LXNlcnZlci10b2tlbi0wMDAwMDA"
+	serverConfiguration.Authentication.SharedToken = &sharedToken
+	serverConfiguration.Proxies.BindIP = "2001:0db8::1"
+	if err := validateServer(serverConfiguration); err == nil {
+		t.Fatal("expected non-canonical proxy bind IP rejection")
 	}
 }
 
@@ -491,8 +512,8 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 	valid := GovernedPermissions{
 		Proxies: GovernedProxyPermissions{
 			Limits: DefaultProxyPermissionLimits(),
-			TCP: &ProxyPermission{RemotePortRanges: []PortRange{{Start: 20000, End: 20999}}},
-			UDP: &ProxyPermission{RemotePortRanges: []PortRange{{Start: 30000, End: 30999}}},
+			TCP:    &ProxyPermission{PortRanges: []PortRange{{Start: 20000, End: 20999}}},
+			UDP:    &ProxyPermission{PortRanges: []PortRange{{Start: 30000, End: 30999}}},
 			HTTP: &HTTPPermission{
 				PublicSchemes: []protocol.HTTPPublicScheme{
 					protocol.HTTPPublicSchemeHTTP,
@@ -505,6 +526,13 @@ func TestValidateGovernedPermissionsRequiresRulesForAllowedTypes(t *testing.T) {
 	}
 	if err := validateGovernedPermissions(valid); err != nil {
 		t.Fatalf("valid governed permissions were rejected: %v", err)
+	}
+	valid.Proxies.TCP.PortRanges = []PortRange{
+		{Start: 22000, End: 22099},
+		{Start: 20000, End: 20999},
+	}
+	if err := validateGovernedPermissions(valid); err == nil {
+		t.Fatal("expected unsorted governed port range rejection")
 	}
 }
 
@@ -571,9 +599,9 @@ func TestValidateManagedProxiesRejectsHardLimitOverflow(t *testing.T) {
 	proxies := make([]ProxyConfig, hardMaxProxiesPerClient+1)
 	for index := range proxies {
 		proxies[index] = ProxyConfig{
-			Name:  fmt.Sprintf("tcp-%d", index),
-			Type:  "tcp",
-			Local: EndpointConfig{IP: "127.0.0.1", Port: 1},
+			Name:   fmt.Sprintf("tcp-%d", index),
+			Type:   "tcp",
+			Local:  EndpointConfig{IP: "127.0.0.1", Port: 1},
 			Public: ProxyPublicConfig{Port: uint16(20000 + index)},
 		}
 	}

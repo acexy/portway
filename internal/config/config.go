@@ -58,7 +58,7 @@ type ServerAuthenticationConfig struct {
 	ManagedClientsPath string `yaml:"managed_clients_path"`
 }
 
-// PortRange is one inclusive public port authorization range.
+// PortRange is one inclusive TCP or UDP port range.
 type PortRange struct {
 	Start uint16 `yaml:"start"`
 	End   uint16 `yaml:"end"`
@@ -66,7 +66,7 @@ type PortRange struct {
 
 // ProxyPermission configures public port ranges for one proxy type.
 type ProxyPermission struct {
-	RemotePortRanges []PortRange `yaml:"remote_port_ranges"`
+	PortRanges []PortRange `yaml:"port_ranges"`
 }
 
 // ForwardPortPermission configures target port ranges for one protocol.

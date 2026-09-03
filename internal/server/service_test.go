@@ -59,7 +59,7 @@ func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T
 					Permissions: config.GovernedPermissions{
 						Proxies: config.GovernedProxyPermissions{
 							TCP: &config.ProxyPermission{
-								RemotePortRanges: []config.PortRange{{Start: 20000, End: 20999}},
+								PortRanges: []config.PortRange{{Start: 20000, End: 20999}},
 							},
 							HTTP: &config.HTTPPermission{
 								PublicSchemes: []protocol.HTTPPublicScheme{

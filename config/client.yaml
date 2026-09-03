@@ -69,8 +69,8 @@ proxies:
     # There is no https proxy type because public TLS terminates at portwayd.
     type: tcp
 
-    # Optional. Defaults to 127.0.0.1. It may be another IP address reachable
-    # from the Portway client.
+    # Optional. Defaults to 127.0.0.1. It may be another canonical IP address
+    # reachable from the Portway client; hostnames are not accepted.
     local:
       ip: 127.0.0.1
       # * Required for every proxy. Local target port, range 1-65535.
@@ -89,6 +89,7 @@ proxies:
   # additionally requires a certificate mapping that covers this exact domain.
   - name: web
     type: http
+    # Optional. Defaults to 127.0.0.1. Must be a canonical IP address.
     local:
       ip: 127.0.0.1
       port: 8080
@@ -104,7 +105,7 @@ proxies:
   # UDP example:
   - name: dns
     type: udp
-    # Optional. Defaults to 127.0.0.1.
+    # Optional. Defaults to 127.0.0.1. Must be a canonical IP address.
     local:
       ip: 127.0.0.1
       port: 53
@@ -124,13 +125,13 @@ forwards:
   - name: database
     # * Required. Allowed values: tcp, udp.
     type: tcp
-    # * Required. Explicit client-side listening IP; hostnames are not
+    # * Required. Canonical client-side listening IP; hostnames are not
     # accepted. Bind loopback unless other machines must use this entry.
     listen:
       ip: 127.0.0.1
       # * Required. Client-side listening port, range 1-65535.
       port: 15432
-    # * Required. Explicit target IP reachable from portwayd; hostnames are
+    # * Required. Canonical target IP reachable from portwayd; hostnames are
     # not accepted. The server checks this IP and port against its global
     # Forward allowlist and any Governed client permissions.
     target:
