@@ -870,8 +870,6 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 }
 
 func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
-	t.Parallel()
-
 	manager := newTestTCPProxyManager(t)
 	port := uint16(reserveTCPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
