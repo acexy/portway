@@ -168,7 +168,9 @@ func (broker *Broker) OpenStream(ctx context.Context, target Target) (net.Conn, 
 	case result := <-ready:
 		return result.connection, result.err
 	case <-ctx.Done():
-		broker.cancel(linkID, true, ctx.Err())
+		// Binding may already have promoted the link while its result is
+		// still in flight. Cancellation must also close that active stream.
+		broker.cancelAny(linkID, ctx.Err())
 		return nil, ctx.Err()
 	}
 }

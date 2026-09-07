@@ -48,6 +48,8 @@ the configured Primary can reply, so mirror clients cannot interfere with the
 visitor response. Members that join an active flow receive only subsequent
 traffic: TCP starts at an arbitrary byte offset, while UDP starts with the next
 datagram. See [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md).
+Local service outages do not log clients out; forwarding resumes automatically
+after recovery, without replaying traffic lost during the outage.
 
 **Forward** is for consuming services from the server network. `portway` owns
 the local TCP/UDP listener and sends connections or datagrams to an explicitly

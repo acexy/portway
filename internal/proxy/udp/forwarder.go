@@ -34,6 +34,10 @@ func Forward(
 				results <- err
 				return
 			}
+			if err := local.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+				results <- err
+				return
+			}
 			written, err := local.Write(payload)
 			if err != nil {
 				results <- err

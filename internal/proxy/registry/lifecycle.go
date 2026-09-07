@@ -91,6 +91,9 @@ func (manager *Registry) Detach(clientID string, sessionID string) func() {
 			group.tcpMembers[clientID] == binding {
 			delete(group.tcpMembers, clientID)
 			if len(group.tcpMembers) == 0 && group.tcpEndpoint == endpoint {
+				for session := range group.tcpSessions {
+					session.cancel()
+				}
 				group.tcpEndpoint = nil
 				delete(manager.endpoints, binding.declaration.RemotePort)
 				endpoints[binding.declaration.RemotePort] = endpoint
@@ -152,6 +155,11 @@ func (manager *Registry) Close() {
 
 	manager.mutex.Lock()
 	manager.closed = true
+	for _, group := range manager.tcpMirrorGroups {
+		for session := range group.tcpSessions {
+			session.cancel()
+		}
+	}
 	endpoints := make(map[uint16]*proxytcp.Endpoint, len(manager.endpoints))
 	udpEndpoints := make(map[uint16]*proxyudp.Endpoint, len(manager.udpEndpoints))
 	udpBindings := make([]*udpProxyBinding, 0)

@@ -105,6 +105,9 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	removedBindings := make([]string, 0)
 	removedUDPBindings := make([]*udpProxyBinding, 0)
 	for port, old := range manager.tcpMirrorGroups {
+		for session := range old.tcpSessions {
+			session.cancel()
+		}
 		candidate := candidatesTCP[port]
 		if candidate == nil {
 			if old.tcpEndpoint != nil {
