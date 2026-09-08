@@ -21,7 +21,7 @@ func (manager *Registry) Activate(clientID string, sessionID string) {
 	joins := manager.mirrorTCPJoinsLocked(clientID, state)
 	manager.mutex.Unlock()
 	for _, join := range joins {
-		join.session.addTarget(join.target)
+		join.session.AddTarget(join.target)
 	}
 }
 
@@ -92,7 +92,7 @@ func (manager *Registry) Detach(clientID string, sessionID string) func() {
 			delete(group.tcpMembers, clientID)
 			if len(group.tcpMembers) == 0 && group.tcpEndpoint == endpoint {
 				for session := range group.tcpSessions {
-					session.cancel()
+					session.Cancel()
 				}
 				group.tcpEndpoint = nil
 				delete(manager.endpoints, binding.declaration.RemotePort)
@@ -157,7 +157,7 @@ func (manager *Registry) Close() {
 	manager.closed = true
 	for _, group := range manager.tcpMirrorGroups {
 		for session := range group.tcpSessions {
-			session.cancel()
+			session.Cancel()
 		}
 	}
 	endpoints := make(map[uint16]*proxytcp.Endpoint, len(manager.endpoints))

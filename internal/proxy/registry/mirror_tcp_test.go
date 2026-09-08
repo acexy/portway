@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"context"
 	"io"
 	"net"
 	"sync/atomic"
@@ -11,8 +10,73 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
+	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
 )
+
+func TestMirrorTargetGuardRejectsStaleGenerations(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*Registry, *mirrorGroup, *clientState, *tcpProxyBinding)
+	}{
+		{"closed registry", func(manager *Registry, _ *mirrorGroup, _ *clientState, _ *tcpProxyBinding) {
+			manager.closed = true
+		}},
+		{"replaced group", func(manager *Registry, group *mirrorGroup, _ *clientState, _ *tcpProxyBinding) {
+			manager.tcpMirrorGroups[group.port] = &mirrorGroup{}
+		}},
+		{"removed client", func(manager *Registry, _ *mirrorGroup, _ *clientState, _ *tcpProxyBinding) {
+			delete(manager.clients, "client")
+		}},
+		{"inactive client", func(_ *Registry, _ *mirrorGroup, state *clientState, _ *tcpProxyBinding) {
+			state.active = false
+		}},
+		{"replaced session", func(_ *Registry, _ *mirrorGroup, state *clientState, _ *tcpProxyBinding) {
+			state.sessionID = "replacement"
+		}},
+		{"replaced writer", func(_ *Registry, _ *mirrorGroup, state *clientState, _ *tcpProxyBinding) {
+			state.writer = control.NewWriter(io.Discard)
+		}},
+		{"replaced binding", func(_ *Registry, group *mirrorGroup, state *clientState, _ *tcpProxyBinding) {
+			binding := &tcpProxyBinding{bindingID: "replacement"}
+			group.tcpMembers["client"] = binding
+			state.tcpProxies["proxy"] = binding
+		}},
+		{"removed proxy", func(_ *Registry, _ *mirrorGroup, state *clientState, _ *tcpProxyBinding) {
+			delete(state.tcpProxies, "proxy")
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			binding := &tcpProxyBinding{
+				bindingID: "binding", declaration: protocol.ProxyDeclaration{Name: "proxy"},
+			}
+			state := &clientState{
+				active: true, sessionID: "session", writer: control.NewWriter(io.Discard),
+				tcpProxies: map[string]*tcpProxyBinding{"proxy": binding},
+			}
+			group := &mirrorGroup{port: 1234, tcpMembers: map[string]*tcpProxyBinding{"client": binding}}
+			manager := &Registry{
+				clients:         map[string]*clientState{"client": state},
+				tcpMirrorGroups: map[uint16]*mirrorGroup{group.port: group},
+			}
+			guard := mirrorTargetGuard{manager: manager, group: group}
+			target := mirrorTCPLinkTarget("client", state, binding)
+			guard.Lock()
+			defer guard.Unlock()
+			if !guard.IsCurrent(target) {
+				t.Fatal("current target was rejected")
+			}
+			test.change(manager, group, state, binding)
+			if guard.IsCurrent(target) {
+				t.Fatalf("stale target was accepted: %s", test.name)
+			}
+			if guard.IsCurrent(link.Target{ClientID: "unknown"}) {
+				t.Fatal("unknown client was accepted")
+			}
+		})
+	}
+}
 
 func TestMirrorTCPAllLocalDialsFailThenRecover(t *testing.T) {
 	manager := newTestTCPProxyManager(t)
@@ -146,21 +210,4 @@ func TestMirrorTCPAllLocalDialsFailThenRecover(t *testing.T) {
 	}
 	_ = clientControl.Close()
 	<-controlDone
-}
-
-func TestMirrorTCPMemberCancellationReleasesBlockedWrite(t *testing.T) {
-	connection, peer := net.Pipe()
-	defer peer.Close()
-	member := &mirrorTCPMember{
-		connection: connection, queue: make(chan []byte, 1),
-		done: make(chan struct{}), stopped: make(chan struct{}),
-	}
-	member.queue <- []byte("blocked")
-	go member.writeLoop(context.Background())
-	member.close()
-	select {
-	case <-member.done:
-	case <-time.After(time.Second):
-		t.Fatal("closed member retained its writer")
-	}
 }

@@ -373,7 +373,7 @@ func TestMirrorSnapshotHasNoResponderWhenPrimaryIsOffline(t *testing.T) {
 	group := manager.tcpMirrorGroups[port]
 	manager.mutex.Unlock()
 	targets := manager.snapshotMirrorTCPTargets(group)
-	if len(targets) != 1 || targets[0].primary {
+	if len(targets) != 1 || targets[0].ClientID == group.configuration.PrimaryClientID {
 		t.Fatalf("offline Primary unexpectedly elected a responder: %+v", targets)
 	}
 }

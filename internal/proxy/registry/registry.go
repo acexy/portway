@@ -14,6 +14,7 @@ import (
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	proxyhttp "github.com/acexy/portway/internal/proxy/http"
+	"github.com/acexy/portway/internal/proxy/mirror"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
 	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 	"github.com/acexy/portway/internal/security/ipfilter"
@@ -164,7 +165,7 @@ type mirrorGroup struct {
 	udpEndpoint   *proxyudp.Endpoint
 	tcpMembers    map[string]*tcpProxyBinding
 	udpMembers    map[string]*udpProxyBinding
-	tcpSessions   map[*mirrorTCPSession]struct{}
+	tcpSessions   map[*mirror.TCPSession]struct{}
 }
 
 func sameProxyDeclaration(

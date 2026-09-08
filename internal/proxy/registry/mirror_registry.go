@@ -8,6 +8,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/proxy/mirror"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
 	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 )
@@ -31,7 +32,7 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 					mode:          mode,
 					tcpMembers:    make(map[string]*tcpProxyBinding),
 					udpMembers:    make(map[string]*udpProxyBinding),
-					tcpSessions:   make(map[*mirrorTCPSession]struct{}),
+					tcpSessions:   make(map[*mirror.TCPSession]struct{}),
 				}
 				if groupConfiguration.Type == protocol.ProxyTypeTCP {
 					candidatesTCP[port] = group
@@ -108,7 +109,7 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 		candidate := candidatesTCP[port]
 		if candidate == nil || candidate.mode != old.mode {
 			for session := range old.tcpSessions {
-				session.cancel()
+				session.Cancel()
 			}
 		}
 		if candidate == nil {
@@ -170,7 +171,7 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	for port, candidate := range candidatesTCP {
 		if len(candidate.tcpMembers) == 0 && candidate.tcpEndpoint != nil {
 			for session := range candidate.tcpSessions {
-				session.cancel()
+				session.Cancel()
 			}
 			removedTCP[port] = candidate.tcpEndpoint
 			candidate.tcpEndpoint = nil
@@ -215,7 +216,7 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	for port := range removedUDP {
 		delete(manager.udpEndpoints, port)
 	}
-	responseUpdates := make(map[*mirrorTCPSession]string)
+	responseUpdates := make(map[*mirror.TCPSession]string)
 	var joins []mirrorTCPJoin
 	for _, group := range candidatesTCP {
 		for session := range group.tcpSessions {
@@ -231,10 +232,10 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 
 	// Publish response eligibility without waiting for an in-flight bounded write.
 	for session, primary := range responseUpdates {
-		session.primaryClientID.Store(&primary)
+		session.SetPrimary(primary)
 	}
 	for _, join := range joins {
-		join.session.addTarget(join.target)
+		join.session.AddTarget(join.target)
 	}
 	closeTCPEndpoints(removedTCP)
 	closeUDPEndpoints(removedUDP)

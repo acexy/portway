@@ -9,8 +9,10 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/proxy/mirror"
 )
 
 func TestMirrorReloadPreservesLiveSessionsAndSwitchesResponder(t *testing.T) {
@@ -25,17 +27,18 @@ func TestMirrorReloadPreservesLiveSessionsAndSwitchesResponder(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, client := range []string{"a", "b"} {
-		manager.AttachAuthenticated(client, client, nil, authentication.Context{Mode: authentication.ModeGoverned, ClientID: client}, 10)
+		manager.AttachAuthenticated(client, client, control.NewWriter(io.Discard), authentication.Context{Mode: authentication.ModeGoverned, ClientID: client}, 10)
 		result := manager.Sync(client, client, "request-"+client, SyncRequest{Revision: 1, Proxies: []protocol.ProxyDeclaration{tcpProxyDeclaration("first", port), tcpProxyDeclaration("second", otherPort)}})
 		if result.Status != SyncStatusApplied {
 			t.Fatalf("sync: %+v", result)
 		}
+		manager.Activate(client, client)
 	}
 	type running struct {
-		session  *mirrorTCPSession
+		session  *mirror.TCPSession
 		peer     net.Conn
 		backends map[string]net.Conn
-		done     []chan struct{}
+		done     chan struct{}
 	}
 	sessions := make([]running, 0, 2)
 	for _, p := range []uint16{port, otherPort} {
@@ -44,27 +47,38 @@ func TestMirrorReloadPreservesLiveSessionsAndSwitchesResponder(t *testing.T) {
 		manager.mutex.Lock()
 		group := manager.tcpMirrorGroups[p]
 		manager.mutex.Unlock()
-		session := &mirrorTCPSession{context: ctx, cancel: cancel, manager: manager, group: group, visitor: visitor, members: make(map[string]*mirrorTCPMember), workers: make(map[string]*mirrorTCPWorker)}
+		streams := make(map[string]net.Conn)
+		run := running{peer: peer, backends: make(map[string]net.Conn), done: make(chan struct{})}
+		for _, client := range []string{"a", "b"} {
+			stream, backend := net.Pipe()
+			streams[client] = stream
+			run.backends[client] = backend
+			t.Cleanup(func() { stream.Close(); backend.Close() })
+		}
+		session := mirror.NewTCPSession(ctx, visitor, mirrorTargetGuard{manager: manager, group: group},
+			func(_ context.Context, target link.Target) (net.Conn, error) { return streams[target.ClientID], nil })
+		run.session = session
 		if !manager.addMirrorTCPSession(group, session) {
 			t.Fatal("session rejected")
 		}
-		stop := context.AfterFunc(ctx, func() { visitor.Close() })
+		targets := manager.snapshotMirrorTCPTargets(group)
+		go func() { defer close(run.done); session.Serve(targets) }()
 		t.Cleanup(func() {
 			cancel()
-			stop()
-			visitor.Close()
 			peer.Close()
+			select {
+			case <-run.done:
+			case <-time.After(time.Second):
+				t.Error("mirror session did not stop")
+			}
 			manager.removeMirrorTCPSession(group, session)
 		})
-		run := running{session: session, peer: peer, backends: make(map[string]net.Conn)}
-		for _, client := range []string{"a", "b"} {
-			stream, backend := net.Pipe()
-			member := &mirrorTCPMember{connection: stream, target: mirrorTCPTarget{target: link.Target{ClientID: client}}}
-			session.members[client] = member
-			done := make(chan struct{})
-			go func() { defer close(done); session.copyResponse(member) }()
-			t.Cleanup(func() { stream.Close(); backend.Close(); <-done })
-			run.backends[client] = backend
+		for _, target := range targets {
+			select {
+			case <-session.AddTarget(target):
+			case <-time.After(time.Second):
+				t.Fatal("mirror member did not start")
+			}
 		}
 		sessions = append(sessions, run)
 	}
@@ -91,8 +105,10 @@ func TestMirrorReloadPreservesLiveSessionsAndSwitchesResponder(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, run := range sessions {
-		if run.session.context.Err() != nil {
+		select {
+		case <-run.done:
 			t.Fatal("reload cancelled existing visitor")
+		default:
 		}
 	}
 	// Old primary output must be consumed but never appear on the visitor stream.
@@ -105,7 +121,9 @@ func TestMirrorReloadPreservesLiveSessionsAndSwitchesResponder(t *testing.T) {
 	if err := manager.ConfigureMirrorGroups(configuration); err != nil {
 		t.Fatal(err)
 	}
-	if sessions[0].session.context.Err() == nil {
+	select {
+	case <-sessions[0].done:
+	case <-time.After(time.Second):
 		t.Fatal("deleted group survived")
 	}
 	exchange(sessions[1], "a", "stable")

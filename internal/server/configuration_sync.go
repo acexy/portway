@@ -1,126 +1,223 @@
 package server
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/json"
+	"errors"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
+	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
+	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 )
 
-const maxCachedConfigurationRequests = 16
-
-type configurationRequestRecord struct {
-	revision    uint64
-	fingerprint [sha256.Size]byte
-	result      protocol.SyncConfigurationResult
+// configurationSyncSession carries the authenticated scope of one control reader.
+type configurationSyncSession struct {
+	clientID       string
+	sessionID      string
+	writer         *control.Writer
+	mode           authentication.Mode
+	authentication authentication.Context
+	capabilities   []protocol.Capability
 }
 
-type configurationSyncState struct {
-	revision     uint64
-	fingerprint  [sha256.Size]byte
-	result       protocol.SyncConfigurationResult
-	requests     map[string]configurationRequestRecord
-	requestOrder []string
-}
-
-func configurationSyncKey(clientID string, sessionID string) string {
-	return clientID + "\x00" + sessionID
-}
-
-func (s *Service) checkConfigurationSync(
-	clientID string,
-	sessionID string,
-	requestID string,
-	request protocol.SyncConfiguration,
-) (*protocol.SyncConfigurationResult, *protocol.ConfigurationError) {
-	if err := protocol.ValidateRequestID(requestID); err != nil {
-		return nil, invalidConfigurationRequest(err.Error())
+// synchronizeConfiguration applies one complete declaration before session activation.
+func (s *Service) synchronizeConfiguration(
+	session configurationSyncSession,
+	envelope protocol.Envelope,
+) (protocol.SyncConfigurationResult, error) {
+	if session.mode == authentication.ModeManaged {
+		return protocol.SyncConfigurationResult{}, errors.New("managed clients cannot declare configuration")
 	}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return nil, invalidConfigurationRequest("encode complete configuration")
+	var request protocol.SyncConfiguration
+	if err := protocol.DecodePayload(envelope, &request); err != nil {
+		return protocol.SyncConfigurationResult{}, err
 	}
-	fingerprint := sha256.Sum256(payload)
-	key := configurationSyncKey(clientID, sessionID)
-
-	s.configurationSyncMutex.Lock()
-	defer s.configurationSyncMutex.Unlock()
-	if s.configurationSyncStates == nil {
-		s.configurationSyncStates = make(map[string]*configurationSyncState)
+	if len(request.Proxies) == 0 && len(request.Forwards) == 0 {
+		return protocol.SyncConfigurationResult{}, errors.New("complete configuration must not be empty")
 	}
-	state := s.configurationSyncStates[key]
-	if state == nil {
-		return nil, nil
-	}
-	if cached, exists := state.requests[requestID]; exists {
-		if cached.revision == request.Revision &&
-			subtle.ConstantTimeCompare(cached.fingerprint[:], fingerprint[:]) == 1 {
-			result := cached.result
-			return &result, nil
+	cachedResult, synchronizationError := s.checkConfigurationSync(
+		session.clientID,
+		session.sessionID,
+		envelope.RequestID,
+		request,
+	)
+	if synchronizationError != nil {
+		if err := writeConfigurationRejection(
+			session.writer,
+			envelope.RequestID,
+			request.Revision,
+			synchronizationError,
+		); err != nil {
+			return protocol.SyncConfigurationResult{}, err
 		}
-		return nil, invalidConfigurationRequest("configuration request ID payload changed")
+		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
 	}
-	if request.Revision == 0 || request.Revision < state.revision {
-		return nil, invalidConfigurationRequest("configuration revision is stale")
+	if cachedResult != nil {
+		return *cachedResult, nil
 	}
-	if request.Revision == state.revision {
-		if subtle.ConstantTimeCompare(state.fingerprint[:], fingerprint[:]) == 1 {
-			result := state.result
-			return &result, nil
+	if rejection := validateConfigurationCapabilities(
+		request,
+		session.capabilities,
+	); rejection != nil {
+		if err := session.writer.WriteResponse(
+			protocol.MessageSyncConfigurationResult,
+			envelope.RequestID,
+			*rejection,
+		); err != nil {
+			return protocol.SyncConfigurationResult{}, err
 		}
-		return nil, invalidConfigurationRequest("configuration revision payload changed")
+		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
 	}
-	return nil, nil
+	proxyRequest := proxyregistry.SyncRequest{
+		Revision: request.Revision,
+		Proxies:  request.Proxies,
+	}
+	if session.mode == authentication.ModeGoverned {
+		if result := s.validateGovernedProxies(session.clientID, proxyRequest); result != nil {
+			if err := writeConfigurationRejection(
+				session.writer,
+				envelope.RequestID,
+				request.Revision,
+				configurationProxyError(result.Error),
+			); err != nil {
+				return protocol.SyncConfigurationResult{}, err
+			}
+			return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+		}
+	}
+	if s.forwardRegistry == nil {
+		return protocol.SyncConfigurationResult{}, errors.New("Forward Registry is unavailable")
+	}
+	maxActiveForwardLinks := 0
+	if session.mode == authentication.ModeGoverned {
+		governed, _ := s.configuration.governedClient(session.clientID)
+		maxActiveForwardLinks = governed.Permissions.Forwards.Limits.MaxActiveLinks
+	}
+	forwardTransaction, forwardError := s.forwardRegistry.BeginSync(
+		session.clientID,
+		session.sessionID,
+		session.writer,
+		session.authentication,
+		maxActiveForwardLinks,
+		request.Forwards,
+	)
+	if forwardError != nil {
+		if err := writeConfigurationRejection(
+			session.writer,
+			envelope.RequestID,
+			request.Revision,
+			configurationForwardError(forwardError),
+		); err != nil {
+			return protocol.SyncConfigurationResult{}, err
+		}
+		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+	}
+	proxyResult := s.proxyRegistry.SyncAllowEmpty(
+		session.clientID,
+		session.sessionID,
+		envelope.RequestID,
+		proxyRequest,
+	)
+	if proxyResult.Status == proxyregistry.SyncStatusRejected {
+		forwardTransaction.Rollback()
+		if err := writeConfigurationRejection(
+			session.writer,
+			envelope.RequestID,
+			request.Revision,
+			configurationProxyError(proxyResult.Error),
+		); err != nil {
+			return protocol.SyncConfigurationResult{}, err
+		}
+		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+	}
+	result := protocol.SyncConfigurationResult{
+		Revision: request.Revision,
+		Status:   protocol.ConfigurationSyncStatusApplied,
+		Proxies:  proxyResult.Proxies,
+		Forwards: append([]protocol.ForwardResult(nil), forwardTransaction.Results()...),
+	}
+	if !forwardTransaction.Commit() {
+		return protocol.SyncConfigurationResult{}, errors.New("Forward generation changed while synchronizing")
+	}
+	s.cacheConfigurationSync(session.clientID, session.sessionID, envelope.RequestID, request, result)
+	return result, nil
 }
 
-func (s *Service) cacheConfigurationSync(
-	clientID string,
-	sessionID string,
-	requestID string,
+func validateConfigurationCapabilities(
 	request protocol.SyncConfiguration,
-	result protocol.SyncConfigurationResult,
-) {
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return
+	capabilities []protocol.Capability,
+) *protocol.SyncConfigurationResult {
+	for _, declaration := range request.Proxies {
+		if !coll.SliceContains(capabilities, protocol.Capability(declaration.Type)) {
+			return &protocol.SyncConfigurationResult{
+				Revision: request.Revision,
+				Status:   protocol.ConfigurationSyncStatusRejected,
+				Error: &protocol.ConfigurationError{
+					Code:         protocol.ConfigurationErrorProxyTypeNotAllowed,
+					ResourceKind: protocol.ConfigurationResourceProxy,
+					ResourceName: declaration.Name,
+					Message:      "proxy capability is not negotiated",
+				},
+			}
+		}
 	}
-	fingerprint := sha256.Sum256(payload)
-	key := configurationSyncKey(clientID, sessionID)
-	s.configurationSyncMutex.Lock()
-	defer s.configurationSyncMutex.Unlock()
-	if s.configurationSyncStates == nil {
-		s.configurationSyncStates = make(map[string]*configurationSyncState)
+	for _, declaration := range request.Forwards {
+		capability := protocol.CapabilityTCPForward
+		if declaration.Type == protocol.ForwardTypeUDP {
+			capability = protocol.CapabilityUDPForward
+		}
+		if !coll.SliceContains(capabilities, capability) {
+			return &protocol.SyncConfigurationResult{
+				Revision: request.Revision,
+				Status:   protocol.ConfigurationSyncStatusRejected,
+				Error: &protocol.ConfigurationError{
+					Code:         protocol.ConfigurationErrorForwardTypeNotAllowed,
+					ResourceKind: protocol.ConfigurationResourceForward,
+					ResourceName: declaration.Name,
+					Message:      "Forward capability is not negotiated",
+				},
+			}
+		}
 	}
-	state := s.configurationSyncStates[key]
-	if state == nil {
-		state = &configurationSyncState{requests: make(map[string]configurationRequestRecord)}
-		s.configurationSyncStates[key] = state
-	}
-	if len(state.requestOrder) == maxCachedConfigurationRequests {
-		oldest := state.requestOrder[0]
-		state.requestOrder = state.requestOrder[1:]
-		delete(state.requests, oldest)
-	}
-	state.requestOrder = append(state.requestOrder, requestID)
-	state.requests[requestID] = configurationRequestRecord{
-		revision: request.Revision, fingerprint: fingerprint, result: result,
-	}
-	state.revision = request.Revision
-	state.fingerprint = fingerprint
-	state.result = result
+	return nil
 }
 
-func (s *Service) clearConfigurationSync(clientID string, sessionID string) {
-	s.configurationSyncMutex.Lock()
-	delete(s.configurationSyncStates, configurationSyncKey(clientID, sessionID))
-	s.configurationSyncMutex.Unlock()
+func writeConfigurationRejection(
+	writer *control.Writer,
+	requestID string,
+	revision uint64,
+	rejection *protocol.ConfigurationError,
+) error {
+	return writer.WriteResponse(
+		protocol.MessageSyncConfigurationResult,
+		requestID,
+		protocol.SyncConfigurationResult{
+			Revision: revision,
+			Status:   protocol.ConfigurationSyncStatusRejected,
+			Error:    rejection,
+		},
+	)
 }
 
-func invalidConfigurationRequest(message string) *protocol.ConfigurationError {
+func configurationProxyError(source *proxyregistry.Error) *protocol.ConfigurationError {
+	if source == nil {
+		return nil
+	}
 	return &protocol.ConfigurationError{
-		Code:      protocol.ConfigurationErrorCode("invalid_request"),
-		Message:   message,
-		Retryable: false,
+		Code: protocol.ConfigurationErrorCode(source.Code), Message: source.Message,
+		ResourceKind: protocol.ConfigurationResourceProxy,
+		ResourceName: source.ProxyName, Retryable: source.Retryable,
+	}
+}
+
+func configurationForwardError(source *protocol.ForwardError) *protocol.ConfigurationError {
+	if source == nil {
+		return nil
+	}
+	return &protocol.ConfigurationError{
+		Code: protocol.ConfigurationErrorCode(source.Code), Message: source.Message,
+		ResourceKind: protocol.ConfigurationResourceForward,
+		ResourceName: source.ForwardName, Retryable: source.Retryable,
 	}
 }
