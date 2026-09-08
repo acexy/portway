@@ -1,9 +1,6 @@
 package server
 
 import (
-	"crypto/rand"
-	"encoding/base64"
-	"fmt"
 	"reflect"
 	"strings"
 
@@ -14,35 +11,6 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 )
-
-func (s *Service) negotiateCapabilities(clientCapabilities []protocol.Capability) []protocol.Capability {
-	supported := map[protocol.Capability]struct{}{
-		protocol.CapabilityTCP:         {},
-		protocol.CapabilityUDP:         {},
-		protocol.CapabilityHTTP:        {},
-		protocol.CapabilityJSONControl: {},
-	}
-	forwardConfiguration := s.configuration.snapshot().Forwards
-	for _, rule := range forwardConfiguration.Rules {
-		if len(rule.TCP.PortRanges) != 0 {
-			supported[protocol.CapabilityTCPForward] = struct{}{}
-		}
-		if len(rule.UDP.PortRanges) != 0 {
-			supported[protocol.CapabilityUDPForward] = struct{}{}
-		}
-	}
-	negotiated := coll.SliceFilter(
-		clientCapabilities,
-		func(capability protocol.Capability) bool {
-			_, supportedCapability := supported[capability]
-			return supportedCapability
-		},
-	)
-	if negotiated == nil {
-		return []protocol.Capability{}
-	}
-	return negotiated
-}
 
 func forwardPolicyChanged(
 	current config.ServerConfig,
@@ -298,12 +266,4 @@ func governedRejection(
 			Retryable: false,
 		},
 	}
-}
-
-func newSessionID() (string, error) {
-	randomBytes := make([]byte, 16)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("generate session ID: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }

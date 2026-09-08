@@ -146,3 +146,10 @@ For field examples, see [`config/server.yaml`](../../../config/server.yaml),
 [`config/governed/governed-client.yaml`](../../../config/governed/governed-client.yaml),
 and
 [`config/managed/managed-client.yaml`](../../../config/managed/managed-client.yaml).
+
+Configuration files are scanned as a stable candidate and published together, but
+separate file replacements are not a multi-file transaction. Keep intermediate
+configurations safe to publish. A valid Managed Forward configuration that cannot
+bind a local port closes the candidate runtime and retries within the existing
+eight-hour reconnect budget; Hello alone does not reset that budget. Invalid
+configuration or protocol messages still stop the client.

@@ -373,7 +373,7 @@ func TestMirrorSnapshotHasNoResponderWhenPrimaryIsOffline(t *testing.T) {
 	group := manager.tcpMirrorGroups[port]
 	manager.mutex.Unlock()
 	targets := manager.snapshotMirrorTCPTargets(group)
-	if len(targets) != 1 || targets[0].primary {
+	if len(targets) != 1 || targets[0].ClientID == group.configuration.PrimaryClientID {
 		t.Fatalf("offline Primary unexpectedly elected a responder: %+v", targets)
 	}
 }
@@ -450,15 +450,14 @@ func TestProxySyncRejectsReusedRequestIDWithDifferentPayload(t *testing.T) {
 	t.Parallel()
 
 	manager := newTestTCPProxyManager(t)
-	port := uint16(reserveTCPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
-	first := manager.Sync(
-		"client-one", "session-one", "request-one",
-		SyncRequest{
+	ports, first := syncWithAvailablePorts(t, 1, reserveTCPPort, func(ports []uint16) SyncResult {
+		return manager.Sync("client-one", "session-one", "request-one", SyncRequest{
 			Revision: 1,
-			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("first", port)},
-		},
-	)
+			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("first", ports[0])},
+		})
+	})
+	port := ports[0]
 	if first.Status != SyncStatusApplied {
 		t.Fatalf("initial synchronization failed: %+v", first.Error)
 	}
@@ -483,16 +482,14 @@ func TestProxySyncReturnsBoundedCachedResultForHistoricalRequest(t *testing.T) {
 	t.Parallel()
 
 	manager := newTestTCPProxyManager(t)
-	port := uint16(reserveTCPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
-	declaration := tcpProxyDeclaration("proxy", port)
-	first := manager.Sync(
-		"client-one", "session-one", "request-one",
-		SyncRequest{
+	ports, first := syncWithAvailablePorts(t, 1, reserveTCPPort, func(ports []uint16) SyncResult {
+		return manager.Sync("client-one", "session-one", "request-one", SyncRequest{
 			Revision: 1,
-			Proxies:  []protocol.ProxyDeclaration{declaration},
-		},
-	)
+			Proxies:  []protocol.ProxyDeclaration{tcpProxyDeclaration("proxy", ports[0])},
+		})
+	})
+	declaration := tcpProxyDeclaration("proxy", ports[0])
 	if first.Status != SyncStatusApplied {
 		t.Fatalf("first synchronization failed: %+v", first.Error)
 	}
@@ -642,20 +639,17 @@ func TestTCPProxySyncReusesEndpointWhenProxyIsRenamed(t *testing.T) {
 	t.Parallel()
 
 	manager := newTestTCPProxyManager(t)
-	port := uint16(reserveTCPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
 
-	first := manager.Sync(
-		"client-one",
-		"session-one",
-		"request-one",
-		SyncRequest{
+	ports, first := syncWithAvailablePorts(t, 1, reserveTCPPort, func(ports []uint16) SyncResult {
+		return manager.Sync("client-one", "session-one", "request-one", SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
-				tcpProxyDeclaration("old-name", port),
+				tcpProxyDeclaration("old-name", ports[0]),
 			},
-		},
-	)
+		})
+	})
+	port := ports[0]
 	if first.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", first.Error)
 	}
@@ -692,22 +686,18 @@ func TestTCPProxySyncSwapsExistingEndpoints(t *testing.T) {
 	t.Parallel()
 
 	manager := newTestTCPProxyManager(t)
-	firstPort := uint16(reserveTCPAddress(t).Port)
-	secondPort := uint16(reserveTCPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
 
-	initial := manager.Sync(
-		"client-one",
-		"session-one",
-		"request-one",
-		SyncRequest{
+	ports, initial := syncWithAvailablePorts(t, 2, reserveTCPPort, func(ports []uint16) SyncResult {
+		return manager.Sync("client-one", "session-one", "request-one", SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
-				tcpProxyDeclaration("first", firstPort),
-				tcpProxyDeclaration("second", secondPort),
+				tcpProxyDeclaration("first", ports[0]),
+				tcpProxyDeclaration("second", ports[1]),
 			},
-		},
-	)
+		})
+	})
+	firstPort, secondPort := ports[0], ports[1]
 	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", initial.Error)
 	}
@@ -744,20 +734,17 @@ func TestTCPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 	t.Parallel()
 
 	manager := newTestTCPProxyManager(t)
-	existingPort := uint16(reserveTCPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
 
-	initial := manager.Sync(
-		"client-one",
-		"session-one",
-		"request-one",
-		SyncRequest{
+	ports, initial := syncWithAvailablePorts(t, 1, reserveTCPPort, func(ports []uint16) SyncResult {
+		return manager.Sync("client-one", "session-one", "request-one", SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
-				tcpProxyDeclaration("existing", existingPort),
+				tcpProxyDeclaration("existing", ports[0]),
 			},
-		},
-	)
+		})
+	})
+	existingPort := ports[0]
 	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial proxy synchronization failed: %+v", initial.Error)
 	}
@@ -817,19 +804,16 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 	t.Parallel()
 
 	manager := newTestTCPProxyManager(t)
-	existingPort := uint16(reserveUDPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
-	initial := manager.Sync(
-		"client-one",
-		"session-one",
-		"request-one",
-		SyncRequest{
+	ports, initial := syncWithAvailablePorts(t, 1, reserveUDPPort, func(ports []uint16) SyncResult {
+		return manager.Sync("client-one", "session-one", "request-one", SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
-				udpProxyDeclaration("existing", existingPort),
+				udpProxyDeclaration("existing", ports[0]),
 			},
-		},
-	)
+		})
+	})
+	existingPort := ports[0]
 	if initial.Status != SyncStatusApplied {
 		t.Fatalf("initial UDP synchronization failed: %+v", initial.Error)
 	}
@@ -870,23 +854,18 @@ func TestUDPProxySyncKeepsOldStateWhenNewEndpointConflicts(t *testing.T) {
 }
 
 func TestTCPAndUDPProxiesMayShareNumericPort(t *testing.T) {
-	t.Parallel()
-
 	manager := newTestTCPProxyManager(t)
-	port := uint16(reserveTCPAddress(t).Port)
 	manager.Attach("client-one", "session-one", nil)
-	result := manager.Sync(
-		"client-one",
-		"session-one",
-		"request-one",
-		SyncRequest{
+	ports, result := syncWithAvailablePorts(t, 1, reserveTCPPort, func(ports []uint16) SyncResult {
+		return manager.Sync("client-one", "session-one", "request-one", SyncRequest{
 			Revision: 1,
 			Proxies: []protocol.ProxyDeclaration{
-				tcpProxyDeclaration("tcp-service", port),
-				udpProxyDeclaration("udp-service", port),
+				tcpProxyDeclaration("tcp-service", ports[0]),
+				udpProxyDeclaration("udp-service", ports[0]),
 			},
-		},
-	)
+		})
+	})
+	port := ports[0]
 	if result.Status != SyncStatusApplied {
 		t.Fatalf("TCP and UDP numeric port sharing failed: %+v", result.Error)
 	}
@@ -982,6 +961,10 @@ func reserveTCPAddress(t *testing.T) *net.TCPAddr {
 	return address
 }
 
+func reserveTCPPort(t *testing.T) uint16 {
+	return uint16(reserveTCPAddress(t).Port)
+}
+
 func reserveUDPAddress(t *testing.T) *net.UDPAddr {
 	t.Helper()
 	connection, err := net.ListenUDP("udp", &net.UDPAddr{
@@ -995,4 +978,39 @@ func reserveUDPAddress(t *testing.T) *net.UDPAddr {
 		t.Fatal(err)
 	}
 	return address
+}
+
+func reserveUDPPort(t *testing.T) uint16 {
+	return uint16(reserveUDPAddress(t).Port)
+}
+
+func syncWithAvailablePorts(
+	t *testing.T,
+	count int,
+	reserve func(*testing.T) uint16,
+	sync func([]uint16) SyncResult,
+) ([]uint16, SyncResult) {
+	t.Helper()
+	const attempts = 8
+	var result SyncResult
+	for attempt := 0; attempt < attempts; attempt++ {
+		ports := make([]uint16, count)
+		reserved := make(map[uint16]struct{}, count)
+		for index := range ports {
+			for {
+				port := reserve(t)
+				if _, exists := reserved[port]; !exists {
+					ports[index] = port
+					reserved[port] = struct{}{}
+					break
+				}
+			}
+		}
+		result = sync(ports)
+		if result.Status == SyncStatusApplied || result.Error == nil || result.Error.Code != ErrorPortConflict {
+			return ports, result
+		}
+	}
+	t.Fatalf("test ports remained unavailable after %d attempts: %+v", attempts, result.Error)
+	return nil, SyncResult{}
 }

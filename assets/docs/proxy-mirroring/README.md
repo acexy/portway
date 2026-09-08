@@ -43,12 +43,21 @@ When a member becomes active, it joins both current and future visitor traffic:
 5. If the Primary is offline, other online members still receive input, but no
    response is sent to the visitor and no replacement Primary is elected.
 
-TCP preserves byte-stream and half-close behavior on each member link. A slow
-or failed member is isolated from the other members. A member added to a live
+TCP isolates a slow or failed member from the other members. A member added to a live
 TCP connection can begin at any byte offset: Portway does not detect protocol
 or message boundaries and does not replay a handshake or request prefix. Its
 local service must tolerate incomplete stream context. UDP preserves datagram
 boundaries; a newly active member begins with the next datagram.
+
+A local service being unavailable does not log out its client. TCP members,
+including the Primary, automatically retry failed links with backoff and resume
+forwarding subsequent bytes when the local service starts or restarts. Traffic
+lost during the outage and queued on a failed link is not replayed. The visitor's
+response direction remains open while the Primary recovers. Visitor input EOF
+ends retries, half-closes current member links, and allows up to five seconds for
+draining and Primary responses. UDP removes failed associations and retries on
+subsequent datagrams; sockets that report no error continue sending normally.
+Neither protocol requires a Portway client restart to recover the local service.
 
 Only the configured Primary has reply authority; every non-Primary response is
 discarded even while that member joins or leaves an active flow.
@@ -111,7 +120,10 @@ configuration.
 
 Mirror groups, membership, and Primary selection support fail-closed server
 configuration reload. An invalid candidate leaves the previous effective state
-unchanged. A same-port update reuses the public endpoint; removed members stop
+unchanged. Existing TCP visitors and unaffected groups remain connected during
+a same-port membership or Primary update. Reply authority switches atomically;
+a write authorized before the switch may finish within its existing five-second
+deadline before the new Primary writes. A same-port update reuses the public endpoint; removed members stop
 receiving traffic. Newly active members begin receiving subsequent traffic on
 both current and new TCP connections or UDP associations, subject to the
 no-replay and TCP-boundary limitations above.

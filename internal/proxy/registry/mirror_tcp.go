@@ -1,148 +1,79 @@
 package registry
 
 import (
-	"context"
-	"io"
 	"net"
-	"sync"
 
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/proxy/mirror"
 )
 
 const (
-	mirrorTCPChunkSize  = 32 * 1024
-	mirrorTCPQueueDepth = 32
+	mirrorTCPMaxSessions         = 4096
+	mirrorTCPMaxSessionsPerGroup = 256
 )
 
-type mirrorTCPTarget struct {
-	binding *tcpProxyBinding
+type mirrorTCPJoin struct {
+	session *mirror.TCPSession
 	target  link.Target
-	primary bool
 }
 
-type mirrorTCPMember struct {
-	target       mirrorTCPTarget
-	connection   net.Conn
-	queue        chan []byte
-	done         chan struct{}
-	responseDone chan struct{}
-	closeOnce    sync.Once
-}
-
-// mirrorTCPSession owns one Visitor connection and its dynamically changing
-// set of best-effort mirror copies.
-type mirrorTCPSession struct {
-	context context.Context
-	cancel  context.CancelFunc
+// mirrorTargetGuard keeps target validation and runtime publication in the same
+// registration critical section without exposing Registry to the data plane.
+type mirrorTargetGuard struct {
 	manager *Registry
 	group   *mirrorGroup
-	visitor net.Conn
-	mutex   sync.Mutex
-	closed  bool
-	members map[string]*mirrorTCPMember
 }
 
-type mirrorTCPJoin struct {
-	session *mirrorTCPSession
-	target  mirrorTCPTarget
+func (guard mirrorTargetGuard) Lock()   { guard.manager.mutex.Lock() }
+func (guard mirrorTargetGuard) Unlock() { guard.manager.mutex.Unlock() }
+
+func (guard mirrorTargetGuard) IsCurrent(target link.Target) bool {
+	manager := guard.manager
+	state := manager.clients[target.ClientID]
+	binding := guard.group.tcpMembers[target.ClientID]
+	return !manager.closed && manager.tcpMirrorGroups[guard.group.port] == guard.group &&
+		state != nil && state.active && state.sessionID == target.SessionID &&
+		state.writer == target.Writer && binding != nil && binding.bindingID == target.BindingID &&
+		state.tcpProxies[target.ProxyName] == binding
 }
 
 func (manager *Registry) openMirrorVisitor(group *mirrorGroup, visitor net.Conn) {
-	defer visitor.Close()
-	targets := manager.snapshotMirrorTCPTargets(group)
-	if len(targets) == 0 {
-		return
-	}
-	ctx, cancel := context.WithCancel(manager.context)
-	session := &mirrorTCPSession{
-		context: ctx,
-		cancel:  cancel,
-		manager: manager,
-		group:   group,
-		visitor: visitor,
-		members: make(map[string]*mirrorTCPMember),
-	}
+	session := mirror.NewTCPSession(manager.context, visitor,
+		mirrorTargetGuard{manager: manager, group: group}, manager.linkBroker.OpenStream)
 	if !manager.addMirrorTCPSession(group, session) {
-		cancel()
+		session.Cancel()
+		_ = visitor.Close()
 		return
 	}
-	defer cancel()
 	defer manager.removeMirrorTCPSession(group, session)
-
-	type openResult struct {
-		target     mirrorTCPTarget
-		connection net.Conn
-		err        error
-	}
-	opened := make(chan openResult, len(targets))
-	for _, target := range targets {
-		targetSnapshot := target
-		go func() {
-			connection, err := manager.linkBroker.OpenStream(ctx, targetSnapshot.target)
-			opened <- openResult{target: targetSnapshot, connection: connection, err: err}
-		}()
-	}
-	members := make([]*mirrorTCPMember, 0, len(targets))
-	for range targets {
-		result := <-opened
-		if result.err != nil {
-			continue
-		}
-		if member := session.addConnection(result.target, result.connection); member != nil {
-			members = append(members, member)
-		}
-	}
-	if len(members) == 0 {
-		return
-	}
-
-	buffer := make([]byte, mirrorTCPChunkSize)
-	for {
-		length, err := visitor.Read(buffer)
-		if length != 0 {
-			for _, member := range session.snapshotMembers() {
-				payload := append([]byte(nil), buffer[:length]...)
-				select {
-				case member.queue <- payload:
-				default:
-					member.close()
-				}
-			}
-		}
-		if err != nil {
-			break
-		}
-	}
-	members = session.closeInput()
-	for _, member := range members {
-		close(member.queue)
-	}
-	for _, member := range members {
-		<-member.done
-		if member.target.primary {
-			<-member.responseDone
-		} else {
-			member.close()
-		}
-	}
+	// Register before taking the snapshot so concurrent activation cannot fall
+	// between the snapshot and notification of existing visitor sessions.
+	session.Serve(manager.snapshotMirrorTCPTargets(group))
 }
 
-func (manager *Registry) addMirrorTCPSession(group *mirrorGroup, session *mirrorTCPSession) bool {
+func (manager *Registry) addMirrorTCPSession(group *mirrorGroup, session *mirror.TCPSession) bool {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
-	if manager.tcpMirrorGroups[group.port] != group {
+	if manager.closed || manager.tcpMirrorGroups[group.port] != group ||
+		len(group.tcpSessions) >= mirrorTCPMaxSessionsPerGroup {
 		return false
 	}
+	count := 0
+	for _, current := range manager.tcpMirrorGroups {
+		count += len(current.tcpSessions)
+	}
+	if count >= mirrorTCPMaxSessions {
+		return false
+	}
+	session.SetPrimary(group.configuration.PrimaryClientID)
 	group.tcpSessions[session] = struct{}{}
 	return true
 }
 
-func (manager *Registry) removeMirrorTCPSession(group *mirrorGroup, session *mirrorTCPSession) {
+func (manager *Registry) removeMirrorTCPSession(group *mirrorGroup, session *mirror.TCPSession) {
 	manager.mutex.Lock()
-	if manager.tcpMirrorGroups[group.port] == group {
-		delete(group.tcpSessions, session)
-	}
+	delete(group.tcpSessions, session)
 	manager.mutex.Unlock()
 }
 
@@ -153,16 +84,7 @@ func (manager *Registry) mirrorTCPJoinsLocked(clientID string, state *clientStat
 		if group == nil || !group.allows(clientID, state) || group.tcpMembers[clientID] != binding {
 			continue
 		}
-		target := mirrorTCPTarget{
-			binding: binding,
-			primary: clientID == group.configuration.PrimaryClientID,
-			target: link.Target{
-				ClientID: clientID, SessionID: state.sessionID,
-				ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeTCP,
-				BindingID: binding.bindingID, Writer: state.writer,
-				Authentication: state.authentication, MaxActiveLinks: state.maxActiveLinks,
-			},
-		}
+		target := mirrorTCPLinkTarget(clientID, state, binding)
 		for session := range group.tcpSessions {
 			joins = append(joins, mirrorTCPJoin{session: session, target: target})
 		}
@@ -170,138 +92,29 @@ func (manager *Registry) mirrorTCPJoinsLocked(clientID string, state *clientStat
 	return joins
 }
 
-func (session *mirrorTCPSession) addTarget(target mirrorTCPTarget) {
-	go func() {
-		connection, err := session.manager.linkBroker.OpenStream(session.context, target.target)
-		if err != nil {
-			return
-		}
-		if session.addConnection(target, connection) == nil {
-			_ = connection.Close()
-		}
-	}()
-}
-
-func (session *mirrorTCPSession) addConnection(
-	target mirrorTCPTarget,
-	connection net.Conn,
-) *mirrorTCPMember {
-	member := &mirrorTCPMember{
-		target: target, connection: connection,
-		queue:        make(chan []byte, mirrorTCPQueueDepth),
-		done:         make(chan struct{}),
-		responseDone: make(chan struct{}),
-	}
-	session.mutex.Lock()
-	if session.closed {
-		session.mutex.Unlock()
-		return nil
-	}
-	previous := session.members[target.target.ClientID]
-	session.members[target.target.ClientID] = member
-	session.mutex.Unlock()
-	if previous != nil {
-		previous.close()
-	}
-	go member.writeLoop(session.context)
-	go func() {
-		defer close(member.responseDone)
-		if target.primary && session.visitor != nil {
-			_, _ = io.Copy(session.visitor, connection)
-			if session.currentMember(member) {
-				closeWrite(session.visitor)
-			}
-			return
-		}
-		_, _ = io.Copy(io.Discard, connection)
-	}()
-	return member
-}
-
-func (session *mirrorTCPSession) currentMember(member *mirrorTCPMember) bool {
-	session.mutex.Lock()
-	defer session.mutex.Unlock()
-	return session.members[member.target.target.ClientID] == member
-}
-
-func (session *mirrorTCPSession) snapshotMembers() []*mirrorTCPMember {
-	session.mutex.Lock()
-	defer session.mutex.Unlock()
-	members := make([]*mirrorTCPMember, 0, len(session.members))
-	for _, member := range session.members {
-		members = append(members, member)
-	}
-	return members
-}
-
-func (session *mirrorTCPSession) closeInput() []*mirrorTCPMember {
-	session.mutex.Lock()
-	defer session.mutex.Unlock()
-	if session.closed {
-		return nil
-	}
-	session.closed = true
-	members := make([]*mirrorTCPMember, 0, len(session.members))
-	for _, member := range session.members {
-		members = append(members, member)
-	}
-	return members
-}
-
-func (manager *Registry) snapshotMirrorTCPTargets(group *mirrorGroup) []mirrorTCPTarget {
+func (manager *Registry) snapshotMirrorTCPTargets(group *mirrorGroup) []link.Target {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
 	if manager.tcpMirrorGroups[group.port] != group {
 		return nil
 	}
-	targets := make([]mirrorTCPTarget, 0, len(group.tcpMembers))
+	targets := make([]link.Target, 0, len(group.tcpMembers))
 	for clientID, binding := range group.tcpMembers {
 		state := manager.clients[clientID]
 		if state == nil || !state.active || state.sessionID != binding.sessionID ||
 			state.tcpProxies[binding.declaration.Name] != binding || state.writer == nil {
 			continue
 		}
-		targets = append(targets, mirrorTCPTarget{
-			binding: binding,
-			primary: clientID == group.configuration.PrimaryClientID,
-			target: link.Target{
-				ClientID: clientID, SessionID: state.sessionID,
-				ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeTCP,
-				BindingID: binding.bindingID, Writer: state.writer,
-				Authentication: state.authentication, MaxActiveLinks: state.maxActiveLinks,
-			},
-		})
+		targets = append(targets, mirrorTCPLinkTarget(clientID, state, binding))
 	}
 	return targets
 }
 
-func (member *mirrorTCPMember) writeLoop(ctx context.Context) {
-	defer close(member.done)
-	for {
-		select {
-		case <-ctx.Done():
-			member.close()
-			return
-		case payload, open := <-member.queue:
-			if !open {
-				closeWrite(member.connection)
-				return
-			}
-			if _, err := member.connection.Write(payload); err != nil {
-				member.close()
-				return
-			}
-		}
-	}
-}
-
-func (member *mirrorTCPMember) close() {
-	member.closeOnce.Do(func() { _ = member.connection.Close() })
-}
-
-func closeWrite(connection net.Conn) {
-	type closeWriter interface{ CloseWrite() error }
-	if candidate, ok := connection.(closeWriter); ok {
-		_ = candidate.CloseWrite()
+func mirrorTCPLinkTarget(clientID string, state *clientState, binding *tcpProxyBinding) link.Target {
+	return link.Target{
+		ClientID: clientID, SessionID: state.sessionID,
+		ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeTCP,
+		BindingID: binding.bindingID, Writer: state.writer,
+		Authentication: state.authentication, MaxActiveLinks: state.maxActiveLinks,
 	}
 }

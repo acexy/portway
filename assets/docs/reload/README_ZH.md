@@ -130,3 +130,8 @@ Binding。切换失败或未完成时不会把新配置标记为有效；对应 
 [`config/zh/governed/governed-client.yaml`](../../../config/zh/governed/governed-client.yaml)
 和
 [`config/zh/managed/managed-client.yaml`](../../../config/zh/managed/managed-client.yaml)。
+
+配置文件按稳定候选统一校验和发布，但分批替换多个文件不是跨文件事务；应确保
+中间配置也可安全发布。合法 Managed Forward 配置无法绑定本地端口时，客户端
+关闭候选运行时并在现有 8 小时重连预算内重试；仅 Hello 成功不会重置预算。
+非法配置或协议消息仍会使客户端退出。

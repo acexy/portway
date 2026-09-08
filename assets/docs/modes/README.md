@@ -118,3 +118,10 @@ local YAML, so Shared or Governed listener changes require a client restart.
 Both modes can coexist in one Shared or Governed client configuration, use TCP
 or QUIC as the underlying transport, and retain their application protocol
 semantics across the tunnel.
+
+Forward listeners are created after server approval and closed when the client
+control session ends; recovery creates new listeners. If local startup fails,
+Shared/Governed clients close their prepared listeners, notify the server on a
+best-effort basis, and exit. Ordinary TCP Proxy and Forward preserve normal
+half-close without a fixed response-drain timeout; I/O errors and session
+cancellation close both directions. Mirror TCP retains its separate drain policy.

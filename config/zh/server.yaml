@@ -88,12 +88,12 @@ proxies:
     # 公网 HTTP host:port Listener；可选，空值禁用，允许 :80；不能与 Transport、
     # HTTPS 或运维 Listener 地址重复。
     listen_address: ""
-    # 请求头读取超时，默认 0s 表示不限制；非零最大 60s。
-    read_header_timeout: 0s
+    # 请求头读取超时，默认 10s；显式 0s 不限制；非零最大 60s。
+    read_header_timeout: 10s
     # 完整请求体读取超时，默认 0s 表示不限制；非零最大 10m。
     request_body_timeout: 0s
-    # 公网 HTTP/HTTPS Keep-Alive 空闲超时，默认 0s 表示不限制；非零最大 10m。
-    public_idle_timeout: 0s
+    # 公网 HTTP/HTTPS Keep-Alive 空闲超时，默认 60s；显式 0s 不限制；非零最大 10m。
+    public_idle_timeout: 60s
     # 优雅关闭：默认 30s，范围 (0s, 2m]。
     graceful_shutdown_timeout: 30s
     # 默认 0s，表示 Portway 不设置空闲超时；非零最大 10m。

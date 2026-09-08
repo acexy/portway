@@ -128,17 +128,17 @@ proxies:
     # Optional. Public HTTP host:port listener. Empty disables HTTP; :80 is
     # valid. It must not duplicate the transport, HTTPS, or operations listener.
     listen_address: ""
-    # Optional. Defaults to 0s, which disables the Portway deadline.
-    # Maximum non-zero value: 60s.
-    read_header_timeout: 0s
+    # Optional. Defaults to 10s; explicit 0s disables the header deadline.
+    # Maximum non-zero value: 60s. TLS handshakes have an independent 10s limit.
+    read_header_timeout: 10s
 
     # Optional. Maximum duration for receiving a complete request body.
     # Defaults to 0s, which disables the Portway deadline. Maximum: 10m.
     request_body_timeout: 0s
 
-    # Optional. Public HTTP/HTTPS keep-alive idle timeout. Defaults to 0s,
-    # which uses Go's unlimited server default. Maximum: 10m.
-    public_idle_timeout: 0s
+    # Optional. Public HTTP/HTTPS keep-alive idle timeout. Defaults to 60s;
+    # explicit 0s disables this deadline. Maximum: 10m.
+    public_idle_timeout: 60s
 
     # Optional. Maximum graceful HTTP shutdown period. Defaults to 30s.
     # Valid range: greater than 0s and at most 2m.

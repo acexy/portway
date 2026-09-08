@@ -147,6 +147,8 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	defer s.proxyRegistry.Close()
 	defer cancelSessions()
+	publicAdmission := &publicHTTPAdmission{limit: maxPublicHTTPConnections, connections: make(map[*publicHTTPConnection]struct{})}
+	defer publicAdmission.close()
 	listenerErrors := make(chan error, 3)
 	if configuration.Proxies.HTTP.ListenAddress != "" {
 		httpListener, listenError := (&net.ListenConfig{}).Listen(
@@ -186,9 +188,10 @@ func (s *Service) Run(ctx context.Context) error {
 			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
 			Protocols:         httpProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
+			BaseContext:       publicHTTPBaseContext(sessionContext),
 		}
 		sessions.Go(func() {
-			serveError := httpServer.Serve(httpListener)
+			serveError := httpServer.Serve(publicAdmission.wrap(httpListener, nil))
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()
@@ -257,10 +260,11 @@ func (s *Service) Run(ctx context.Context) error {
 			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
 			Protocols:         httpsProtocols,
 			ConnContext:       ipfilter.HTTPConnectionContext,
+			BaseContext:       publicHTTPBaseContext(sessionContext),
 			TLSConfig:         tlsConfiguration,
 		}
 		sessions.Go(func() {
-			serveError := httpsServer.Serve(tls.NewListener(httpsListener, tlsConfiguration))
+			serveError := httpsServer.Serve(publicAdmission.wrap(httpsListener, tlsConfiguration))
 			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 				listenerErrors <- serveError
 				transportServer.Close()

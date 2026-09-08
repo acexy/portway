@@ -48,6 +48,8 @@ the configured Primary can reply, so mirror clients cannot interfere with the
 visitor response. Members that join an active flow receive only subsequent
 traffic: TCP starts at an arbitrary byte offset, while UDP starts with the next
 datagram. See [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md).
+Local service outages do not log clients out; forwarding resumes automatically
+after recovery, without replaying traffic lost during the outage.
 
 **Forward** is for consuming services from the server network. `portway` owns
 the local TCP/UDP listener and sends connections or datagrams to an explicitly
@@ -280,8 +282,10 @@ the local application receives a normal HTTP request. Visitor-supplied
 values are removed; Portwayd writes trusted
 `X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto` values. HTTP and
 HTTPS share the same proxy limits. For HTTPS, the normalized SNI and HTTP `Host`
-must match. Protocol timeouts and request-body limits default to disabled and can
-be enabled under the server `http` configuration. HTTPS selects certificates by SNI from an atomically
+must match. HTTP/HTTPS share a hard limit of 4096 public connections. TLS handshakes
+are limited to 10 seconds; request headers default to 10 seconds and public keep-alive
+idle time to 60 seconds. Request-body and upstream business limits remain disabled
+by default and can be configured under `proxies.http`. HTTPS selects certificates by SNI from an atomically
 reloadable certificate set; invalid updates leave the previous set active. HTTPS supports
 HTTP/1.1 and HTTP/2 with a minimum TLS version of 1.2. HTTPS backend forwarding,
 SNI passthrough, ACME, and HTTP/3 are not currently supported.

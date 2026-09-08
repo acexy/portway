@@ -8,6 +8,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/proxy/mirror"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
 	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 )
@@ -31,7 +32,7 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 					mode:          mode,
 					tcpMembers:    make(map[string]*tcpProxyBinding),
 					udpMembers:    make(map[string]*udpProxyBinding),
-					tcpSessions:   make(map[*mirrorTCPSession]struct{}),
+					tcpSessions:   make(map[*mirror.TCPSession]struct{}),
 				}
 				if groupConfiguration.Type == protocol.ProxyTypeTCP {
 					candidatesTCP[port] = group
@@ -106,6 +107,11 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	removedUDPBindings := make([]*udpProxyBinding, 0)
 	for port, old := range manager.tcpMirrorGroups {
 		candidate := candidatesTCP[port]
+		if candidate == nil || candidate.mode != old.mode {
+			for session := range old.tcpSessions {
+				session.Cancel()
+			}
+		}
 		if candidate == nil {
 			if old.tcpEndpoint != nil {
 				removedTCP[port] = old.tcpEndpoint
@@ -154,8 +160,19 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 			}
 		}
 	}
+	// Keep the live-session owner stable when an endpoint remains authorized.
+	for port, candidate := range candidatesTCP {
+		if old := manager.tcpMirrorGroups[port]; old != nil && old.mode == candidate.mode {
+			old.configuration = candidate.configuration
+			old.tcpMembers = candidate.tcpMembers
+			candidatesTCP[port] = old
+		}
+	}
 	for port, candidate := range candidatesTCP {
 		if len(candidate.tcpMembers) == 0 && candidate.tcpEndpoint != nil {
+			for session := range candidate.tcpSessions {
+				session.Cancel()
+			}
 			removedTCP[port] = candidate.tcpEndpoint
 			candidate.tcpEndpoint = nil
 		}
@@ -199,8 +216,27 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	for port := range removedUDP {
 		delete(manager.udpEndpoints, port)
 	}
+	responseUpdates := make(map[*mirror.TCPSession]string)
+	var joins []mirrorTCPJoin
+	for _, group := range candidatesTCP {
+		for session := range group.tcpSessions {
+			responseUpdates[session] = group.configuration.PrimaryClientID
+		}
+	}
+	for clientID, state := range manager.clients {
+		if state.active {
+			joins = append(joins, manager.mirrorTCPJoinsLocked(clientID, state)...)
+		}
+	}
 	manager.mutex.Unlock()
 
+	// Publish response eligibility without waiting for an in-flight bounded write.
+	for session, primary := range responseUpdates {
+		session.SetPrimary(primary)
+	}
+	for _, join := range joins {
+		join.session.AddTarget(join.target)
+	}
 	closeTCPEndpoints(removedTCP)
 	closeUDPEndpoints(removedUDP)
 	for _, bindingID := range removedBindings {

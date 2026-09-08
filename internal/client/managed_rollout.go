@@ -81,7 +81,7 @@ func (s *Service) receiveManagedConfiguration(
 		return nil, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 	}
 	if err := forwardRuntime.start(); err != nil {
-		return nil, transport.Permanent(err)
+		return nil, err
 	}
 	s.setRuntimeProxies(proxies)
 	s.managedMutex.Lock()

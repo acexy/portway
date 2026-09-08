@@ -186,6 +186,14 @@ func (s *Service) runControlSession(
 				return "", false, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 			}
 			if err := forwardRuntime.start(); err != nil {
+				forwardRuntime.close()
+				// Registration succeeded, but this process cannot serve its configuration.
+				// Notify the server before closing the transport; expiry remains the fallback.
+				if deadlineError := connection.SetDeadline(time.Now().Add(gracefulCloseTimeout)); deadlineError == nil {
+					_ = writer.Write(protocol.MessageCloseSession, protocol.CloseSession{
+						SessionID: serverHello.SessionID, Reason: protocol.CloseReasonClientShutdown,
+					})
+				}
 				return "", false, transport.Permanent(err)
 			}
 		}
@@ -201,7 +209,9 @@ func (s *Service) runControlSession(
 			ctx, connection, writer, serverHello.ClientID, serverHello.SessionID, transportSession,
 		)
 		if err != nil {
-			return "", false, err
+			// A resumed server session already owns the new ID, even if runtime
+			// activation fails. Retain that ID without claiming successful setup.
+			return serverHello.SessionID, false, err
 		}
 		defer func() { forwardRuntime.close() }()
 	default:

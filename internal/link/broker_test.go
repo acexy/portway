@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -12,6 +14,46 @@ import (
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
+
+type linkActivationWriter struct {
+	activate func()
+}
+
+func (writer linkActivationWriter) Write(payload []byte) (int, error) {
+	writer.activate()
+	return len(payload), nil
+}
+
+func TestOpenStreamCancellationClosesLinkActivatedBeforeDelivery(t *testing.T) {
+	broker := NewBroker(context.Background())
+	defer broker.Close()
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target := Target{ClientID: "client-a", SessionID: "session-a", ProxyType: protocol.ProxyTypeTCP}
+	target.Writer = control.NewWriter(linkActivationWriter{activate: func() {
+		broker.mutex.Lock()
+		for linkID, pending := range broker.pending {
+			// Simulate Bind promoting the pending link before publishing ready.
+			delete(broker.pending, linkID)
+			pending.timer.Stop()
+			broker.decrementPendingLocked(pending.target)
+			broker.active[linkID] = &brokerActiveLink{
+				target: pending.target, connection: newManagedLinkConnection(connection),
+			}
+			broker.incrementActiveLocked(pending.target)
+		}
+		broker.mutex.Unlock()
+		cancel()
+	}})
+	if _, err := broker.OpenStream(ctx, target); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	if err := connection.SetDeadline(time.Now()); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("active connection survived OpenStream cancellation: %v", err)
+	}
+}
 
 func TestBrokerAppliesPerClientActiveLinkLimit(t *testing.T) {
 	broker := NewBroker(context.Background())

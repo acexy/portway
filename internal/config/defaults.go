@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"time"
 
 	"github.com/acexy/portway/internal/transport"
 )
@@ -47,7 +48,7 @@ func DefaultServer() ServerConfig {
 			HTTP: HTTPProxyConfig{HTTPConfig: HTTPConfig{
 				ReadHeaderTimeout:              httpDefaultReadHeaderTimeout,
 				RequestBodyTimeout:             0,
-				PublicIdleTimeout:              0,
+				PublicIdleTimeout:              time.Minute,
 				GracefulShutdownTimeout:        httpDefaultGracefulShutdownTimeout,
 				MaxHeaderBytes:                 httpDefaultMaxHeaderBytes,
 				MaxRequestBodyBytes:            0,
