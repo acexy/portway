@@ -282,8 +282,10 @@ the local application receives a normal HTTP request. Visitor-supplied
 values are removed; Portwayd writes trusted
 `X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto` values. HTTP and
 HTTPS share the same proxy limits. For HTTPS, the normalized SNI and HTTP `Host`
-must match. Protocol timeouts and request-body limits default to disabled and can
-be enabled under the server `http` configuration. HTTPS selects certificates by SNI from an atomically
+must match. HTTP/HTTPS share a hard limit of 4096 public connections. TLS handshakes
+are limited to 10 seconds; request headers default to 10 seconds and public keep-alive
+idle time to 60 seconds. Request-body and upstream business limits remain disabled
+by default and can be configured under `proxies.http`. HTTPS selects certificates by SNI from an atomically
 reloadable certificate set; invalid updates leave the previous set active. HTTPS supports
 HTTP/1.1 and HTTP/2 with a minimum TLS version of 1.2. HTTPS backend forwarding,
 SNI passthrough, ACME, and HTTP/3 are not currently supported.

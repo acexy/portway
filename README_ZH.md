@@ -259,8 +259,8 @@ proxies:
 提供的 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host` 和
 `X-Forwarded-Proto` 会被删除，`portwayd` 写入可信的
 `X-Forwarded-For`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`。HTTP 与 HTTPS
-共用代理限制。HTTPS 要求规范化后的 SNI 与 HTTP `Host` 完全一致。协议超时和
-请求体限制默认关闭，可在服务端 `http` 配置中启用。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
+共用代理限制。HTTPS 要求规范化后的 SNI 与 HTTP `Host` 完全一致。HTTP/HTTPS 合计最多 4096 条公网连接，TLS 握手最多 10 秒；请求头默认 10 秒，
+公网 Keep-Alive 空闲默认 60 秒。请求体及上游业务限制默认关闭，可在 `proxies.http` 中配置。HTTPS 根据 SNI 从可原子热更新的证书集合中选择证书；
 无效更新会继续使用上一代集合。HTTPS 支持 HTTP/1.1、HTTP/2，最低使用 TLS 1.2。
 当前不支持 HTTPS 回源、SNI 透传、ACME 和 HTTP/3。
 

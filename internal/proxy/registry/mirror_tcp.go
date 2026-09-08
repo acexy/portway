@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/acexy/portway/internal/link"
@@ -50,18 +51,19 @@ type mirrorTCPWorker struct {
 // mirrorTCPSession owns one Visitor connection and its dynamically changing
 // set of best-effort mirror copies.
 type mirrorTCPSession struct {
-	context       context.Context
-	cancel        context.CancelFunc
-	manager       *Registry
-	group         *mirrorGroup
-	visitor       net.Conn
-	mutex         sync.Mutex
-	closed        bool
-	members       map[string]*mirrorTCPMember
-	workers       map[string]*mirrorTCPWorker
-	inputDone     chan struct{}
-	waitGroup     sync.WaitGroup
-	responseMutex sync.Mutex
+	context         context.Context
+	cancel          context.CancelFunc
+	manager         *Registry
+	group           *mirrorGroup
+	visitor         net.Conn
+	mutex           sync.Mutex
+	closed          bool
+	members         map[string]*mirrorTCPMember
+	workers         map[string]*mirrorTCPWorker
+	inputDone       chan struct{}
+	waitGroup       sync.WaitGroup
+	responseMutex   sync.Mutex
+	primaryClientID atomic.Pointer[string]
 }
 
 type mirrorTCPJoin struct {
@@ -159,6 +161,8 @@ func (manager *Registry) addMirrorTCPSession(group *mirrorGroup, session *mirror
 	if count >= mirrorTCPMaxSessions {
 		return false
 	}
+	primary := group.configuration.PrimaryClientID
+	session.primaryClientID.Store(&primary)
 	group.tcpSessions[session] = struct{}{}
 	return true
 }
@@ -289,9 +293,9 @@ func (session *mirrorTCPSession) runWorker(worker, previous *mirrorTCPWorker) {
 			case <-worker.context.Done():
 			case <-session.inputDone:
 				<-member.done
-				if member.target.primary {
-					<-member.responseDone
-				}
+				// Primary may change while this link remains alive. The session's
+				// bounded drain window owns termination of every response reader.
+				<-member.responseDone
 			}
 			member.close()
 			stopClose()
@@ -361,7 +365,7 @@ func (session *mirrorTCPSession) addConnection(
 				member.close()
 			}
 		}()
-		if target.primary && session.visitor != nil {
+		if session.visitor != nil {
 			session.copyResponse(member)
 			return
 		}
@@ -381,6 +385,14 @@ func (session *mirrorTCPSession) copyResponse(member *mirrorTCPMember) {
 			if !session.currentMember(member) {
 				session.responseMutex.Unlock()
 				return
+			}
+			primary := session.primaryClientID.Load()
+			if primary == nil || member.target.target.ClientID != *primary {
+				session.responseMutex.Unlock()
+				if readError != nil {
+					return
+				}
+				continue
 			}
 			err := session.visitor.SetWriteDeadline(time.Now().Add(mirrorTCPWriteTimeout))
 			if err == nil {

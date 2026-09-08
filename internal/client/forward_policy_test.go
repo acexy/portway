@@ -2,12 +2,14 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/transport"
 )
 
 func TestForwardManagerKeepsDormantConfigurationAndRestoresListener(t *testing.T) {
@@ -172,4 +174,38 @@ func assertTCPAddressUnavailable(t *testing.T, address string) {
 		listener.Close()
 		t.Fatalf("address %s remained available", address)
 	}
+}
+
+func TestManagedForwardBindingFailureRetriesAfterPortRelease(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	port := uint16(occupied.Addr().(*net.TCPAddr).Port)
+	configuration := config.ForwardConfig{Name: "database", Type: protocol.ForwardTypeTCP,
+		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: port}, Target: config.EndpointConfig{IP: "127.0.0.1", Port: 5432}}
+	create := func() *forwardManager {
+		runtime, err := newForwardManager(context.Background(), logging.New("test"), "client", "session", nil, nil, []config.ForwardConfig{configuration})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	bindings := []protocol.ForwardResult{{Name: "database", Type: protocol.ForwardTypeTCP, BindingID: "binding", Active: true}}
+	candidate := create()
+	next, err := replaceManagedForwardRuntime(nil, candidate, bindings)
+	if err == nil || transport.IsPermanent(err) || next != nil {
+		t.Fatalf("expected retryable binding failure, got %v", err)
+	}
+	if candidate.context.Err() == nil {
+		t.Fatal("failed candidate was not closed")
+	}
+	occupied.Close()
+	next, err = replaceManagedForwardRuntime(nil, create(), bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.close()
+	assertTCPAddressUnavailable(t, net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
 }

@@ -69,8 +69,13 @@ func (s *Service) Run(ctx context.Context) error {
 		if errors.As(err, &configurationError) && !configurationError.retryable {
 			return err
 		}
-		if established {
+		if establishedSessionID != "" {
 			sessionID = establishedSessionID
+			if disconnectedAt.IsZero() {
+				disconnectedAt = time.Now()
+			}
+		}
+		if established {
 			disconnectedAt = time.Now()
 			reconnectDelay = initialRecoveryReconnectDelay
 			reconnectAttempt = 0

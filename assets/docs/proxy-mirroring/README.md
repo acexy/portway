@@ -120,7 +120,10 @@ configuration.
 
 Mirror groups, membership, and Primary selection support fail-closed server
 configuration reload. An invalid candidate leaves the previous effective state
-unchanged. A same-port update reuses the public endpoint; removed members stop
+unchanged. Existing TCP visitors and unaffected groups remain connected during
+a same-port membership or Primary update. Reply authority switches atomically;
+a write authorized before the switch may finish within its existing five-second
+deadline before the new Primary writes. A same-port update reuses the public endpoint; removed members stop
 receiving traffic. Newly active members begin receiving subsequent traffic on
 both current and new TCP connections or UDP associations, subject to the
 no-replay and TCP-boundary limitations above.

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"syscall"
-	"time"
 )
 
 // Stream is the reliable byte-stream boundary required by the TCP proxy.
@@ -58,18 +57,15 @@ func Forward(ctx context.Context, left Stream, right Stream) (ForwardResult, err
 	go copyDirection(left, right, false)
 
 	firstResult := <-results
-	timer := time.NewTimer(streamCloseGracePeriod)
-	defer timer.Stop()
+	if firstResult.err != nil {
+		left.Close()
+		right.Close()
+	}
 
 	select {
 	case secondResult := <-results:
 		return forwardResult(firstResult, secondResult), errors.Join(firstResult.err, secondResult.err)
 	case <-ctx.Done():
-		left.Close()
-		right.Close()
-		secondResult := <-results
-		return forwardResult(firstResult, secondResult), errors.Join(firstResult.err, secondResult.err)
-	case <-timer.C:
 		left.Close()
 		right.Close()
 		secondResult := <-results

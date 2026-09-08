@@ -270,14 +270,14 @@ func TestValidateServerAcceptsDefaultHTTPSettings(t *testing.T) {
 	if err := validateServer(configuration); err != nil {
 		t.Fatalf("default HTTP settings were rejected: %v", err)
 	}
-	if configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout != 0 ||
+	if configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout != 10*time.Second ||
 		configuration.Proxies.HTTP.HTTPConfig.RequestBodyTimeout != 0 ||
-		configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout != 0 ||
+		configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout != time.Minute ||
 		configuration.Proxies.HTTP.HTTPConfig.IdleConnectionTimeout != 0 ||
 		configuration.Proxies.HTTP.HTTPConfig.ResponseHeaderTimeout != 0 ||
 		configuration.Proxies.HTTP.HTTPConfig.UpgradeIdleTimeout != 0 ||
 		configuration.Proxies.HTTP.HTTPConfig.MaxRequestBodyBytes != 0 {
-		t.Fatalf("HTTP protocol boundaries must default to disabled: %+v", configuration.Proxies.HTTP.HTTPConfig)
+		t.Fatalf("HTTP ingress defaults and unlimited business streaming must remain independent: %+v", configuration.Proxies.HTTP.HTTPConfig)
 	}
 }
 

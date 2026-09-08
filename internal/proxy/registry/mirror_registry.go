@@ -105,10 +105,12 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	removedBindings := make([]string, 0)
 	removedUDPBindings := make([]*udpProxyBinding, 0)
 	for port, old := range manager.tcpMirrorGroups {
-		for session := range old.tcpSessions {
-			session.cancel()
-		}
 		candidate := candidatesTCP[port]
+		if candidate == nil || candidate.mode != old.mode {
+			for session := range old.tcpSessions {
+				session.cancel()
+			}
+		}
 		if candidate == nil {
 			if old.tcpEndpoint != nil {
 				removedTCP[port] = old.tcpEndpoint
@@ -157,8 +159,19 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 			}
 		}
 	}
+	// Keep the live-session owner stable when an endpoint remains authorized.
+	for port, candidate := range candidatesTCP {
+		if old := manager.tcpMirrorGroups[port]; old != nil && old.mode == candidate.mode {
+			old.configuration = candidate.configuration
+			old.tcpMembers = candidate.tcpMembers
+			candidatesTCP[port] = old
+		}
+	}
 	for port, candidate := range candidatesTCP {
 		if len(candidate.tcpMembers) == 0 && candidate.tcpEndpoint != nil {
+			for session := range candidate.tcpSessions {
+				session.cancel()
+			}
 			removedTCP[port] = candidate.tcpEndpoint
 			candidate.tcpEndpoint = nil
 		}
@@ -202,8 +215,27 @@ func (manager *Registry) configureMirrorGroupsLocked(configuration config.ProxyM
 	for port := range removedUDP {
 		delete(manager.udpEndpoints, port)
 	}
+	responseUpdates := make(map[*mirrorTCPSession]string)
+	var joins []mirrorTCPJoin
+	for _, group := range candidatesTCP {
+		for session := range group.tcpSessions {
+			responseUpdates[session] = group.configuration.PrimaryClientID
+		}
+	}
+	for clientID, state := range manager.clients {
+		if state.active {
+			joins = append(joins, manager.mirrorTCPJoinsLocked(clientID, state)...)
+		}
+	}
 	manager.mutex.Unlock()
 
+	// Publish response eligibility without waiting for an in-flight bounded write.
+	for session, primary := range responseUpdates {
+		session.primaryClientID.Store(&primary)
+	}
+	for _, join := range joins {
+		join.session.addTarget(join.target)
+	}
 	closeTCPEndpoints(removedTCP)
 	closeUDPEndpoints(removedUDP)
 	for _, bindingID := range removedBindings {

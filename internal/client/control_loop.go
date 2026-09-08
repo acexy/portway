@@ -333,7 +333,7 @@ func replaceManagedForwardRuntime(
 	}
 	if err := candidate.start(); err != nil {
 		candidate.close()
-		return nil, transport.Permanent(err)
+		return nil, err
 	}
 	return candidate, nil
 }

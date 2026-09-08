@@ -3,7 +3,7 @@ package config
 import "time"
 
 const (
-	httpDefaultReadHeaderTimeout              = 0 * time.Second
+	httpDefaultReadHeaderTimeout              = 10 * time.Second
 	httpDefaultGracefulShutdownTimeout        = 30 * time.Second
 	httpDefaultMaxHeaderBytes                 = 64 * 1024
 	httpDefaultMaxConcurrentRequests          = 4096
