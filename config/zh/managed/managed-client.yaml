@@ -32,7 +32,9 @@ configuration:
   # 可选，默认空。TCP/UDP/HTTP 合计硬上限 128；HTTPS 复用 type=http，
   # 不是第四种代理类型。
   # 所有 Managed 记录之间，同协议公网端口和 HTTP 域名必须全局唯一；
-  # 客户端离线时资源仍为该 ClientID 保留。
+  # 客户端离线时资源仍为该 ClientID 保留。如果本 ClientID 属于 server.yaml 中的
+  # Managed 镜像组，本集合必须为组内每个公共端口包含恰好一个类型和公网端口均
+  # 匹配的 Proxy；加入镜像组不会自动创建这些条目。
   proxies:
     - name: ssh
       # 必填。表示 portwayd 与 portway 之间的代理语义，而非公网入口 scheme；

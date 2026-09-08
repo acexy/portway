@@ -55,7 +55,10 @@ proxies:
   # 可选，由服务端拥有的 TCP/UDP 镜像组。仅 Governed 和 Managed ClientID 可加入。
   # 所有在线成员接收相同 Visitor 输入，只有 primary_client_id 可以回复。Primary
   # 缺席时组保持只接收且不自动选举。成员激活后立即加入当前和后续流量，不回放历史
-  # 数据，也不保证 TCP 消息边界；本地服务必须能容忍不完整字节流。
+  # 数据，也不保证 TCP 消息边界；本地服务必须能容忍不完整字节流。每个 Governed
+  # 成员对应的 TCP 或 UDP 权限必须覆盖组内全部公共端口；权限范围可以更大，但不能
+  # 是公共端口范围的子集。加入镜像组不会授予或扩大客户端的 Proxy 权限。每个
+  # Managed 成员必须为组内每个公共端口配置恰好一个类型和公网端口均匹配的 Proxy。
   # mirror:
   #   governed:
   #     - name: telemetry

@@ -93,7 +93,12 @@ proxies:
   # input, while only primary_client_id may reply. Missing Primary leaves the
   # group receive-only; no replacement is elected. A member that becomes active
   # joins current and future traffic immediately, without replay or TCP message
-  # boundaries; its local service must tolerate incomplete streams.
+  # boundaries; its local service must tolerate incomplete streams. Every
+  # Governed member's matching TCP or UDP permission must cover every public
+  # port in its group. The permission may be broader, but it cannot be a subset;
+  # mirror membership never grants or expands a client's Proxy permission.
+  # Every Managed member must configure exactly one Proxy with the matching type
+  # and public port for every public port in its group.
   # mirror:
   #   governed:
   #     - name: telemetry
