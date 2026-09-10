@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
@@ -53,6 +54,7 @@ type Service struct {
 	managed                 *managedCoordinator
 	httpsCertificates       *httpsCertificateManager
 	inboundAdmission        chan struct{}
+	inboundRejections       *logging.WindowCounter
 	ready                   atomic.Bool
 }
 
@@ -71,6 +73,7 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 			chan struct{},
 			maxUnaffiliatedInboundConnections,
 		),
+		inboundRejections: logging.NewWindowCounter(time.Minute),
 	}
 }
 
@@ -86,7 +89,7 @@ func (s *Service) Run(ctx context.Context) error {
 		"http_listen_address":  configuration.Proxies.HTTP.ListenAddress,
 		"https_listen_address": configuration.Proxies.HTTPS.ListenAddress,
 	})
-	defer s.logger.Info("server stopped")
+	defer s.logger.InfoWithField("server stopped", "event", "server_stopped")
 
 	sourceFilter, err := ipfilter.New(
 		ctx,
@@ -346,6 +349,7 @@ func (s *Service) Run(ctx context.Context) error {
 		releaseAdmission, admitted := s.acquireInboundAdmission()
 		if !admitted {
 			_ = inbound.Stream.Close()
+			s.logInboundCapacityRejection(inbound.RemoteAddress)
 			continue
 		}
 
@@ -363,6 +367,26 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 		})
 	}
+}
+
+func (s *Service) logInboundCapacityRejection(remoteAddress string) {
+	count, emit := s.inboundRejections.Record(time.Now())
+	if !emit {
+		return
+	}
+	s.logger.WithComponent("server").WarnWithFields(
+		"client connection rejected at inbound capacity",
+		nil,
+		map[string]any{
+			"event":                "inbound_connection_rejected",
+			"remote_address":       remoteAddress,
+			"result":               "rejected",
+			"reason":               "capacity_exceeded",
+			"error_code":           "inbound_capacity_exceeded",
+			"rejected_connections": count,
+			"capacity":             cap(s.inboundAdmission),
+		},
+	)
 }
 
 func (s *Service) acquireInboundAdmission() (func(), bool) {

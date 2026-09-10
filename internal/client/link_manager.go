@@ -21,17 +21,18 @@ import (
 )
 
 type linkManager struct {
-	context   context.Context
-	cancel    context.CancelFunc
-	logger    *logging.Logger
-	clientID  string
-	proxies   map[string]config.ProxyConfig
-	sessionID string
-	writer    *control.Writer
-	transport transport.ClientSession
-	mutex     sync.Mutex
-	links     map[string]context.CancelFunc
-	waitGroup sync.WaitGroup
+	context     context.Context
+	cancel      context.CancelFunc
+	logger      *logging.Logger
+	clientID    string
+	proxies     map[string]config.ProxyConfig
+	sessionID   string
+	writer      *control.Writer
+	transport   transport.ClientSession
+	mutex       sync.Mutex
+	links       map[string]context.CancelFunc
+	waitGroup   sync.WaitGroup
+	failureLogs *logging.WindowCounter
 }
 
 func newLinkManager(
@@ -45,15 +46,16 @@ func newLinkManager(
 ) *linkManager {
 	ctx, cancel := context.WithCancel(parent)
 	return &linkManager{
-		context:   ctx,
-		cancel:    cancel,
-		logger:    logger,
-		clientID:  clientID,
-		proxies:   indexProxyConfigurations(proxies),
-		sessionID: sessionID,
-		writer:    writer,
-		transport: transportSession,
-		links:     make(map[string]context.CancelFunc),
+		context:     ctx,
+		cancel:      cancel,
+		logger:      logger,
+		clientID:    clientID,
+		proxies:     indexProxyConfigurations(proxies),
+		sessionID:   sessionID,
+		writer:      writer,
+		transport:   transportSession,
+		links:       make(map[string]context.CancelFunc),
+		failureLogs: logging.NewWindowCounter(time.Minute),
 	}
 }
 
@@ -197,6 +199,7 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		}
 		failureCode := classifyLinkDialFailure(ctx, transportDialError, localDialError)
 		manager.reportFailure(request.LinkID, failureCode)
+		manager.warnLinkFailure(logger, "dial", failureCode, errors.Join(transportDialError, localDialError))
 		logger.DebugWithFields(
 			"proxy link dial failed",
 			map[string]any{
@@ -215,6 +218,7 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 
 	if failure := manager.bindDataStream(dataConnection, request); failure != "" {
 		manager.reportFailure(request.LinkID, failure)
+		manager.warnLinkFailure(logger, "bind", failure, nil)
 		logger.DebugWithFields("proxy link bind failed", map[string]any{
 			"event":       "proxy_link_failed",
 			"result":      "failed",
@@ -250,6 +254,30 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		}
 		logger.DebugWithFields("proxy link closed", fields)
 	}
+}
+
+func (manager *linkManager) warnLinkFailure(
+	logger *logging.Logger,
+	stage string,
+	errorCode protocol.LinkErrorCode,
+	err error,
+) {
+	count, emit := manager.failureLogs.Record(time.Now())
+	if !emit {
+		return
+	}
+	logger.WarnWithFields(
+		"proxy link failed; additional failures are rate limited",
+		err,
+		map[string]any{
+			"event":         "proxy_link_failure_summary",
+			"stage":         stage,
+			"result":        "failed",
+			"reason":        errorCode,
+			"error_code":    errorCode,
+			"failure_count": count,
+		},
+	)
 }
 
 func (manager *linkManager) bindDataStream(

@@ -133,6 +133,19 @@ func TestClassifyControlProtocolError(t *testing.T) {
 	}
 }
 
+func TestControlFailureDetails(t *testing.T) {
+	if stage := controlFailureStage(false); stage != "session_setup" {
+		t.Fatalf("setup stage = %q", stage)
+	}
+	if stage := controlFailureStage(true); stage != "control_loop" {
+		t.Fatalf("established stage = %q", stage)
+	}
+	err := &remoteSessionError{code: protocol.SessionErrorSessionExpired, retryable: true}
+	if code := controlFailureCode(err); code != string(protocol.SessionErrorSessionExpired) {
+		t.Fatalf("failure code = %q", code)
+	}
+}
+
 func TestManagedLocalProxyConfigurationIsPermanent(t *testing.T) {
 	err := transport.Permanent(errManagedLocalProxies)
 	if !transport.IsPermanent(err) || !errors.Is(err, errManagedLocalProxies) {

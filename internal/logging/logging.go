@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/acexy/golang-toolkit/logger"
 	"github.com/acexy/portway/internal/config"
@@ -25,6 +27,9 @@ var consoleFieldPriority = []string{
 	"result",
 	"reason",
 	"error_code",
+	"stage",
+	"retryable",
+	"status_code",
 	"duration_ms",
 	"error",
 }
@@ -94,6 +99,34 @@ func writeConsoleField(output *bytes.Buffer, field string, value any) {
 type Logger struct {
 	component string
 	fields    map[string]any
+}
+
+// WindowCounter bounds repeated log events while retaining the number suppressed
+// since the previous emitted event.
+type WindowCounter struct {
+	interval time.Duration
+	lastLog  atomic.Int64
+	count    atomic.Uint64
+}
+
+// NewWindowCounter creates a fixed-window event counter.
+func NewWindowCounter(interval time.Duration) *WindowCounter {
+	return &WindowCounter{interval: interval}
+}
+
+// Record reports whether the caller should emit a log and returns the number of
+// events observed since the previous emitted log.
+func (counter *WindowCounter) Record(now time.Time) (uint64, bool) {
+	counter.count.Add(1)
+	nowNano := now.UnixNano()
+	previous := counter.lastLog.Load()
+	if previous != 0 && time.Duration(nowNano-previous) < counter.interval {
+		return 0, false
+	}
+	if !counter.lastLog.CompareAndSwap(previous, nowNano) {
+		return 0, false
+	}
+	return counter.count.Swap(0), true
 }
 
 // EnableConsole configures the process-wide console logger from project configuration.

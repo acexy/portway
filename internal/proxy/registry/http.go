@@ -146,19 +146,50 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		}
 		manager.mutex.Unlock()
 	}()
-	binding.runtime.ServeHTTP(writer, request)
+	requestResult := binding.runtime.ServeHTTPResult(writer, request)
+	result := "completed"
+	if requestResult.ErrorCode != "" {
+		result = "failed"
+	}
+	fields := map[string]any{
+		"event":          "http_request_completed",
+		"client_id":      binding.clientID,
+		"session_id":     binding.sessionID,
+		"proxy_name":     binding.declaration.Name,
+		"proxy_type":     protocol.ProxyTypeHTTP,
+		"scheme":         requestScheme(request),
+		"method":         request.Method,
+		"host":           domain,
+		"protocol":       request.Proto,
+		"remote_address": request.RemoteAddr,
+		"result":         result,
+		"status_code":    requestResult.StatusCode,
+		"duration_ms":    time.Since(startedAt).Milliseconds(),
+	}
+	if requestResult.ErrorCode != "" {
+		fields["reason"] = requestResult.ErrorCode
+		fields["error_code"] = requestResult.ErrorCode
+	}
+	if requestResult.Err != nil {
+		fields["error"] = requestResult.Err
+	}
+	if requestResult.ErrorCode != "" {
+		if count, emit := manager.httpFailureLogs.Record(time.Now()); emit {
+			warningFields := make(map[string]any, len(fields)+1)
+			for field, value := range fields {
+				warningFields[field] = value
+			}
+			warningFields["failure_count"] = count
+			manager.logger.WithComponent("proxy_http").WarnWithFields(
+				"HTTP proxy request failed; additional failures are rate limited",
+				requestResult.Err,
+				warningFields,
+			)
+		}
+	}
 	manager.logger.WithComponent("proxy_http").DebugWithFields(
 		"HTTP request completed",
-		map[string]any{
-			"event":          "http_request_completed",
-			"scheme":         requestScheme(request),
-			"method":         request.Method,
-			"host":           domain,
-			"protocol":       request.Proto,
-			"remote_address": request.RemoteAddr,
-			"result":         "completed",
-			"duration_ms":    time.Since(startedAt).Milliseconds(),
-		},
+		fields,
 	)
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
@@ -47,6 +48,7 @@ type Registry struct {
 	httpDomains           map[string]*httpProxyBinding
 	httpActiveRequests    int
 	httpActiveUpgrades    int
+	httpFailureLogs       *logging.WindowCounter
 	sourceFilter          *ipfilter.Filter
 	closed                bool
 }
@@ -251,6 +253,7 @@ func newRegistry(
 		httpsEnabled:          httpsEnabled,
 		httpConfiguration:     httpConfiguration,
 		httpConnectionLimiter: proxyhttp.NewConnectionLimiter(httpConfiguration.MaxIdleConnections),
+		httpFailureLogs:       logging.NewWindowCounter(time.Minute),
 		udpConfiguration:      udpConfiguration,
 		udpLimiter:            proxyudp.NewLimiter(udpConfiguration),
 		sourceFilter:          sourceFilter,
