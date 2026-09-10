@@ -6,16 +6,32 @@ import (
 	"net"
 	"net/http"
 	"sync/atomic"
-
-	"github.com/acexy/portway/internal/config"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/acexy/portway/internal/config"
 )
 
 type queuedHTTPListener struct {
 	connections chan net.Conn
 	done        chan struct{}
+}
+
+type halfCloseConnection struct {
+	net.Conn
+	writeClosed atomic.Bool
+	readClosed  atomic.Bool
+}
+
+func (connection *halfCloseConnection) CloseWrite() error {
+	connection.writeClosed.Store(true)
+	return nil
+}
+
+func (connection *halfCloseConnection) CloseRead() error {
+	connection.readClosed.Store(true)
+	return nil
 }
 
 func (l *queuedHTTPListener) Accept() (net.Conn, error) {
@@ -28,6 +44,26 @@ func (l *queuedHTTPListener) Accept() (net.Conn, error) {
 }
 func (l *queuedHTTPListener) Close() error   { close(l.done); return nil }
 func (l *queuedHTTPListener) Addr() net.Addr { return &net.TCPAddr{} }
+
+func TestPublicHTTPConnectionPreservesHalfClose(t *testing.T) {
+	underlying, peer := net.Pipe()
+	defer peer.Close()
+	capable := &halfCloseConnection{Conn: underlying}
+	admission := &publicHTTPAdmission{connections: make(map[*publicHTTPConnection]struct{})}
+	connection := &publicHTTPConnection{Conn: capable, admission: admission}
+	admission.connections[connection] = struct{}{}
+	defer connection.Close()
+
+	if err := connection.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite() error = %v", err)
+	}
+	if err := connection.CloseRead(); err != nil {
+		t.Fatalf("CloseRead() error = %v", err)
+	}
+	if !capable.writeClosed.Load() || !capable.readClosed.Load() {
+		t.Fatal("public HTTP connection did not preserve half-close operations")
+	}
+}
 
 func TestPublicHTTPAdmissionSharesSlotsAndExpiresTLSHandshake(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

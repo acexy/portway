@@ -1,6 +1,7 @@
 package ipfilter
 
 import (
+	"errors"
 	"net"
 	"sync"
 )
@@ -64,4 +65,22 @@ func (connection *trackedConnection) Close() error {
 		}
 	})
 	return closeError
+}
+
+// CloseWrite preserves TCP half-close through source tracking wrappers.
+func (connection *trackedConnection) CloseWrite() error {
+	closeWriter, ok := connection.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.New("tracked connection does not support write half-close")
+	}
+	return closeWriter.CloseWrite()
+}
+
+// CloseRead preserves read half-close through source tracking wrappers.
+func (connection *trackedConnection) CloseRead() error {
+	closeReader, ok := connection.Conn.(interface{ CloseRead() error })
+	if !ok {
+		return errors.New("tracked connection does not support read half-close")
+	}
+	return closeReader.CloseRead()
 }

@@ -67,6 +67,78 @@ func TestTCPServerRejectsDeniedSourceBeforeAuthentication(t *testing.T) {
 	}
 }
 
+func TestTCPServerPreservesHalfCloseWithSourceFilter(t *testing.T) {
+	rulesPath := filepath.Join(t.TempDir(), "deny.txt")
+	if err := os.WriteFile(rulesPath, []byte("192.0.2.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sourceFilter, err := ipfilter.New(
+		ctx,
+		logging.New("tcp-filter-test"),
+		rulesPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sourceFilter.Close()
+	server, err := NewServer(
+		ctx,
+		"127.0.0.1:0",
+		testAuthenticationStore(t, "test-token-with-at-least-32-random-bytes"),
+		8,
+		sourceFilter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	clientConnection, err := DialToken(
+		ctx,
+		server.listener.Addr().String(),
+		"test-token-with-at-least-32-random-bytes",
+		protocol.RoleData,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConnection.Close()
+	serverInbound, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverInbound.Stream.Close()
+
+	if _, err := clientConnection.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if err := clientConnection.CloseWrite(); err != nil {
+		t.Fatalf("client CloseWrite() error = %v", err)
+	}
+	request, err := io.ReadAll(serverInbound.Stream)
+	if err != nil {
+		t.Fatalf("server ReadAll() error = %v", err)
+	}
+	if string(request) != "request" {
+		t.Fatalf("server received %q, want request", request)
+	}
+	if _, err := serverInbound.Stream.Write([]byte("response after EOF")); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverInbound.Stream.CloseWrite(); err != nil {
+		t.Fatalf("server CloseWrite() error = %v", err)
+	}
+	response, err := io.ReadAll(clientConnection)
+	if err != nil {
+		t.Fatalf("client ReadAll() error = %v", err)
+	}
+	if string(response) != "response after EOF" {
+		t.Fatalf("client received %q, want response after EOF", response)
+	}
+}
+
 func TestTokenHandshakeAndEncryptedExchange(t *testing.T) {
 	t.Parallel()
 
