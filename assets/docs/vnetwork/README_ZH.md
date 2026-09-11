@@ -35,6 +35,10 @@ virtual_network:
 这里引用的 ClientID 必须存在于 `managed_clients_path`。TCP 和 QUIC Transport 均使用
 `packet_channels`，默认值为 4，允许范围是 1 到 8。
 
+VNet 不把虚拟地址端口改写到 `127.0.0.1`。需要通过 VNet 访问的应用必须监听本机
+虚拟 IP（例如 `172.20.0.1`）或能够覆盖该地址的通配地址（例如 `0.0.0.0`）；只监听
+回环地址的应用不能通过虚拟 IP 访问。
+
 首次激活需要权限时，Portway 调用操作系统的 `sudo` 机制，不读取或保存密码。Linux
 使用持久化 TUN `portway0` 并支持下列管理命令。macOS 的 `run` 自动启动同一二进制的
 短生命周期提权模式，接收其创建的 `utunN` FD 后继续以普通权限运行。macOS 不支持

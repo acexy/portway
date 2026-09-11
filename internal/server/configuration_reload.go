@@ -107,6 +107,9 @@ func (s *Service) applyConfigurationCandidateContext(
 	if err := config.ValidateProxyMirrorConfiguration(candidate); err != nil {
 		return err
 	}
+	if err := s.validateVNetConfigurationTransition(current.VirtualNetwork, candidate.VirtualNetwork); err != nil {
+		return err
+	}
 
 	if serverTokenRequiresGeneration(candidate) &&
 		current.Authentication.SharedToken != nil {

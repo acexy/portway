@@ -285,12 +285,21 @@ func privilegedCommand(name string, arguments ...string) *exec.Cmd {
 	if os.Geteuid() == 0 {
 		command = exec.Command(name, arguments...)
 	} else {
-		command = exec.Command("sudo", append([]string{name}, arguments...)...)
+		sudoArguments := append([]string{name}, arguments...)
+		if !interactiveTerminalAvailable() {
+			sudoArguments = append([]string{"-n"}, sudoArguments...)
+		}
+		command = exec.Command("sudo", sudoArguments...)
 	}
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	return command
+}
+
+func interactiveTerminalAvailable() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func manifestPath() string {

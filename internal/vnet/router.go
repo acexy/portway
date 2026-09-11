@@ -102,12 +102,31 @@ func (router *Router) ApplyPolicy(configuration config.VirtualNetworkConfig) err
 	router.mutex.Lock()
 	router.policy = policy
 	for key, state := range router.flows {
-		if !policy.serviceAllowed(state.serviceIP, state.protocol, state.servicePort) {
+		_, firstExists := policy.byIP[netip.AddrFrom4(key.firstIP)]
+		_, secondExists := policy.byIP[netip.AddrFrom4(key.secondIP)]
+		if !firstExists || !secondExists ||
+			!policy.serviceAllowed(state.serviceIP, state.protocol, state.servicePort) {
 			delete(router.flows, key)
 		}
 	}
 	router.mutex.Unlock()
 	return nil
+}
+
+// RemoveClient removes authorization state involving one disconnected client.
+func (router *Router) RemoveClient(clientID string) {
+	router.mutex.Lock()
+	defer router.mutex.Unlock()
+	clientIP, exists := router.policy.byClientID[clientID]
+	if !exists {
+		return
+	}
+	address := clientIP.As4()
+	for key := range router.flows {
+		if key.firstIP == address || key.secondIP == address {
+			delete(router.flows, key)
+		}
+	}
 }
 
 // RouteClientPacket validates and routes one packet received from a managed client.

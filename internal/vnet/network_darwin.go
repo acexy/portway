@@ -92,7 +92,11 @@ func requestDarwinHelper(spec NetworkSpec) (Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	if exec.Command("sudo", "-n", "true").Run() != nil {
+	authorizationCached := exec.Command("sudo", "-n", "true").Run() == nil
+	if !authorizationCached && !interactiveTerminalAvailable() {
+		return nil, errors.New("macOS VNet requires an interactive administrator authorization")
+	}
+	if !authorizationCached {
 		authorizationNotice := fmt.Sprintf(
 			"Portway VNet is enabled and requires administrator permission to create the temporary macOS network %s (IP %s, CIDR %s).",
 			LogicalInterfaceName, spec.LocalIP, spec.CIDR,

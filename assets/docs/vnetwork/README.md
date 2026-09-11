@@ -36,6 +36,11 @@ virtual_network:
 The referenced ClientID must exist in `managed_clients_path`. `packet_channels`
 defaults to 4 and accepts 1 through 8 for both TCP and QUIC transport.
 
+VNet does not rewrite virtual-address ports to `127.0.0.1`. An application
+exposed through VNet must listen on the machine's virtual IP (for example,
+`172.20.0.1`) or a wildcard address that covers it (for example, `0.0.0.0`). An
+application bound only to loopback is not reachable through the virtual IP.
+
 On first activation Portway invokes the operating system's `sudo` mechanism when
 privileges are needed; Portway never reads or stores the password. Linux uses a
 persistent `portway0` TUN and supports the management commands below. On macOS,

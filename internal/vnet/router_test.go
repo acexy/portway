@@ -63,6 +63,40 @@ func TestRouterPolicyReloadRevokesFlow(t *testing.T) {
 	}
 }
 
+func TestRouterPolicyReloadRevokesDeletedClientFlows(t *testing.T) {
+	router := testRouter(t)
+	now := time.Unix(1, 0)
+	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 1}, 22)
+	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
+		t.Fatalf("route request: %v", err)
+	}
+	configuration := testVNetConfiguration()
+	configuration.Nodes = configuration.Nodes[1:]
+	if err := router.ApplyPolicy(configuration); err != nil {
+		t.Fatalf("apply policy: %v", err)
+	}
+	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 1}, 22, [4]byte{172, 20, 0, 2}, 50000)
+	reply[33] = 0x10
+	if _, err := router.RouteServerPacket(reply, now.Add(time.Millisecond)); !errors.Is(err, ErrTargetUnavailable) {
+		t.Fatalf("expected deleted client flow to be revoked, got %v", err)
+	}
+}
+
+func TestRouterRemoveClientRevokesRelatedFlows(t *testing.T) {
+	router := testRouter(t)
+	now := time.Unix(1, 0)
+	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
+		t.Fatalf("route request: %v", err)
+	}
+	router.RemoveClient("client-a")
+	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply[33] = 0x10
+	if _, err := router.RouteClientPacket("client-b", reply, now.Add(time.Millisecond)); !errors.Is(err, ErrFlowRejected) {
+		t.Fatalf("expected disconnected client flow to be revoked, got %v", err)
+	}
+}
+
 func testRouter(t *testing.T) *Router {
 	t.Helper()
 	router, err := NewRouter(testVNetConfiguration(), 16)

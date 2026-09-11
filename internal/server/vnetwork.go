@@ -132,6 +132,9 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 }
 
 func (runtime *serverVNetRuntime) activate(clientID string, sessionID string, status protocol.VNetStatus) error {
+	if status.State == protocol.VNetStateFailed {
+		return runtime.replaceFailedPool(clientID, sessionID, status)
+	}
 	if status.State != protocol.VNetStateReady {
 		return nil
 	}
@@ -183,6 +186,32 @@ func (runtime *serverVNetRuntime) activate(clientID string, sessionID string, st
 	return nil
 }
 
+func (runtime *serverVNetRuntime) replaceFailedPool(
+	clientID string,
+	sessionID string,
+	status protocol.VNetStatus,
+) error {
+	runtime.mutex.Lock()
+	session, exists := runtime.sessions[clientID]
+	if !exists || session.sessionID != sessionID || session.poolGeneration != status.PoolGeneration ||
+		status.ConfigGeneration != runtime.configGeneration.Load() {
+		runtime.mutex.Unlock()
+		return errors.New("VNet failure status does not match the current assignment")
+	}
+	session.channelsOffered = false
+	runtime.sessions[clientID] = session
+	runtime.mutex.Unlock()
+	runtime.broker.Remove(clientID, sessionID)
+	return runtime.assign(clientID, sessionID)
+}
+
+func (runtime *serverVNetRuntime) hasSession(clientID string) bool {
+	runtime.mutex.RLock()
+	defer runtime.mutex.RUnlock()
+	_, exists := runtime.sessions[clientID]
+	return exists
+}
+
 func (runtime *serverVNetRuntime) resetOffered(clientID string, sessionID string, generation uint64) {
 	runtime.mutex.Lock()
 	defer runtime.mutex.Unlock()
@@ -225,6 +254,12 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 		clientID := clientIDs[index]
 		oldNode, oldExists := config.VNetNode(previous, clientID)
 		newNode, newExists := config.VNetNode(configuration, clientID)
+		assignmentChanged := previous.Enabled != configuration.Enabled ||
+			previous.PacketChannels != configuration.PacketChannels || networkChanged ||
+			oldExists != newExists || oldNode.IP != newNode.IP
+		if !assignmentChanged {
+			continue
+		}
 		reason := protocol.VNetDeactivatePolicyChanged
 		if previous.Enabled && !configuration.Enabled {
 			reason = protocol.VNetDeactivateDisabled
@@ -244,6 +279,9 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 		}
 		runtime.mutex.Unlock()
 		runtime.broker.Remove(clientID, session.sessionID)
+		if !newExists && runtime.router != nil {
+			runtime.router.RemoveClient(clientID)
+		}
 		if newExists {
 			_ = runtime.assign(clientID, session.sessionID)
 		}
@@ -293,7 +331,7 @@ func (runtime *serverVNetRuntime) activateInstalledDevice(configuration config.V
 	ready := runtime.device != nil
 	runtime.mutex.RUnlock()
 	if ready {
-		return false
+		return true
 	}
 	status, err := vnet.InspectNetwork()
 	if err != nil || !status.Installed || status.CIDR != configuration.CIDR || status.LocalIP != configuration.ServerIP {
@@ -462,6 +500,9 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	}
 	runtime.mutex.Unlock()
 	runtime.broker.Remove(clientID, sessionID)
+	if runtime.router != nil {
+		runtime.router.RemoveClient(clientID)
+	}
 }
 
 func (runtime *serverVNetRuntime) Close() {
