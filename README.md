@@ -34,7 +34,7 @@ Portway
 │       └── one configured Primary replies; other replies are discarded
 ├── Forward: expose an approved server-side service on a portway local port
 │   └── TCP / UDP local listener
-└── VNet: connect governed nodes through stable private IPv4 addresses
+└── VNet: connect managed nodes through stable private IPv4 addresses
     └── TCP / UDP over 1-8 isolated packet channels (default: 4)
 ```
 
@@ -59,12 +59,14 @@ allowed target reachable by `portwayd`. Typical uses include private databases,
 administration endpoints, internal DNS, and other services that should remain
 off the public network.
 
-**VNet** is a governed-only Linux/macOS mode. The server owns address
+**VNet** is a managed-only Linux/macOS mode. The server owns address
 `172.20.0.1` by default and assigns stable addresses to configured clients;
 client-to-client traffic is relayed centrally. Portway creates only its owned
 logical `portway0` network and enforces each destination's TCP/UDP port allowlist.
-Use `portwayd vnetwork status|install|repair|uninstall`; clients expose only the
-safe `portway vnetwork uninstall` command because their assignment is server-owned.
+On Linux use `portwayd vnetwork status|install|repair|uninstall`; Linux clients
+expose only the safe `portway vnetwork uninstall` command because their assignment
+is server-owned. On macOS the `run` process automatically uses a short-lived
+privileged mode of the same binary and manual VNet management commands are unavailable.
 See [VNet configuration and operations](assets/docs/vnetwork/README.md).
 
 | Requirement | Feature | Entry location | Target location | Protocols |
@@ -72,7 +74,7 @@ See [VNet configuration and operations](assets/docs/vnetwork/README.md).
 | Publish one client service | Standard Proxy | `portwayd` | Client network | TCP, UDP, HTTP, HTTPS |
 | Copy public input to multiple clients | Mirror Proxy | `portwayd` | Multiple client networks | TCP, UDP |
 | Access a server-side service locally | Forward | `portway` | Server network | TCP, UDP |
-| Connect governed virtual nodes | VNet | Any configured node | Server or client node | TCP, UDP |
+| Connect managed virtual nodes | VNet | Any configured node | Server or client node | TCP, UDP |
 
 For traffic diagrams and complete mode boundaries, see
 [Proxy and Forward modes](assets/docs/modes/README.md).

@@ -19,6 +19,13 @@ import (
 )
 
 func main() {
+	if handled, err := vnet.RunPlatformHelper(os.Args[1:]); handled {
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "portwayd VNet helper: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -86,6 +93,9 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if !vnet.ManualNetworkManagementSupported() {
+		return reportUnsupportedVNetworkManagement(stderr)
+	}
 	if len(arguments) != 0 {
 		_, _ = io.WriteString(stderr, "portwayd vnetwork status: no arguments are allowed\n")
 		return 2
@@ -108,6 +118,9 @@ func runVNetworkRepair(arguments []string, stdout io.Writer, stderr io.Writer) i
 }
 
 func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer, repair bool) int {
+	if !vnet.ManualNetworkManagementSupported() {
+		return reportUnsupportedVNetworkManagement(stderr)
+	}
 	path, valid := serverConfigurationPath(arguments)
 	if !valid {
 		_, _ = io.WriteString(stderr, "portwayd vnetwork install: at most one configuration file is allowed\n")
@@ -140,6 +153,9 @@ func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer
 }
 
 func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if !vnet.ManualNetworkManagementSupported() {
+		return reportUnsupportedVNetworkManagement(stderr)
+	}
 	if len(arguments) != 0 {
 		_, _ = io.WriteString(stderr, "portwayd vnetwork uninstall: no arguments are allowed\n")
 		return 2
@@ -151,6 +167,11 @@ func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.
 	}
 	_, _ = fmt.Fprintln(stdout, result)
 	return 0
+}
+
+func reportUnsupportedVNetworkManagement(stderr io.Writer) int {
+	_, _ = io.WriteString(stderr, "portwayd vnetwork: manual management is unavailable on this platform; VNet is managed automatically during run\n")
+	return 1
 }
 
 func runGenerateCertificate(

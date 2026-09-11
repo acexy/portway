@@ -28,7 +28,7 @@ func (s *Service) negotiateCapabilities(
 		}
 	}
 	virtualNetwork := s.configuration.snapshot().VirtualNetwork
-	if authenticationContext.Mode == authentication.ModeGoverned {
+	if authenticationContext.Mode == authentication.ModeManaged {
 		if _, configured := config.VNetNode(virtualNetwork, authenticationContext.ClientID); configured {
 			supported[protocol.CapabilityVNetIPv4] = struct{}{}
 		}

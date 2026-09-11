@@ -53,7 +53,7 @@ func (s *Service) runControlLoop(
 	)
 	defer linkManager.close()
 	var vnetManager *clientVNetManager
-	if vnetNegotiated && managementMode == protocol.ManagementModeGoverned {
+	if vnetNegotiated && managementMode == protocol.ManagementModeManaged {
 		vnetManager = newClientVNetManager(
 			sessionContext, sessionLogger.WithComponent("vnet"), s.runtimeIdentity(),
 			sessionID, writer, transportSession,

@@ -49,7 +49,11 @@ func openDevice() (Device, error) {
 		unix.Close(fileDescriptor)
 		return nil, fmt.Errorf("read macOS utun interface name: %w", err)
 	}
-	return &darwinDevice{fileDescriptor: fileDescriptor, name: strings.TrimRight(name, "\x00")}, nil
+	return newDarwinDevice(fileDescriptor, strings.TrimRight(name, "\x00")), nil
+}
+
+func newDarwinDevice(fileDescriptor int, name string) Device {
+	return &darwinDevice{fileDescriptor: fileDescriptor, name: name}
 }
 
 func (device *darwinDevice) Name() string {

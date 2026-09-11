@@ -95,6 +95,11 @@ func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
 
 func platformRootGroup() string { return "root" }
 
+func manualNetworkManagementSupported() bool { return true }
+func runtimeHelperSupported() bool           { return false }
+
+func runPlatformHelper([]string) (bool, error) { return false, nil }
+
 func netipPrefixLength(cidr string) (int, error) {
 	_, network, err := net.ParseCIDR(cidr)
 	if err != nil {

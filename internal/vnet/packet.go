@@ -1,4 +1,4 @@
-// Package vnet validates and routes packets for the governed virtual network.
+// Package vnet validates and routes packets for the managed virtual network.
 package vnet
 
 import (

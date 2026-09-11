@@ -6,20 +6,22 @@ type VNetState string
 const (
 	VNetStateDisabled             VNetState = "disabled"
 	VNetStateInstallationRequired VNetState = "installation_required"
+	VNetStateReady                VNetState = "ready"
 	VNetStateActive               VNetState = "active"
 	VNetStateFailed               VNetState = "failed"
 )
 
 // VNetAssignment contains the server-owned virtual address and channel policy.
 type VNetAssignment struct {
-	CIDR             string    `json:"cidr"`
-	ClientIP         string    `json:"client_ip"`
-	ServerIP         string    `json:"server_ip"`
-	MTU              uint16    `json:"mtu"`
-	PacketChannels   uint8     `json:"packet_channels"`
-	PoolGeneration   uint64    `json:"pool_generation"`
-	ConfigGeneration uint64    `json:"config_generation"`
-	State            VNetState `json:"state"`
+	CIDR                string    `json:"cidr"`
+	ClientIP            string    `json:"client_ip"`
+	ServerIP            string    `json:"server_ip"`
+	MTU                 uint16    `json:"mtu"`
+	PacketChannels      uint8     `json:"packet_channels"`
+	TransportGeneration uint64    `json:"transport_generation"`
+	PoolGeneration      uint64    `json:"pool_generation"`
+	ConfigGeneration    uint64    `json:"config_generation"`
+	State               VNetState `json:"state"`
 }
 
 // VNetActivate identifies the assignment generation allowed to enter Active.

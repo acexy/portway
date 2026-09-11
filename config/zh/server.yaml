@@ -226,7 +226,7 @@ forwards:
           - start: 8000
             end: 8999
 
-# 可选。仅适用于 Governed 客户端的 IPv4 虚拟网络，默认关闭。Linux 和 macOS
+# 可选。仅适用于 Managed 客户端的 IPv4 虚拟网络，默认关闭。Linux 和 macOS
 # 主机在首次激活时创建归 Portway 所有的逻辑接口 portway0。VNet 不改变或共享
 # Proxy、Forward Binding。
 virtual_network:
@@ -261,10 +261,10 @@ virtual_network:
   #         end: 53
 
   # 可选。每个 VNet 客户端的稳定地址和入站端口策略。每个 client_id 都必须对应
-  # governed_clients_path 加载的条目；Shared 和 Managed 客户端不能加入。
+  # managed_clients_path 加载的条目；Shared 和 Governed 客户端不能加入。
   # ClientID 和 IP 均不能重复。
   # nodes:
-  #   - client_id: governed-a
+  #   - client_id: managed-a
   #     ip: 172.20.0.2
   #     ports:
   #       tcp:
@@ -275,7 +275,7 @@ virtual_network:
   #         port_ranges:
   #           - start: 9000
   #             end: 9010
-  #   - client_id: governed-b
+  #   - client_id: managed-b
   #     ip: 172.20.0.3
   #     ports:
   #       tcp:

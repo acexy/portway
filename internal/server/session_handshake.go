@@ -238,6 +238,11 @@ func (s *Service) handleAdmittedConnection(
 		}
 		recoverableSession = true
 		defer s.unregisterManagedSession(clientHello.ClientID, sessionID)
+		if s.vnetRuntime != nil && coll.SliceContains(negotiatedCapabilities, protocol.CapabilityVNetIPv4) {
+			if err := s.vnetRuntime.assign(clientHello.ClientID, sessionID); err != nil {
+				return fmt.Errorf("assign managed VNet session: %w", err)
+			}
+		}
 	}
 
 	initialProxySynchronizationRequired :=

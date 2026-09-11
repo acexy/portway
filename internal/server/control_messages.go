@@ -143,6 +143,9 @@ func (s *Service) serveControlMessages(
 			if err := protocol.DecodePayload(envelope, &status); err != nil {
 				return false, err
 			}
+			if err := s.vnetRuntime.activate(clientID, sessionID, status); err != nil {
+				return false, fmt.Errorf("activate VNet channel pool: %w", err)
+			}
 			sessionLogger.InfoWithFields("VNet status updated", map[string]any{
 				"event": "vnet_status", "state": status.State, "code": status.Code,
 				"config_generation": status.ConfigGeneration,

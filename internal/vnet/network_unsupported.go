@@ -13,4 +13,7 @@ func uninstallPlatformNetwork(ownershipManifest) error {
 func repairPlatformNetwork(NetworkSpec) (Device, error) {
 	return nil, errors.New("VNet is supported only on Linux and macOS")
 }
-func platformRootGroup() string { return "root" }
+func platformRootGroup() string                { return "root" }
+func manualNetworkManagementSupported() bool   { return false }
+func runtimeHelperSupported() bool             { return false }
+func runPlatformHelper([]string) (bool, error) { return false, nil }

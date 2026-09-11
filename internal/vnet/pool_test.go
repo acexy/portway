@@ -13,7 +13,7 @@ import (
 func TestPoolBrokerActivatesCompletePoolAndTransfersPacket(t *testing.T) {
 	broker := NewPoolBroker()
 	authenticationContext := authentication.Context{
-		Mode:     authentication.ModeGoverned,
+		Mode:     authentication.ModeManaged,
 		ClientID: "client-a",
 	}
 	spec := PoolSpec{

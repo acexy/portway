@@ -80,15 +80,14 @@ func (s *Service) handleDataConnection(
 	}
 	s.authenticationBarrier.RUnlock()
 	if envelope.Type == protocol.MessageBindVNetChannel {
-		if inbound.Authentication.Mode != authentication.ModeGoverned || s.vnetRuntime == nil {
+		if inbound.Authentication.Mode != authentication.ModeManaged || s.vnetRuntime == nil {
 			return transport.ErrAuthentication
 		}
 		var binding protocol.BindVNetChannel
 		if err := protocol.DecodePayload(envelope, &binding); err != nil {
 			return err
 		}
-		if binding.ClientID != inbound.Authentication.ClientID ||
-			binding.TransportGeneration != uint64(inbound.Generation) {
+		if binding.ClientID != inbound.Authentication.ClientID {
 			return transport.ErrAuthentication
 		}
 		return s.vnetRuntime.bind(ctx, inbound, binding, releaseAdmission)

@@ -9,7 +9,7 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
-func TestNegotiateVNetCapabilityRequiresConfiguredGovernedClient(t *testing.T) {
+func TestNegotiateVNetCapabilityRequiresConfiguredManagedClient(t *testing.T) {
 	configuration := config.DefaultServer()
 	configuration.VirtualNetwork.Nodes = []config.VNetNodeConfig{{
 		ClientID: "client-a",
@@ -19,11 +19,11 @@ func TestNegotiateVNetCapabilityRequiresConfiguredGovernedClient(t *testing.T) {
 	capabilities := []protocol.Capability{protocol.CapabilityVNetIPv4}
 
 	negotiated := service.negotiateCapabilities(capabilities, authentication.Context{
-		Mode:     authentication.ModeGoverned,
+		Mode:     authentication.ModeManaged,
 		ClientID: "client-a",
 	})
 	if len(negotiated) != 1 || negotiated[0] != protocol.CapabilityVNetIPv4 {
-		t.Fatalf("configured governed client did not negotiate VNet: %v", negotiated)
+		t.Fatalf("configured managed client did not negotiate VNet: %v", negotiated)
 	}
 	negotiated = service.negotiateCapabilities(capabilities, authentication.Context{
 		Mode:     authentication.ModeShared,
@@ -34,9 +34,16 @@ func TestNegotiateVNetCapabilityRequiresConfiguredGovernedClient(t *testing.T) {
 	}
 	negotiated = service.negotiateCapabilities(capabilities, authentication.Context{
 		Mode:     authentication.ModeGoverned,
+		ClientID: "client-a",
+	})
+	if len(negotiated) != 0 {
+		t.Fatalf("governed client negotiated VNet: %v", negotiated)
+	}
+	negotiated = service.negotiateCapabilities(capabilities, authentication.Context{
+		Mode:     authentication.ModeManaged,
 		ClientID: "client-b",
 	})
 	if len(negotiated) != 0 {
-		t.Fatalf("unconfigured governed client negotiated VNet: %v", negotiated)
+		t.Fatalf("unconfigured managed client negotiated VNet: %v", negotiated)
 	}
 }

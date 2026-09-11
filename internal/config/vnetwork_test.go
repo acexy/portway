@@ -62,15 +62,15 @@ func TestValidateVirtualNetworkConfigRejectsUnsafeValues(t *testing.T) {
 	}
 }
 
-func TestValidateVirtualNetworkGovernedClients(t *testing.T) {
+func TestValidateVirtualNetworkManagedClients(t *testing.T) {
 	configuration := DefaultServer()
 	configuration.VirtualNetwork.Nodes = []VNetNodeConfig{{ClientID: "client-a", IP: "172.20.0.2"}}
-	configuration.GovernedClients = map[string]GovernedClientConfig{"client-a": {}}
-	if err := validateVirtualNetworkGovernedClients(configuration); err != nil {
-		t.Fatalf("validate governed VNet client: %v", err)
+	configuration.ManagedClients = map[string]ManagedClientConfig{"client-a": {}}
+	if err := validateVirtualNetworkManagedClients(configuration); err != nil {
+		t.Fatalf("validate managed VNet client: %v", err)
 	}
-	configuration.VirtualNetwork.Nodes[0].ClientID = "managed-a"
-	if err := validateVirtualNetworkGovernedClients(configuration); err == nil {
-		t.Fatal("expected non-governed VNet client rejection")
+	configuration.VirtualNetwork.Nodes[0].ClientID = "governed-a"
+	if err := validateVirtualNetworkManagedClients(configuration); err == nil {
+		t.Fatal("expected non-managed VNet client rejection")
 	}
 }

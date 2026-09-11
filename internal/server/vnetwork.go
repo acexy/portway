@@ -24,11 +24,12 @@ const (
 )
 
 type serverVNetSession struct {
-	sessionID      string
-	generation     transport.Generation
-	authentication authentication.Context
-	writer         *control.Writer
-	poolGeneration uint64
+	sessionID       string
+	generation      transport.Generation
+	authentication  authentication.Context
+	writer          *control.Writer
+	poolGeneration  uint64
+	channelsOffered bool
 }
 
 type serverVNetRuntime struct {
@@ -44,6 +45,7 @@ type serverVNetRuntime struct {
 	deviceWrite      sync.Mutex
 	poolGeneration   atomic.Uint64
 	configGeneration atomic.Uint64
+	preparingDevice  atomic.Bool
 	waitGroup        sync.WaitGroup
 }
 
@@ -114,40 +116,81 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 		return errors.New("VNet session is no longer current")
 	}
 	current.poolGeneration = poolGeneration
+	current.channelsOffered = false
 	runtime.sessions[clientID] = current
 	runtime.mutex.Unlock()
 	assignment := protocol.VNetAssignment{
 		CIDR: configuration.CIDR, ClientIP: node.IP, ServerIP: configuration.ServerIP,
 		MTU: vnetMTU, PacketChannels: uint8(configuration.PacketChannels),
-		PoolGeneration: poolGeneration, ConfigGeneration: runtime.configGeneration.Load(), State: state,
+		TransportGeneration: uint64(session.generation),
+		PoolGeneration:      poolGeneration, ConfigGeneration: runtime.configGeneration.Load(), State: state,
 	}
 	if err := session.writer.Write(protocol.MessageVNetAssignment, assignment); err != nil {
 		return err
 	}
-	if state != protocol.VNetStateActive {
+	return nil
+}
+
+func (runtime *serverVNetRuntime) activate(clientID string, sessionID string, status protocol.VNetStatus) error {
+	if status.State != protocol.VNetStateReady {
 		return nil
 	}
-	if err := session.writer.Write(protocol.MessageVNetActivate, protocol.VNetActivate{
-		PoolGeneration: poolGeneration, ConfigGeneration: runtime.configGeneration.Load(),
-	}); err != nil {
-		return err
+	runtime.mutex.Lock()
+	session, exists := runtime.sessions[clientID]
+	configuration := runtime.configuration
+	configurationGeneration := runtime.configGeneration.Load()
+	if !exists || session.sessionID != sessionID || session.poolGeneration != status.PoolGeneration ||
+		status.ConfigGeneration != configurationGeneration {
+		runtime.mutex.Unlock()
+		return errors.New("VNet readiness status does not match the current assignment")
+	}
+	if session.channelsOffered {
+		runtime.mutex.Unlock()
+		return nil
+	}
+	session.channelsOffered = true
+	runtime.sessions[clientID] = session
+	runtime.mutex.Unlock()
+	node, configured := config.VNetNode(configuration, clientID)
+	if !configuration.Enabled || !configured {
+		runtime.resetOffered(clientID, sessionID, status.PoolGeneration)
+		return errors.New("VNet readiness status targets a disabled assignment")
 	}
 	offers, err := runtime.broker.Prepare(vnet.PoolSpec{
 		ClientID: clientID, SessionID: sessionID,
 		TransportGeneration: uint64(session.generation), VirtualIP: node.IP,
-		PoolGeneration: poolGeneration, ChannelCount: uint8(configuration.PacketChannels),
+		PoolGeneration: status.PoolGeneration, ChannelCount: uint8(configuration.PacketChannels),
 		MTU: vnetMTU, Authentication: session.authentication,
 	}, vnetPoolTicketLifetime)
 	if err != nil {
+		runtime.resetOffered(clientID, sessionID, status.PoolGeneration)
+		return err
+	}
+	if err := session.writer.Write(protocol.MessageVNetActivate, protocol.VNetActivate{
+		PoolGeneration: status.PoolGeneration, ConfigGeneration: configurationGeneration,
+	}); err != nil {
+		runtime.broker.Remove(clientID, sessionID)
+		runtime.resetOffered(clientID, sessionID, status.PoolGeneration)
 		return err
 	}
 	for _, offer := range offers {
 		if err := session.writer.Write(protocol.MessageOpenVNetChannel, offer); err != nil {
 			runtime.broker.Remove(clientID, sessionID)
+			runtime.resetOffered(clientID, sessionID, status.PoolGeneration)
 			return err
 		}
 	}
 	return nil
+}
+
+func (runtime *serverVNetRuntime) resetOffered(clientID string, sessionID string, generation uint64) {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	session, exists := runtime.sessions[clientID]
+	if exists && session.sessionID == sessionID && session.poolGeneration == generation {
+		session.channelsOffered = false
+		runtime.sessions[clientID] = session
+	}
 }
 
 func (runtime *serverVNetRuntime) applyConfiguration(configuration config.VirtualNetworkConfig, generation uint64) {
@@ -174,7 +217,9 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 		_ = runtime.router.ApplyPolicy(configuration)
 	}
 	if configuration.Enabled {
-		runtime.activateInstalledDevice(configuration)
+		if !runtime.activateInstalledDevice(configuration) && vnet.RuntimeHelperSupported() {
+			runtime.prepareRuntimeDevice(configuration)
+		}
 	}
 	for index, session := range sessions {
 		clientID := clientIDs[index]
@@ -203,6 +248,44 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 			_ = runtime.assign(clientID, session.sessionID)
 		}
 	}
+}
+
+func (runtime *serverVNetRuntime) prepareRuntimeDevice(configuration config.VirtualNetworkConfig) {
+	if !runtime.preparingDevice.CompareAndSwap(false, true) {
+		return
+	}
+	runtime.waitGroup.Go(func() {
+		defer runtime.preparingDevice.Store(false)
+		device, err := vnet.PrepareNetwork(vnet.NetworkSpec{
+			Role: vnet.NetworkRoleServer, CIDR: configuration.CIDR,
+			LocalIP: configuration.ServerIP, ServerIP: configuration.ServerIP,
+			MTU: vnetMTU, OwnerUID: -1,
+		})
+		if err != nil {
+			runtime.logger.Warn("VNet runtime helper did not activate the network", err)
+			return
+		}
+		runtime.mutex.Lock()
+		if runtime.device != nil || !runtime.configuration.Enabled ||
+			runtime.configuration.CIDR != configuration.CIDR ||
+			runtime.configuration.ServerIP != configuration.ServerIP {
+			runtime.mutex.Unlock()
+			_ = device.Close()
+			return
+		}
+		runtime.device = device
+		sessions := make([]serverVNetSession, 0, len(runtime.sessions))
+		clientIDs := make([]string, 0, len(runtime.sessions))
+		for clientID, session := range runtime.sessions {
+			clientIDs = append(clientIDs, clientID)
+			sessions = append(sessions, session)
+		}
+		runtime.mutex.Unlock()
+		runtime.waitGroup.Go(func() { runtime.readDevice(device) })
+		for index, session := range sessions {
+			_ = runtime.assign(clientIDs[index], session.sessionID)
+		}
+	})
 }
 
 func (runtime *serverVNetRuntime) activateInstalledDevice(configuration config.VirtualNetworkConfig) bool {

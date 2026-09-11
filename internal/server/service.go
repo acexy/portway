@@ -86,12 +86,17 @@ func (s *Service) Run(ctx context.Context) error {
 	if err := config.ValidateProxyMirrorConfiguration(configuration); err != nil {
 		return fmt.Errorf("validate proxy mirror configuration: %w", err)
 	}
-	s.logger.InfoWithFields("server started", map[string]any{
-		"event":                "server_started",
-		"listen_address":       configuration.Transport.ListenAddress,
-		"http_listen_address":  configuration.Proxies.HTTP.ListenAddress,
-		"https_listen_address": configuration.Proxies.HTTPS.ListenAddress,
-	})
+	fields := map[string]any{
+		"event":          "server_started",
+		"listen_address": configuration.Transport.ListenAddress,
+	}
+	if configuration.Proxies.HTTP.ListenAddress != "" {
+		fields["http_listen_address"] = configuration.Proxies.HTTP.ListenAddress
+	}
+	if configuration.Proxies.HTTPS.ListenAddress != "" {
+		fields["https_listen_address"] = configuration.Proxies.HTTPS.ListenAddress
+	}
+	s.logger.InfoWithFields("server started", fields)
 	defer s.logger.InfoWithField("server stopped", "event", "server_stopped")
 
 	sourceFilter, err := ipfilter.New(

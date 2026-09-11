@@ -10,21 +10,27 @@ import (
 func TestValidateVNetAssignment(t *testing.T) {
 	valid := protocol.VNetAssignment{
 		CIDR: "172.20.0.0/16", ClientIP: "172.20.0.2", ServerIP: "172.20.0.1",
-		MTU: 1280, PacketChannels: 4, PoolGeneration: 3, ConfigGeneration: 2,
+		MTU: 1280, PacketChannels: 4, TransportGeneration: 1,
+		PoolGeneration: 3, ConfigGeneration: 2,
 		State: protocol.VNetStateActive,
 	}
-	if err := validateVNetAssignment(valid, "governed-a"); err != nil {
+	if err := validateVNetAssignment(valid, "managed-a"); err != nil {
 		t.Fatalf("validate assignment: %v", err)
 	}
 	invalid := valid
 	invalid.PacketChannels = 9
-	if err := validateVNetAssignment(invalid, "governed-a"); err == nil {
+	if err := validateVNetAssignment(invalid, "managed-a"); err == nil {
 		t.Fatal("expected excessive channel count to be rejected")
 	}
 	invalid = valid
 	invalid.ClientIP = invalid.ServerIP
-	if err := validateVNetAssignment(invalid, "governed-a"); err == nil {
+	if err := validateVNetAssignment(invalid, "managed-a"); err == nil {
 		t.Fatal("expected duplicate server and client address to be rejected")
+	}
+	invalid = valid
+	invalid.TransportGeneration = 0
+	if err := validateVNetAssignment(invalid, "managed-a"); err == nil {
+		t.Fatal("expected missing transport generation to be rejected")
 	}
 }
 

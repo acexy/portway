@@ -73,11 +73,11 @@ func validateVirtualNetworkConfig(configuration VirtualNetworkConfig) error {
 	return nil
 }
 
-func validateVirtualNetworkGovernedClients(configuration ServerConfig) error {
+func validateVirtualNetworkManagedClients(configuration ServerConfig) error {
 	for index, node := range configuration.VirtualNetwork.Nodes {
-		if _, exists := configuration.GovernedClients[node.ClientID]; !exists {
+		if _, exists := configuration.ManagedClients[node.ClientID]; !exists {
 			return fmt.Errorf(
-				"virtual_network.nodes[%d].client_id %q must identify a governed client",
+				"virtual_network.nodes[%d].client_id %q must identify a managed client",
 				index,
 				node.ClientID,
 			)

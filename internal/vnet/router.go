@@ -110,7 +110,7 @@ func (router *Router) ApplyPolicy(configuration config.VirtualNetworkConfig) err
 	return nil
 }
 
-// RouteClientPacket validates and routes one packet received from a governed client.
+// RouteClientPacket validates and routes one packet received from a managed client.
 func (router *Router) RouteClientPacket(
 	clientID string,
 	packet []byte,

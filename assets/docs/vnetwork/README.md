@@ -1,6 +1,6 @@
 # VNet
 
-VNet connects a `portwayd` server and explicitly configured Governed clients by
+VNet connects a `portwayd` server and explicitly configured Managed clients by
 stable private IPv4 addresses. It supports IPv4 TCP and UDP on Linux and macOS.
 Client-to-client packets always pass through the server; VNet is independent of
 Proxy and Forward state.
@@ -22,7 +22,7 @@ virtual_network:
     udp:
       port_ranges: []
   nodes:
-    - client_id: governed-a
+    - client_id: managed-a
       ip: 172.20.0.2
       ports:
         tcp:
@@ -33,16 +33,18 @@ virtual_network:
           port_ranges: []
 ```
 
-The referenced ClientID must exist in `governed_clients_path`. `packet_channels`
+The referenced ClientID must exist in `managed_clients_path`. `packet_channels`
 defaults to 4 and accepts 1 through 8 for both TCP and QUIC transport.
 
 On first activation Portway invokes the operating system's `sudo` mechanism when
 privileges are needed; Portway never reads or stores the password. Linux uses a
-persistent `portway0` TUN. macOS uses a process-owned `utunN`, represented as the
-logical network `portway0`. Normal process exit preserves the ownership record
-and does not uninstall system state.
+persistent `portway0` TUN and supports the management commands below. On macOS,
+`run` automatically launches a short-lived privileged mode of the same binary,
+receives its process-owned `utunN` descriptor, and remains unprivileged. macOS
+does not support manual `vnetwork` commands; the interface and route are removed
+by the operating system when the owning process closes the descriptor.
 
-Server management commands are:
+Linux server management commands are:
 
 ```text
 portwayd vnetwork status
@@ -51,6 +53,7 @@ portwayd vnetwork repair [server.yaml]
 portwayd vnetwork uninstall
 ```
 
-The client receives its network parameters only after authentication, so it has
+The Linux client receives its network parameters only after authentication, so it has
 no install or repair command. It exposes only `portway vnetwork uninstall`.
-Uninstall refuses foreign, drifted, or currently locked resources.
+Uninstall refuses foreign, drifted, or currently locked resources. On macOS all
+of these commands report that VNet is managed automatically during `run`.

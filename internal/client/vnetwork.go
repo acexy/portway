@@ -75,7 +75,13 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	manager.mutex.Lock()
 	manager.device = device
 	manager.mutex.Unlock()
-	return nil
+	manager.logger.InfoWithFields("VNet network is ready", map[string]any{
+		"event":          "vnet_network_ready",
+		"interface_name": device.Name(),
+		"virtual_ip":     assignment.ClientIP,
+		"cidr":           assignment.CIDR,
+	})
+	return manager.reportStatus(protocol.VNetStateReady, "")
 }
 
 func (manager *clientVNetManager) activate(activation protocol.VNetActivate) error {
@@ -126,7 +132,7 @@ func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
 		if err == nil {
 			err = protocol.WriteControl(stream, protocol.MessageBindVNetChannel, protocol.BindVNetChannel{
 				ClientID: manager.clientID, SessionID: manager.sessionID,
-				TransportGeneration: uint64(manager.transport.Generation()), VirtualIP: assignment.ClientIP,
+				TransportGeneration: assignment.TransportGeneration, VirtualIP: assignment.ClientIP,
 				PoolGeneration: offer.PoolGeneration, ChannelIndex: offer.ChannelIndex,
 				ChannelCount: offer.ChannelCount, Ticket: offer.Ticket,
 			})
@@ -166,7 +172,16 @@ func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
 	manager.channels = channels
 	device := manager.device
 	manager.mutex.Unlock()
-	_ = manager.reportStatus(protocol.VNetStateActive, "")
+	if err := manager.reportStatus(protocol.VNetStateActive, ""); err != nil {
+		manager.failPool(assignment.PoolGeneration, "status_report_failed")
+		return
+	}
+	manager.logger.InfoWithFields("VNet is active", map[string]any{
+		"event":          "vnet_active",
+		"interface_name": device.Name(),
+		"virtual_ip":     assignment.ClientIP,
+		"channel_count":  len(channels),
+	})
 	manager.waitGroup.Go(func() { manager.readDevice(device, assignment, channels) })
 	for _, stream := range channels {
 		channel := stream
@@ -306,6 +321,9 @@ func validateVNetAssignment(assignment protocol.VNetAssignment, clientID string)
 	if clientID == "" || assignment.MTU < 576 || assignment.PacketChannels < 1 ||
 		assignment.PacketChannels > 8 || assignment.PoolGeneration == 0 || assignment.ConfigGeneration == 0 {
 		return errors.New("invalid VNet assignment limits")
+	}
+	if assignment.TransportGeneration == 0 {
+		return errors.New("invalid VNet transport generation")
 	}
 	switch assignment.State {
 	case protocol.VNetStateDisabled, protocol.VNetStateInstallationRequired,

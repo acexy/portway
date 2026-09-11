@@ -82,13 +82,25 @@ func (device *ownedDevice) Close() error {
 }
 
 func PrepareNetwork(spec NetworkSpec) (Device, error) {
+	if spec.OwnerUID < 0 {
+		spec.OwnerUID = os.Getuid()
+	}
 	if err := validateNetworkSpec(spec); err != nil {
 		return nil, err
 	}
 	return preparePlatformNetwork(spec)
 }
 
+func ManualNetworkManagementSupported() bool { return manualNetworkManagementSupported() }
+
+func RuntimeHelperSupported() bool { return runtimeHelperSupported() }
+
+func RunPlatformHelper(arguments []string) (bool, error) { return runPlatformHelper(arguments) }
+
 func RepairNetwork(spec NetworkSpec) (Device, error) {
+	if spec.OwnerUID < 0 {
+		spec.OwnerUID = os.Getuid()
+	}
 	if err := validateNetworkSpec(spec); err != nil {
 		return nil, err
 	}

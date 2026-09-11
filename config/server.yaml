@@ -319,7 +319,7 @@ forwards:
           - start: 8000
             end: 8999
 
-# Optional. Governed-only IPv4 virtual network. Defaults to disabled. Linux and
+# Optional. Managed-only IPv4 virtual network. Defaults to disabled. Linux and
 # macOS hosts create the owned logical interface portway0 on first activation.
 # VNet does not change or share Proxy and Forward bindings.
 virtual_network:
@@ -358,10 +358,10 @@ virtual_network:
   #         end: 53
 
   # Optional. Stable address and inbound port policy for each VNet client.
-  # Every client_id must identify an entry loaded from governed_clients_path;
-  # Shared and Managed clients cannot join. ClientIDs and IPs must be unique.
+  # Every client_id must identify an entry loaded from managed_clients_path;
+  # Shared and Governed clients cannot join. ClientIDs and IPs must be unique.
   # nodes:
-  #   - client_id: governed-a
+  #   - client_id: managed-a
   #     ip: 172.20.0.2
   #     ports:
   #       tcp:
@@ -372,7 +372,7 @@ virtual_network:
   #         port_ranges:
   #           - start: 9000
   #             end: 9010
-  #   - client_id: governed-b
+  #   - client_id: managed-b
   #     ip: 172.20.0.3
   #     ports:
   #       tcp:

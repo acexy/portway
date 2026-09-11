@@ -80,14 +80,14 @@ type VNetPortPermissions struct {
 	UDP ForwardPortPermission `yaml:"udp"`
 }
 
-// VNetNodeConfig assigns one governed client a stable virtual address.
+// VNetNodeConfig assigns one managed client a stable virtual address.
 type VNetNodeConfig struct {
 	ClientID string              `yaml:"client_id"`
 	IP       string              `yaml:"ip"`
 	Ports    VNetPortPermissions `yaml:"ports"`
 }
 
-// VirtualNetworkConfig configures the governed-only IPv4 virtual network.
+// VirtualNetworkConfig configures the managed-only IPv4 virtual network.
 type VirtualNetworkConfig struct {
 	Enabled        bool                `yaml:"enabled"`
 	CIDR           string              `yaml:"cidr"`

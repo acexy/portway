@@ -98,7 +98,7 @@ const (
 	MessageForwardBindingRevoked MessageType = "forward_binding_revoked"
 	// MessageForwardBindingActivated restores one dormant Forward Binding after reload.
 	MessageForwardBindingActivated MessageType = "forward_binding_activated"
-	// MessageVNetAssignment publishes the governed client's VNet configuration.
+	// MessageVNetAssignment publishes the managed client's VNet configuration.
 	MessageVNetAssignment MessageType = "vnet_assignment"
 	// MessageVNetActivate permits the client to bind one complete VNet channel pool.
 	MessageVNetActivate MessageType = "vnet_activate"
