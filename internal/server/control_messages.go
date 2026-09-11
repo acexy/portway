@@ -36,6 +36,13 @@ func (s *Service) serveControlMessages(
 		mode: authenticationMode, authentication: authenticationContext,
 		capabilities: negotiatedCapabilities,
 	}
+	vnetNegotiated := false
+	for _, capability := range negotiatedCapabilities {
+		if capability == protocol.CapabilityVNetIPv4 {
+			vnetNegotiated = true
+			break
+		}
+	}
 	defer s.clearConfigurationSync(clientID, sessionID)
 	finishConfiguration := func(requestID string, result protocol.SyncConfigurationResult) error {
 		if err := writer.WriteResponse(
@@ -57,6 +64,11 @@ func (s *Service) serveControlMessages(
 		}
 		if onProxySynchronizationApplied != nil {
 			onProxySynchronizationApplied()
+		}
+		if vnetNegotiated && s.vnetRuntime != nil {
+			if err := s.vnetRuntime.assign(clientID, sessionID); err != nil {
+				return fmt.Errorf("assign VNet session: %w", err)
+			}
 		}
 		return nil
 	}
@@ -123,6 +135,19 @@ func (s *Service) serveControlMessages(
 			}
 			sessionLogger.Trace("close acknowledgment sent")
 			return true, nil
+		case protocol.MessageVNetStatus:
+			if !vnetNegotiated {
+				return false, errors.New("VNet status received without negotiated capability")
+			}
+			var status protocol.VNetStatus
+			if err := protocol.DecodePayload(envelope, &status); err != nil {
+				return false, err
+			}
+			sessionLogger.InfoWithFields("VNet status updated", map[string]any{
+				"event": "vnet_status", "state": status.State, "code": status.Code,
+				"config_generation": status.ConfigGeneration,
+				"pool_generation":   status.PoolGeneration,
+			})
 		case protocol.MessageSyncConfiguration:
 			result, err := s.synchronizeConfiguration(configurationSession, envelope)
 			if err != nil {

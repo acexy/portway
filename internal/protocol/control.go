@@ -33,6 +33,7 @@ const (
 	CapabilityJSONControl Capability = "json-control"
 	CapabilityTCPForward  Capability = "tcp_forward"
 	CapabilityUDPForward  Capability = "udp_forward"
+	CapabilityVNetIPv4    Capability = "vnet_ipv4"
 )
 
 // ManagementMode identifies who owns a client's proxy configuration.
@@ -97,6 +98,20 @@ const (
 	MessageForwardBindingRevoked MessageType = "forward_binding_revoked"
 	// MessageForwardBindingActivated restores one dormant Forward Binding after reload.
 	MessageForwardBindingActivated MessageType = "forward_binding_activated"
+	// MessageVNetAssignment publishes the governed client's VNet configuration.
+	MessageVNetAssignment MessageType = "vnet_assignment"
+	// MessageVNetActivate permits the client to bind one complete VNet channel pool.
+	MessageVNetActivate MessageType = "vnet_activate"
+	// MessageVNetDeactivate stops VNet traffic without closing the control session.
+	MessageVNetDeactivate MessageType = "vnet_deactivate"
+	// MessageOpenVNetChannel grants one channel-index-specific binding ticket.
+	MessageOpenVNetChannel MessageType = "open_vnet_channel"
+	// MessageBindVNetChannel binds one RoleData stream to a VNet channel pool.
+	MessageBindVNetChannel MessageType = "bind_vnet_channel"
+	// MessageVNetBindResult confirms one VNet channel binding.
+	MessageVNetBindResult MessageType = "vnet_bind_result"
+	// MessageVNetStatus reports the client's current VNet readiness.
+	MessageVNetStatus MessageType = "vnet_status"
 )
 
 // SessionErrorCode identifies a stable session registration or recovery failure.

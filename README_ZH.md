@@ -27,8 +27,10 @@ Portway
 │   │   └── HTTP / HTTPS 域名
 │   └── 镜像代理：一组公共 TCP/UDP 端口将输入复制给多个客户端
 │       └── 只有指定 Primary 回复，其他客户端的回复被丢弃
-└── Forward：将服务端侧获准服务转发到 portway 本地端口
-    └── TCP / UDP 本地 Listener
+├── Forward：将服务端侧获准服务转发到 portway 本地端口
+│   └── TCP / UDP 本地 Listener
+└── VNet：通过稳定的私有 IPv4 地址连接 Governed 节点
+    └── TCP / UDP 使用 1-8 条隔离 Packet Channel（默认 4）
 ```
 
 **Proxy** 用于发布客户端网络中的服务。公共 Listener 由 `portwayd` 持有，访问者
@@ -46,11 +48,19 @@ Portway
 持有，连接或数据报会发送到 `portwayd` 可达且明确获准的目标。典型场景包括私有
 数据库、管理接口、内部 DNS，以及其他不应暴露到公网的服务。
 
+**VNet** 是仅适用于 Governed 身份的 Linux/macOS 模式。服务端默认占用
+`172.20.0.1`，并为配置的客户端分配稳定地址；客户端之间的流量由服务端集中中继。
+Portway 只创建具有所有权记录的逻辑网络 `portway0`，并执行每个目标节点的 TCP/UDP
+端口允许列表。服务端使用 `portwayd vnetwork status|install|repair|uninstall`；客户端
+地址由服务端下发，因此客户端只暴露安全的 `portway vnetwork uninstall` 命令。
+详见 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。
+
 | 需求 | 功能 | 入口位置 | 目标位置 | 协议 |
 | --- | --- | --- | --- | --- |
 | 发布单个客户端服务 | 普通 Proxy | `portwayd` | 客户端网络 | TCP、UDP、HTTP、HTTPS |
 | 将公共输入复制给多个客户端 | 镜像 Proxy | `portwayd` | 多个客户端网络 | TCP、UDP |
 | 从本地访问服务端侧服务 | Forward | `portway` | 服务端网络 | TCP、UDP |
+| 连接 Governed 虚拟节点 | VNet | 任意已配置节点 | 服务端或客户端节点 | TCP、UDP |
 
 流量图和完整模式边界请参阅
 [Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)。

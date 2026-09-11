@@ -319,6 +319,67 @@ forwards:
           - start: 8000
             end: 8999
 
+# Optional. Governed-only IPv4 virtual network. Defaults to disabled. Linux and
+# macOS hosts create the owned logical interface portway0 on first activation.
+# VNet does not change or share Proxy and Forward bindings.
+virtual_network:
+  # Optional. Enables VNet assignment and Packet Channels. Defaults to false.
+  enabled: false
+
+  # Optional. Private canonical IPv4 CIDR owned by this VNet.
+  # Defaults to 172.20.0.0/16. Network and broadcast addresses cannot be
+  # assigned to nodes.
+  cidr: 172.20.0.0/16
+
+  # Optional. Stable virtual address assigned to portwayd.
+  # Defaults to 172.20.0.1 and must be a usable address inside cidr.
+  server_ip: 172.20.0.1
+
+  # Optional. Number of full-duplex packet data channels per active client.
+  # Defaults to 4; allowed range: 1 to 8. With TCP transport these are separate
+  # encrypted connections. With QUIC transport these are separate Streams on
+  # the authenticated QUIC Connection. A stable five-tuple hash keeps each
+  # inner TCP/UDP flow on one channel.
+  packet_channels: 4
+
+  # Optional. TCP/UDP ports that other VNet nodes may access on portwayd.
+  # Omitted protocols expose no ports. Ranges are inclusive, must be sorted,
+  # and cannot overlap.
+  # server_ports:
+  #   tcp:
+  #     port_ranges:
+  #       - start: 22
+  #         end: 22
+  #       - start: 8000
+  #         end: 8099
+  #   udp:
+  #     port_ranges:
+  #       - start: 53
+  #         end: 53
+
+  # Optional. Stable address and inbound port policy for each VNet client.
+  # Every client_id must identify an entry loaded from governed_clients_path;
+  # Shared and Managed clients cannot join. ClientIDs and IPs must be unique.
+  # nodes:
+  #   - client_id: governed-a
+  #     ip: 172.20.0.2
+  #     ports:
+  #       tcp:
+  #         port_ranges:
+  #           - start: 8080
+  #             end: 8080
+  #       udp:
+  #         port_ranges:
+  #           - start: 9000
+  #             end: 9010
+  #   - client_id: governed-b
+  #     ip: 172.20.0.3
+  #     ports:
+  #       tcp:
+  #         port_ranges:
+  #           - start: 3306
+  #             end: 3306
+
 # Optional. Server-wide source IP security controls.
 security:
   # Optional. IPv4/IPv6 deny-list file. Defaults to empty, which disables

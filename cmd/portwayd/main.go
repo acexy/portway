@@ -15,6 +15,7 @@ import (
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/server"
+	"github.com/acexy/portway/internal/vnet"
 )
 
 func main() {
@@ -70,9 +71,86 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 					},
 				},
 			},
+			{
+				Name: "vnetwork", Summary: "Manage the Portway virtual network",
+				Subcommands: []cli.Command{
+					{Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus},
+					{Name: "install", Usage: "install [FILE]", Summary: "Install the configured portway0 network", Execute: runVNetworkInstall},
+					{Name: "repair", Usage: "repair [FILE]", Summary: "Repair the owned portway0 network", Execute: runVNetworkRepair},
+					{Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runServerVNetworkUninstall},
+				},
+			},
 		},
 	}
 	return application.Run(arguments, stdout, stderr)
+}
+
+func runVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if len(arguments) != 0 {
+		_, _ = io.WriteString(stderr, "portwayd vnetwork status: no arguments are allowed\n")
+		return 2
+	}
+	status, err := vnet.InspectNetwork()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork status: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "installed: %t\ninterface: %s\ncidr: %s\nlocal_ip: %s\n", status.Installed, status.InterfaceName, status.CIDR, status.LocalIP)
+	return 0
+}
+
+func runVNetworkInstall(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	return runVNetworkConfigure(arguments, stdout, stderr, false)
+}
+
+func runVNetworkRepair(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	return runVNetworkConfigure(arguments, stdout, stderr, true)
+}
+
+func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer, repair bool) int {
+	path, valid := serverConfigurationPath(arguments)
+	if !valid {
+		_, _ = io.WriteString(stderr, "portwayd vnetwork install: at most one configuration file is allowed\n")
+		return 2
+	}
+	configuration, err := config.LoadServer(path, false)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork install: %v\n", err)
+		return 1
+	}
+	if !configuration.VirtualNetwork.Enabled {
+		_, _ = io.WriteString(stderr, "portwayd vnetwork install: virtual_network is disabled\n")
+		return 1
+	}
+	spec := vnet.NetworkSpec{Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
+		LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP, MTU: 1280, OwnerUID: os.Getuid()}
+	var device vnet.Device
+	if repair {
+		device, err = vnet.RepairNetwork(spec)
+	} else {
+		device, err = vnet.PrepareNetwork(spec)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork install: %v\n", err)
+		return 1
+	}
+	_ = device.Close()
+	_, _ = io.WriteString(stdout, "Installed\n")
+	return 0
+}
+
+func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if len(arguments) != 0 {
+		_, _ = io.WriteString(stderr, "portwayd vnetwork uninstall: no arguments are allowed\n")
+		return 2
+	}
+	result, err := vnet.UninstallNetwork()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork uninstall: %s: %v\n", result, err)
+		return 1
+	}
+	_, _ = fmt.Fprintln(stdout, result)
+	return 0
 }
 
 func runGenerateCertificate(

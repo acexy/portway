@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
 	transportfactory "github.com/acexy/portway/internal/transport/factory"
+	"github.com/acexy/portway/internal/vnet"
 )
 
 var errProxyRegistrationRejected = errors.New("proxy registration rejected")
@@ -56,6 +58,7 @@ type Service struct {
 	inboundAdmission        chan struct{}
 	inboundRejections       *logging.WindowCounter
 	ready                   atomic.Bool
+	vnetRuntime             *serverVNetRuntime
 }
 
 // NewService creates a server service.
@@ -125,6 +128,24 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
+	var vnetDevice vnet.Device
+	if configuration.VirtualNetwork.Enabled {
+		vnetDevice, err = vnet.PrepareNetwork(vnet.NetworkSpec{
+			Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
+			LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP,
+			MTU: vnetMTU, OwnerUID: os.Getuid(),
+		})
+		if err != nil {
+			s.logger.WithComponent("vnet").Warn("VNet device is not ready; VNet remains installation required", err)
+		}
+	}
+	s.vnetRuntime = newServerVNetRuntime(
+		sessionContext,
+		s.logger.WithComponent("vnet"),
+		configuration.VirtualNetwork,
+		vnetDevice,
+	)
+	defer s.vnetRuntime.Close()
 	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy, func() config.UDPConfig {
 		return config.EffectiveForwardUDPConfig(s.configuration.snapshot().Forwards)
 	})

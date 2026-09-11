@@ -48,6 +48,7 @@ authentication:
   # 完整中文记录见 ./managed/managed-client.yaml。
   # managed_clients_path: "./managed"
 
+
 proxies:
   # 公网 TCP/UDP 监听 IP，默认 0.0.0.0，必须是规范 IP 地址，不接受主机名。
   bind_ip: 0.0.0.0
@@ -224,6 +225,63 @@ forwards:
         port_ranges:
           - start: 8000
             end: 8999
+
+# 可选。仅适用于 Governed 客户端的 IPv4 虚拟网络，默认关闭。Linux 和 macOS
+# 主机在首次激活时创建归 Portway 所有的逻辑接口 portway0。VNet 不改变或共享
+# Proxy、Forward Binding。
+virtual_network:
+  # 可选。启用 VNet 地址下发和 Packet Channel，默认 false。
+  enabled: false
+
+  # 可选。该 VNet 独占的规范私有 IPv4 CIDR，默认 172.20.0.0/16。
+  # 网络地址和广播地址不能分配给节点。
+  cidr: 172.20.0.0/16
+
+  # 可选。分配给 portwayd 的稳定虚拟地址，默认 172.20.0.1。
+  # 必须是 cidr 内可用的主机地址。
+  server_ip: 172.20.0.1
+
+  # 可选。每个活动客户端使用的全双工数据包通道数，默认 4，允许范围 1 到 8。
+  # TCP Transport 为独立加密连接；QUIC Transport 为同一条已认证 QUIC Connection
+  # 上的独立 Stream。内层 TCP/UDP 流通过稳定五元组哈希固定到同一通道。
+  packet_channels: 4
+
+  # 可选。其他 VNet 节点允许访问 portwayd 的 TCP/UDP 端口。省略某个协议即不开放
+  # 该协议的端口。范围包含 start 和 end，必须排序且不能重叠。
+  # server_ports:
+  #   tcp:
+  #     port_ranges:
+  #       - start: 22
+  #         end: 22
+  #       - start: 8000
+  #         end: 8099
+  #   udp:
+  #     port_ranges:
+  #       - start: 53
+  #         end: 53
+
+  # 可选。每个 VNet 客户端的稳定地址和入站端口策略。每个 client_id 都必须对应
+  # governed_clients_path 加载的条目；Shared 和 Managed 客户端不能加入。
+  # ClientID 和 IP 均不能重复。
+  # nodes:
+  #   - client_id: governed-a
+  #     ip: 172.20.0.2
+  #     ports:
+  #       tcp:
+  #         port_ranges:
+  #           - start: 8080
+  #             end: 8080
+  #       udp:
+  #         port_ranges:
+  #           - start: 9000
+  #             end: 9010
+  #   - client_id: governed-b
+  #     ip: 172.20.0.3
+  #     ports:
+  #       tcp:
+  #         port_ranges:
+  #           - start: 3306
+  #             end: 3306
 
 security:
   # IPv4/IPv6 拒绝列表文件，默认空并禁用。相对路径以服务端主配置文件目录为

@@ -11,6 +11,7 @@ import (
 	"github.com/acexy/portway/internal/config/gen"
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/vnet"
 )
 
 func main() {
@@ -44,9 +45,30 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 					Execute: runGenerateClientConfiguration,
 				}},
 			},
+			{
+				Name: "vnetwork", Summary: "Manage the Portway virtual network",
+				Subcommands: []cli.Command{{
+					Name: "uninstall", Summary: "Safely remove the owned portway0 network",
+					Execute: runUninstallVNetwork,
+				}},
+			},
 		},
 	}
 	return application.Run(arguments, stdout, stderr)
+}
+
+func runUninstallVNetwork(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if len(arguments) != 0 {
+		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: no arguments are allowed\n")
+		return 2
+	}
+	result, err := vnet.UninstallNetwork()
+	if err != nil {
+		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: "+result+": "+err.Error()+"\n")
+		return 1
+	}
+	_, _ = io.WriteString(stdout, result+"\n")
+	return 0
 }
 
 func runGenerateClientConfiguration(

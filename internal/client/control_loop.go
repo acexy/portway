@@ -23,6 +23,7 @@ func (s *Service) runControlLoop(
 	writer *control.Writer,
 	transportSession transport.ClientSession,
 	managementMode protocol.ManagementMode,
+	vnetNegotiated bool,
 	forwardRuntimes ...*forwardManager,
 ) error {
 	var forwardRuntime *forwardManager
@@ -51,6 +52,14 @@ func (s *Service) runControlLoop(
 		transportSession,
 	)
 	defer linkManager.close()
+	var vnetManager *clientVNetManager
+	if vnetNegotiated && managementMode == protocol.ManagementModeGoverned {
+		vnetManager = newClientVNetManager(
+			sessionContext, sessionLogger.WithComponent("vnet"), s.runtimeIdentity(),
+			sessionID, writer, transportSession,
+		)
+		defer vnetManager.close()
+	}
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
@@ -103,6 +112,50 @@ func (s *Service) runControlLoop(
 					return classifyControlProtocolError(err)
 				}
 				forwardRuntime.deliverOffer(offer)
+			case protocol.MessageVNetAssignment:
+				if vnetManager == nil {
+					return fmt.Errorf("%w: unexpected VNet assignment", transport.ErrProtocol)
+				}
+				var assignment protocol.VNetAssignment
+				if err := protocol.DecodePayload(envelope, &assignment); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if err := vnetManager.applyAssignment(assignment); err != nil {
+					return err
+				}
+			case protocol.MessageVNetActivate:
+				if vnetManager == nil {
+					return fmt.Errorf("%w: unexpected VNet activation", transport.ErrProtocol)
+				}
+				var activation protocol.VNetActivate
+				if err := protocol.DecodePayload(envelope, &activation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if err := vnetManager.activate(activation); err != nil {
+					return err
+				}
+			case protocol.MessageOpenVNetChannel:
+				if vnetManager == nil {
+					return fmt.Errorf("%w: unexpected VNet channel offer", transport.ErrProtocol)
+				}
+				var offer protocol.OpenVNetChannel
+				if err := protocol.DecodePayload(envelope, &offer); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if err := vnetManager.offer(offer); err != nil {
+					return err
+				}
+			case protocol.MessageVNetDeactivate:
+				if vnetManager == nil {
+					return fmt.Errorf("%w: unexpected VNet deactivation", transport.ErrProtocol)
+				}
+				var deactivation protocol.VNetDeactivate
+				if err := protocol.DecodePayload(envelope, &deactivation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if err := vnetManager.deactivate(deactivation); err != nil {
+					return err
+				}
 			case protocol.MessageForwardBindingRevoked:
 				if forwardRuntime == nil {
 					return fmt.Errorf("%w: unexpected Forward revocation", transport.ErrProtocol)
