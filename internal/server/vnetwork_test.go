@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -14,6 +16,23 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 )
+
+func TestExpectedVNetPoolStop(t *testing.T) {
+	for _, err := range []error{
+		io.EOF,
+		io.ErrClosedPipe,
+		net.ErrClosed,
+		context.Canceled,
+		fmt.Errorf("read channel: %w", net.ErrClosed),
+	} {
+		if !isExpectedVNetPoolStop(err) {
+			t.Fatalf("expected normal VNet pool stop for %v", err)
+		}
+	}
+	if isExpectedVNetPoolStop(errors.New("unexpected packet failure")) {
+		t.Fatal("unexpected VNet pool failure was treated as normal shutdown")
+	}
+}
 
 func TestVNetOffersAreIssuedOnlyAfterClientReadiness(t *testing.T) {
 	configuration := config.DefaultServer().VirtualNetwork

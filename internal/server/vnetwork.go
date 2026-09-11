@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -474,7 +476,7 @@ func (runtime *serverVNetRuntime) bind(
 				err := pool.RunReaders(func(packet []byte) error {
 					return runtime.routeClientPacket(binding.ClientID, packet)
 				})
-				if err != nil && runtime.context.Err() == nil {
+				if err != nil && runtime.context.Err() == nil && !isExpectedVNetPoolStop(err) {
 					runtime.logger.WarnWithFields("VNet channel pool stopped", err, map[string]any{
 						"client_id": binding.ClientID, "event": "vnet_pool_stopped",
 					})
@@ -492,6 +494,11 @@ func (runtime *serverVNetRuntime) bind(
 			})
 		},
 	)
+}
+
+func isExpectedVNetPoolStop(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled)
 }
 
 func (runtime *serverVNetRuntime) poolIsCurrent(clientID string, sessionID string, generation uint64) bool {
