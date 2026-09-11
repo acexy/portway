@@ -78,6 +78,8 @@ func (s *Service) runControlSession(
 			protocol.CapabilityJSONControl,
 			protocol.CapabilityTCPForward,
 			protocol.CapabilityUDPForward,
+			protocol.CapabilityVNetIPv4,
+			protocol.CapabilityVNetLoopback,
 		},
 	}); err != nil {
 		return "", false, err
@@ -243,6 +245,7 @@ func (s *Service) runControlSession(
 		writer,
 		transportSession,
 		serverHello.ManagementMode,
+		coll.SliceContains(serverHello.Capabilities, protocol.CapabilityVNetIPv4),
 		forwardRuntime,
 	)
 }

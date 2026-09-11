@@ -60,6 +60,9 @@ func LoadServer(path string, allowMissing bool) (ServerConfig, error) {
 	if err := validateForwardConfiguration(configuration); err != nil {
 		return ServerConfig{}, err
 	}
+	if err := validateVirtualNetworkManagedClients(configuration); err != nil {
+		return ServerConfig{}, err
+	}
 	after, err := serverSourceManifest(configuration)
 	if err != nil {
 		return ServerConfig{}, err

@@ -73,8 +73,32 @@ func (s *Service) handleDataConnection(
 	if err != nil {
 		return err
 	}
+	s.authenticationBarrier.RLock()
+	if !s.authenticationStore.IsCurrent(inbound.Authentication) {
+		s.authenticationBarrier.RUnlock()
+		return transport.ErrAuthentication
+	}
+	s.authenticationBarrier.RUnlock()
+	if envelope.Type == protocol.MessageBindVNetChannel {
+		if inbound.Authentication.Mode != authentication.ModeManaged || s.vnetRuntime == nil {
+			return transport.ErrAuthentication
+		}
+		var binding protocol.BindVNetChannel
+		if err := protocol.DecodePayload(envelope, &binding); err != nil {
+			return err
+		}
+		if binding.ClientID != inbound.Authentication.ClientID {
+			return transport.ErrAuthentication
+		}
+		return s.vnetRuntime.bind(ctx, inbound, binding, releaseAdmission)
+	}
 	if envelope.Type != protocol.MessageBindLink {
-		return fmt.Errorf("expected %s, got %s", protocol.MessageBindLink, envelope.Type)
+		return fmt.Errorf(
+			"expected %s or %s, got %s",
+			protocol.MessageBindLink,
+			protocol.MessageBindVNetChannel,
+			envelope.Type,
+		)
 	}
 	var binding protocol.BindLink
 	if err := protocol.DecodePayload(envelope, &binding); err != nil {
@@ -84,12 +108,6 @@ func (s *Service) handleDataConnection(
 		binding.ClientID != inbound.Authentication.ClientID {
 		return transport.ErrAuthentication
 	}
-	s.authenticationBarrier.RLock()
-	if !s.authenticationStore.IsCurrent(inbound.Authentication) {
-		s.authenticationBarrier.RUnlock()
-		return transport.ErrAuthentication
-	}
-	s.authenticationBarrier.RUnlock()
 	return s.linkBroker.BindWithActivation(
 		ctx,
 		connection,

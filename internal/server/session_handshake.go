@@ -154,7 +154,10 @@ func (s *Service) handleAdmittedConnection(
 	// The Session Registry now owns a bounded Initializing record, so this
 	// connection no longer consumes the unaffiliated admission budget.
 	releaseAdmission()
-	negotiatedCapabilities := s.negotiateCapabilities(clientHello.Capabilities)
+	negotiatedCapabilities := s.negotiateCapabilities(
+		clientHello.Capabilities,
+		inbound.Authentication,
+	)
 	if err := protocol.WriteControl(connection, protocol.MessageServerHello, protocol.ServerHello{
 		ClientID:       clientHello.ClientID,
 		ManagementMode: protocol.ManagementMode(inbound.Authentication.Mode),
@@ -180,6 +183,16 @@ func (s *Service) handleAdmittedConnection(
 		s.proxyRegistry.Suspend(clientHello.ClientID, clientHello.ResumeSessionID)
 	}
 	writer := control.NewWriter(connection)
+	if s.vnetRuntime != nil && coll.SliceContains(negotiatedCapabilities, protocol.CapabilityVNetIPv4) {
+		s.vnetRuntime.attach(
+			clientHello.ClientID,
+			sessionID,
+			inbound.Generation,
+			inbound.Authentication,
+			writer,
+		)
+		defer s.vnetRuntime.detach(clientHello.ClientID, sessionID)
+	}
 	maxActiveLinks := 0
 	if inbound.Authentication.Mode == authentication.ModeGoverned {
 		governed, _ := s.configuration.governedClient(clientHello.ClientID)
@@ -225,6 +238,11 @@ func (s *Service) handleAdmittedConnection(
 		}
 		recoverableSession = true
 		defer s.unregisterManagedSession(clientHello.ClientID, sessionID)
+		if s.vnetRuntime != nil && coll.SliceContains(negotiatedCapabilities, protocol.CapabilityVNetIPv4) {
+			if err := s.vnetRuntime.assign(clientHello.ClientID, sessionID); err != nil {
+				return fmt.Errorf("assign managed VNet session: %w", err)
+			}
+		}
 	}
 
 	initialProxySynchronizationRequired :=

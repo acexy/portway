@@ -107,6 +107,9 @@ func (s *Service) applyConfigurationCandidateContext(
 	if err := config.ValidateProxyMirrorConfiguration(candidate); err != nil {
 		return err
 	}
+	if err := s.validateVNetConfigurationTransition(current.VirtualNetwork, candidate.VirtualNetwork); err != nil {
+		return err
+	}
 
 	if serverTokenRequiresGeneration(candidate) &&
 		current.Authentication.SharedToken != nil {
@@ -185,6 +188,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
 		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
 		reflect.DeepEqual(candidate.Forwards, current.Forwards) &&
+		reflect.DeepEqual(candidate.VirtualNetwork, current.VirtualNetwork) &&
 		reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror) &&
 		!httpsChanged &&
 		candidate.LogLevel == current.LogLevel {
@@ -210,6 +214,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	)
 	managedChanges := changedManagedClients(current, candidate)
 	mirrorChanged := !reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror)
+	virtualNetworkChanged := !reflect.DeepEqual(candidate.VirtualNetwork, current.VirtualNetwork)
 	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
 		current.GovernedClients,
 		candidate.GovernedClients,
@@ -298,6 +303,9 @@ func (s *Service) applyConfigurationCandidateContext(
 			},
 		)
 	}
+	if virtualNetworkChanged && s.vnetRuntime != nil {
+		s.vnetRuntime.applyConfiguration(candidate.VirtualNetwork, candidate.Generation)
+	}
 	s.rolloutManagedConfigurations(ctx, managedChanges, candidate)
 	s.logger.WithComponent("config_reload").InfoWithFields(
 		"configuration reload applied",
@@ -322,6 +330,7 @@ func (s *Service) applyConfigurationCandidateContext(
 			"managed_removed":          managedRemoved,
 			"managed_rollouts":         len(managedChanges),
 			"tokens_changed":           tokensChanged,
+			"virtual_network_changed":  virtualNetworkChanged,
 			"all_clients_disconnected": len(revokedContexts) == len(currentAuthenticationSnapshot.Contexts()) && len(revokedContexts) != 0,
 			"revoked_authentications":  len(revokedContexts),
 			"revoked_sessions":         len(revokedSessions),

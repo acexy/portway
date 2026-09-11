@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -11,9 +12,17 @@ import (
 	"github.com/acexy/portway/internal/config/gen"
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/vnet"
 )
 
 func main() {
+	if handled, err := vnet.RunPlatformHelper(os.Args[1:]); handled {
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "portway VNet helper: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -44,9 +53,34 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 					Execute: runGenerateClientConfiguration,
 				}},
 			},
+			{
+				Name: "vnetwork", Summary: "Manage the Portway virtual network",
+				Subcommands: []cli.Command{{
+					Name: "uninstall", Summary: "Safely remove the owned portway0 network",
+					Execute: runUninstallVNetwork,
+				}},
+			},
 		},
 	}
 	return application.Run(arguments, stdout, stderr)
+}
+
+func runUninstallVNetwork(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if !vnet.ManualNetworkManagementSupported() {
+		_, _ = io.WriteString(stderr, "portway vnetwork: manual management is unavailable on this platform; VNet is managed automatically during run\n")
+		return 1
+	}
+	if len(arguments) != 0 {
+		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: no arguments are allowed\n")
+		return 2
+	}
+	result, err := vnet.UninstallNetwork()
+	if err != nil {
+		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: "+result+": "+err.Error()+"\n")
+		return 1
+	}
+	_, _ = io.WriteString(stdout, result+"\n")
+	return 0
 }
 
 func runGenerateClientConfiguration(
