@@ -74,3 +74,13 @@ func TestValidateVirtualNetworkManagedClients(t *testing.T) {
 		t.Fatal("expected non-managed VNet client rejection")
 	}
 }
+
+func TestValidateVirtualNetworkLoopbackAllowsUDP(t *testing.T) {
+	configuration := DefaultServer().VirtualNetwork
+	configuration.Enabled = true
+	configuration.NetworkMode = VNetNetworkModeLoopback
+	configuration.ServerPorts.UDP.PortRanges = []PortRange{{Start: 53, End: 53}}
+	if err := validateVirtualNetworkConfig(configuration); err != nil {
+		t.Fatalf("validate loopback UDP configuration: %v", err)
+	}
+}

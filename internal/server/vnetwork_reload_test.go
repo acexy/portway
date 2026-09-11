@@ -31,6 +31,9 @@ func TestValidateVNetConfigurationTransitionRejectsLiveNetworkMigration(t *testi
 		{"CIDR", func(value *config.VirtualNetworkConfig) { value.CIDR = "172.21.0.0/16" }, "virtual_network.cidr"},
 		{"server IP", func(value *config.VirtualNetworkConfig) { value.ServerIP = "172.20.0.10" }, "virtual_network.server_ip"},
 		{"connected node IP", func(value *config.VirtualNetworkConfig) { value.Nodes[0].IP = "172.20.0.3" }, "virtual_network.nodes.ip"},
+		{"network mode", func(value *config.VirtualNetworkConfig) {
+			value.NetworkMode = config.VNetNetworkModeLoopback
+		}, "virtual_network.network_mode"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {

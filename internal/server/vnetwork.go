@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ const (
 	vnetMTU                 = 1280
 	vnetPoolTicketLifetime  = 10 * time.Second
 	vnetMaximumTrackedFlows = 65536
+	vnetChannelWriteTimeout = 5 * time.Second
 )
 
 type serverVNetSession struct {
@@ -42,6 +44,7 @@ type serverVNetRuntime struct {
 	router           *vnet.Router
 	broker           *vnet.PoolBroker
 	device           vnet.Device
+	userspaceTCP     *vnet.UserspaceTCP
 	deviceWrite      sync.Mutex
 	poolGeneration   atomic.Uint64
 	configGeneration atomic.Uint64
@@ -67,10 +70,48 @@ func newServerVNetRuntime(
 	}
 	runtime.configGeneration.Store(1)
 	if device != nil && router != nil {
+		runtime.prepareUserspaceTCP(configuration)
 		runtime.waitGroup.Go(func() { runtime.readDevice(device) })
 	}
 	runtime.waitGroup.Go(runtime.reconcileDevice)
 	return runtime
+}
+
+func (runtime *serverVNetRuntime) prepareUserspaceTCP(configuration config.VirtualNetworkConfig) {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	runtime.prepareUserspaceTCPLocked(configuration)
+}
+
+func (runtime *serverVNetRuntime) prepareUserspaceTCPLocked(configuration config.VirtualNetworkConfig) {
+	if config.EffectiveVNetNetworkMode(configuration) != config.VNetNetworkModeLoopback ||
+		runtime.userspaceTCP != nil {
+		return
+	}
+	prefix, err := netip.ParsePrefix(configuration.CIDR)
+	if err != nil {
+		return
+	}
+	userspaceTCP, err := vnet.NewUserspaceTCP(
+		runtime.context,
+		netip.MustParseAddr(configuration.ServerIP),
+		prefix.Bits(),
+		vnetMTU,
+		runtime.sendUserspaceTCPPacket,
+	)
+	if err != nil {
+		runtime.logger.Error("failed to initialize VNet userspace TCP/IP stack", err)
+		return
+	}
+	runtime.userspaceTCP = userspaceTCP
+}
+
+func (runtime *serverVNetRuntime) sendUserspaceTCPPacket(packet []byte) error {
+	destination, err := runtime.router.RouteServerPacket(packet, time.Now())
+	if err != nil {
+		return err
+	}
+	return runtime.dispatch(destination, packet)
 }
 
 func (runtime *serverVNetRuntime) attach(
@@ -93,6 +134,7 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 	session, exists := runtime.sessions[clientID]
 	configuration := runtime.configuration
 	deviceReady := runtime.device != nil
+	userspaceReady := runtime.userspaceTCP != nil
 	runtime.mutex.RUnlock()
 	if !exists || session.sessionID != sessionID {
 		return errors.New("VNet session is no longer current")
@@ -105,7 +147,11 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 	if configuration.Enabled {
 		state = protocol.VNetStateInstallationRequired
 		if deviceReady {
-			state = protocol.VNetStateActive
+			state = protocol.VNetStateEnabled
+			if config.EffectiveVNetNetworkMode(configuration) == config.VNetNetworkModeLoopback &&
+				!userspaceReady {
+				state = protocol.VNetStateFailed
+			}
 		}
 	}
 	poolGeneration := runtime.poolGeneration.Add(1)
@@ -120,6 +166,7 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 	runtime.sessions[clientID] = current
 	runtime.mutex.Unlock()
 	assignment := protocol.VNetAssignment{
+		NetworkMode: string(config.EffectiveVNetNetworkMode(configuration)),
 		CIDR: configuration.CIDR, ClientIP: node.IP, ServerIP: configuration.ServerIP,
 		MTU: vnetMTU, PacketChannels: uint8(configuration.PacketChannels),
 		TransportGeneration: uint64(session.generation),
@@ -163,7 +210,7 @@ func (runtime *serverVNetRuntime) activate(clientID string, sessionID string, st
 		ClientID: clientID, SessionID: sessionID,
 		TransportGeneration: uint64(session.generation), VirtualIP: node.IP,
 		PoolGeneration: status.PoolGeneration, ChannelCount: uint8(configuration.PacketChannels),
-		MTU: vnetMTU, Authentication: session.authentication,
+		MTU: vnetMTU, WriteTimeout: vnetChannelWriteTimeout, Authentication: session.authentication,
 	}, vnetPoolTicketLifetime)
 	if err != nil {
 		runtime.resetOffered(clientID, sessionID, status.PoolGeneration)
@@ -227,9 +274,11 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	previous := runtime.configuration
 	runtime.configuration = configuration
 	device := runtime.device
+	userspaceTCP := runtime.userspaceTCP
 	networkChanged := previous.CIDR != configuration.CIDR || previous.ServerIP != configuration.ServerIP
 	if !configuration.Enabled || networkChanged {
 		runtime.device = nil
+		runtime.userspaceTCP = nil
 	}
 	sessions := make([]serverVNetSession, 0, len(runtime.sessions))
 	clientIDs := make([]string, 0, len(runtime.sessions))
@@ -240,6 +289,9 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	runtime.mutex.Unlock()
 	if device != nil && (!configuration.Enabled || networkChanged) {
 		_ = device.Close()
+	}
+	if userspaceTCP != nil && (!configuration.Enabled || networkChanged) {
+		_ = userspaceTCP.Close()
 	}
 	runtime.configGeneration.Store(generation)
 	if runtime.router != nil {
@@ -312,6 +364,7 @@ func (runtime *serverVNetRuntime) prepareRuntimeDevice(configuration config.Virt
 			return
 		}
 		runtime.device = device
+		runtime.prepareUserspaceTCPLocked(configuration)
 		sessions := make([]serverVNetSession, 0, len(runtime.sessions))
 		clientIDs := make([]string, 0, len(runtime.sessions))
 		for clientID, session := range runtime.sessions {
@@ -348,6 +401,7 @@ func (runtime *serverVNetRuntime) activateInstalledDevice(configuration config.V
 		return false
 	}
 	runtime.device = device
+	runtime.prepareUserspaceTCPLocked(configuration)
 	runtime.mutex.Unlock()
 	runtime.waitGroup.Go(func() { runtime.readDevice(device) })
 	return true
@@ -372,6 +426,10 @@ func (runtime *serverVNetRuntime) reconcileDevice() {
 			sessions = append(sessions, session)
 		}
 		runtime.mutex.RUnlock()
+		if configuration.Enabled && runtime.deviceReady() {
+			delay = time.Second
+			continue
+		}
 		if configuration.Enabled && runtime.activateInstalledDevice(configuration) {
 			for index, session := range sessions {
 				_ = runtime.assign(clientIDs[index], session.sessionID)
@@ -386,6 +444,12 @@ func (runtime *serverVNetRuntime) reconcileDevice() {
 			}
 		}
 	}
+}
+
+func (runtime *serverVNetRuntime) deviceReady() bool {
+	runtime.mutex.RLock()
+	defer runtime.mutex.RUnlock()
+	return runtime.device != nil
 }
 
 func (runtime *serverVNetRuntime) bind(
@@ -457,10 +521,16 @@ func (runtime *serverVNetRuntime) readDevice(device vnet.Device) {
 				runtime.logger.Error("VNet device reader stopped", err)
 			}
 			runtime.mutex.Lock()
+			var userspaceTCP *vnet.UserspaceTCP
 			if runtime.device == device {
 				runtime.device = nil
+				userspaceTCP = runtime.userspaceTCP
+				runtime.userspaceTCP = nil
 			}
 			runtime.mutex.Unlock()
+			if userspaceTCP != nil {
+				_ = userspaceTCP.Close()
+			}
 			_ = device.Close()
 			return
 		}
@@ -474,6 +544,12 @@ func (runtime *serverVNetRuntime) readDevice(device vnet.Device) {
 
 func (runtime *serverVNetRuntime) dispatch(destination vnet.Destination, packet []byte) error {
 	if destination.Kind == vnet.DestinationServer {
+		runtime.mutex.RLock()
+		userspaceTCP := runtime.userspaceTCP
+		runtime.mutex.RUnlock()
+		if userspaceTCP != nil && userspaceTCP.Handle(packet) {
+			return nil
+		}
 		runtime.deviceWrite.Lock()
 		defer runtime.deviceWrite.Unlock()
 		if runtime.device == nil {
@@ -508,8 +584,17 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 func (runtime *serverVNetRuntime) Close() {
 	runtime.cancel()
 	runtime.broker.Close()
-	if runtime.device != nil {
-		_ = runtime.device.Close()
+	runtime.mutex.Lock()
+	device := runtime.device
+	runtime.device = nil
+	userspaceTCP := runtime.userspaceTCP
+	runtime.userspaceTCP = nil
+	runtime.mutex.Unlock()
+	if device != nil {
+		_ = device.Close()
+	}
+	if userspaceTCP != nil {
+		_ = userspaceTCP.Close()
 	}
 	runtime.waitGroup.Wait()
 }

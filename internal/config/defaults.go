@@ -67,6 +67,7 @@ func DefaultServer() ServerConfig {
 		},
 		Forwards: ForwardServerConfig{UDP: DefaultUDPConfig()},
 		VirtualNetwork: VirtualNetworkConfig{
+			NetworkMode: VNetNetworkModeTUN,
 			CIDR:           "172.20.0.0/16",
 			ServerIP:       "172.20.0.1",
 			PacketChannels: 4,

@@ -51,7 +51,9 @@ Portway
 **VNet** 是仅适用于 Managed 身份的 Linux/macOS 模式。服务端默认占用
 `172.20.0.1`，并为配置的客户端分配稳定地址；客户端之间的流量由服务端集中中继。
 Portway 只创建具有所有权记录的逻辑网络 `portway0`，并执行每个目标节点的 TCP/UDP
-端口允许列表。Linux 服务端使用 `portwayd vnetwork status|install|repair|uninstall`；
+端口允许列表。服务端控制的 `network_mode` 默认使用原生 TUN 交付；`loopback` 使用
+用户态 TCP/IP 栈访问绑定在 `127.0.0.1` 相同端口的 TCP/UDP 服务。Linux 服务端使用
+`portwayd vnetwork status|install|repair|uninstall`；
 Linux 客户端地址由服务端下发，因此只暴露安全的 `portway vnetwork uninstall` 命令。
 macOS 的 `run` 进程自动使用同一二进制的短生命周期提权模式，不提供手工管理命令。
 详见 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。

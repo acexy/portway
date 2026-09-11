@@ -3,6 +3,7 @@ package vnet
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ func TestPoolBrokerActivatesCompletePoolAndTransfersPacket(t *testing.T) {
 		TransportGeneration: 3,
 		VirtualIP:           "172.20.0.2",
 		PoolGeneration:      4,
+		WriteTimeout:        time.Second,
 		ChannelCount:        2,
 		MTU:                 1280,
 		Authentication:      authenticationContext,
@@ -90,7 +92,7 @@ func TestPoolBrokerRejectsTicketForDifferentIndex(t *testing.T) {
 	broker := NewPoolBroker()
 	spec := PoolSpec{
 		ClientID: "client-a", SessionID: "session-a", VirtualIP: "172.20.0.2",
-		PoolGeneration: 1, ChannelCount: 2, MTU: 1280,
+		PoolGeneration: 1, ChannelCount: 2, MTU: 1280, WriteTimeout: time.Second,
 	}
 	offers, err := broker.Prepare(spec, time.Second)
 	if err != nil {
@@ -106,5 +108,20 @@ func TestPoolBrokerRejectsTicketForDifferentIndex(t *testing.T) {
 	}
 	if err := broker.Bind(context.Background(), server, binding, authentication.Context{}, nil, nil); err == nil {
 		t.Fatal("ticket was accepted for a different channel index")
+	}
+}
+
+func TestPoolSendTimesOutBlockedTarget(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	pool := &Pool{
+		spec:       PoolSpec{MTU: 1280, WriteTimeout: 20 * time.Millisecond},
+		channels:   []net.Conn{server},
+		writeMutex: make([]sync.Mutex, 1),
+		done:       make(chan struct{}),
+	}
+	if err := pool.Send([]byte{1, 2, 3}, 0); err == nil {
+		t.Fatal("expected blocked VNet target write to time out")
 	}
 }

@@ -27,13 +27,14 @@ type MessageType string
 type Capability string
 
 const (
-	CapabilityTCP         Capability = "tcp"
-	CapabilityUDP         Capability = "udp"
-	CapabilityHTTP        Capability = "http"
-	CapabilityJSONControl Capability = "json-control"
-	CapabilityTCPForward  Capability = "tcp_forward"
-	CapabilityUDPForward  Capability = "udp_forward"
-	CapabilityVNetIPv4    Capability = "vnet_ipv4"
+	CapabilityTCP          Capability = "tcp"
+	CapabilityUDP          Capability = "udp"
+	CapabilityHTTP         Capability = "http"
+	CapabilityJSONControl  Capability = "json-control"
+	CapabilityTCPForward   Capability = "tcp_forward"
+	CapabilityUDPForward   Capability = "udp_forward"
+	CapabilityVNetIPv4     Capability = "vnet_ipv4"
+	CapabilityVNetLoopback Capability = "vnet_loopback"
 )
 
 // ManagementMode identifies who owns a client's proxy configuration.

@@ -63,6 +63,8 @@ off the public network.
 `172.20.0.1` by default and assigns stable addresses to configured clients;
 client-to-client traffic is relayed centrally. Portway creates only its owned
 logical `portway0` network and enforces each destination's TCP/UDP port allowlist.
+The server-owned `network_mode` defaults to native TUN delivery; `loopback` uses
+a userspace TCP/IP stack to reach same-port TCP/UDP services bound to `127.0.0.1`.
 On Linux use `portwayd vnetwork status|install|repair|uninstall`; Linux clients
 expose only the safe `portway vnetwork uninstall` command because their assignment
 is server-owned. On macOS the `run` process automatically uses a short-lived

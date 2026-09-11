@@ -3,11 +3,20 @@
 package vnet
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestDarwinAuthorizationNoticeWithoutTerminalColor(t *testing.T) {
+	var output bytes.Buffer
+	writeDarwinAuthorizationNotice(&output, "VNet ready", "32")
+	if output.String() != "VNet ready\n" {
+		t.Fatalf("unexpected authorization notice: %q", output.String())
+	}
+}
 
 func TestDarwinManualNetworkManagementIsUnavailable(t *testing.T) {
 	if ManualNetworkManagementSupported() {

@@ -128,6 +128,37 @@ func TestVNetFailedPoolReceivesFreshAssignment(t *testing.T) {
 	}
 }
 
+func TestVNetReconcileDoesNotReplaceAssignmentWhileDeviceIsReady(t *testing.T) {
+	configuration := config.DefaultServer().VirtualNetwork
+	configuration.Enabled = true
+	configuration.PacketChannels = 1
+	configuration.ServerPorts.TCP.PortRanges = []config.PortRange{{Start: 80, End: 80}}
+	configuration.Nodes = []config.VNetNodeConfig{{ClientID: "managed-a", IP: "172.20.0.2"}}
+	runtime := newServerVNetRuntime(
+		context.Background(), logging.New("test"), configuration, newBlockingVNetDevice(),
+	)
+	defer runtime.Close()
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	runtime.attach("managed-a", "session-a", transport.Generation(1), authentication.Context{
+		Mode: authentication.ModeManaged, ClientID: "managed-a",
+	}, control.NewWriter(serverConnection))
+
+	first := assignAndReadVNetAssignment(t, runtime, clientConnection)
+	if err := clientConnection.SetReadDeadline(time.Now().Add(1200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := protocol.ReadControl(clientConnection); err == nil {
+		t.Fatal("ready VNet device caused an unsolicited replacement assignment")
+	}
+	runtime.mutex.RLock()
+	current := runtime.sessions["managed-a"]
+	runtime.mutex.RUnlock()
+	if current.poolGeneration != first.PoolGeneration {
+		t.Fatal("ready VNet device replaced the current pool generation")
+	}
+}
+
 func assignAndReadVNetAssignment(
 	t *testing.T,
 	runtime *serverVNetRuntime,

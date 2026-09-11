@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -101,11 +102,7 @@ func requestDarwinHelper(spec NetworkSpec) (Device, error) {
 			"Portway VNet is enabled and requires administrator permission to create the temporary macOS network %s (IP %s, CIDR %s).",
 			LogicalInterfaceName, spec.LocalIP, spec.CIDR,
 		)
-		if info, statError := os.Stderr.Stat(); statError == nil && info.Mode()&os.ModeCharDevice != 0 {
-			_, _ = fmt.Fprintf(os.Stderr, "\x1b[31m%s\x1b[0m\n", authorizationNotice)
-		} else {
-			_, _ = fmt.Fprintln(os.Stderr, authorizationNotice)
-		}
+		writeDarwinAuthorizationNotice(os.Stderr, authorizationNotice, "31")
 	}
 	command := exec.Command("sudo", executable, darwinHelperCommand, socketPath,
 		base64.RawURLEncoding.EncodeToString(encodedSpec), nonce)
@@ -157,7 +154,28 @@ func requestDarwinHelper(spec NetworkSpec) (Device, error) {
 		device.Close()
 		return nil, fmt.Errorf("macOS VNet helper exited: %w", waitError)
 	}
+	if !authorizationCached {
+		completionNotice := fmt.Sprintf(
+			"Portway VNet network %s is ready (interface %s, IP %s, CIDR %s).",
+			LogicalInterfaceName, device.Name(), spec.LocalIP, spec.CIDR,
+		)
+		writeDarwinAuthorizationNotice(os.Stderr, completionNotice, "32")
+	}
 	return device, nil
+}
+
+func writeDarwinAuthorizationNotice(writer io.Writer, message string, color string) {
+	useColor := false
+	if file, ok := writer.(*os.File); ok {
+		if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			useColor = true
+		}
+	}
+	if useColor {
+		_, _ = fmt.Fprintf(writer, "\x1b[%sm%s\x1b[0m\n", color, message)
+		return
+	}
+	_, _ = fmt.Fprintln(writer, message)
 }
 
 func cleanupDarwinLegacyManifest() error {

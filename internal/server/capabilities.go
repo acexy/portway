@@ -28,9 +28,19 @@ func (s *Service) negotiateCapabilities(
 		}
 	}
 	virtualNetwork := s.configuration.snapshot().VirtualNetwork
+	networkMode := config.EffectiveVNetNetworkMode(virtualNetwork)
 	if authenticationContext.Mode == authentication.ModeManaged {
 		if _, configured := config.VNetNode(virtualNetwork, authenticationContext.ClientID); configured {
-			supported[protocol.CapabilityVNetIPv4] = struct{}{}
+			loopbackSupported := coll.SliceContains(
+				clientCapabilities,
+				protocol.CapabilityVNetLoopback,
+			)
+			if networkMode != config.VNetNetworkModeLoopback || loopbackSupported {
+				supported[protocol.CapabilityVNetIPv4] = struct{}{}
+			}
+			if networkMode == config.VNetNetworkModeLoopback && loopbackSupported {
+				supported[protocol.CapabilityVNetLoopback] = struct{}{}
+			}
 		}
 	}
 	negotiated := coll.SliceFilter(

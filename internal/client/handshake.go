@@ -79,6 +79,7 @@ func (s *Service) runControlSession(
 			protocol.CapabilityTCPForward,
 			protocol.CapabilityUDPForward,
 			protocol.CapabilityVNetIPv4,
+			protocol.CapabilityVNetLoopback,
 		},
 	}); err != nil {
 		return "", false, err

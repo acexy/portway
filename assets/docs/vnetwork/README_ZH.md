@@ -10,6 +10,7 @@ VNet 只在服务端配置。每个节点的 `ports` 是其他节点访问该节
 ```yaml
 virtual_network:
   enabled: true
+  network_mode: tun
   cidr: 172.20.0.0/16
   server_ip: 172.20.0.1
   packet_channels: 4
@@ -35,9 +36,10 @@ virtual_network:
 这里引用的 ClientID 必须存在于 `managed_clients_path`。TCP 和 QUIC Transport 均使用
 `packet_channels`，默认值为 4，允许范围是 1 到 8。
 
-VNet 不把虚拟地址端口改写到 `127.0.0.1`。需要通过 VNet 访问的应用必须监听本机
-虚拟 IP（例如 `172.20.0.1`）或能够覆盖该地址的通配地址（例如 `0.0.0.0`）；只监听
-回环地址的应用不能通过虚拟 IP 访问。
+`network_mode` 默认为 `tun`，应用必须监听本机虚拟 IP 或能够覆盖它的通配地址。
+设为 `loopback` 后，Portway 用户态栈终止已授权的入站 TCP/UDP，并连接相同端口的
+`127.0.0.1`。此设置只由服务端控制，客户端跟随 Assignment，
+修改后必须重启服务端。
 
 首次激活需要权限时，Portway 调用操作系统的 `sudo` 机制，不读取或保存密码。Linux
 使用持久化 TUN `portway0` 并支持下列管理命令。macOS 的 `run` 自动启动同一二进制的

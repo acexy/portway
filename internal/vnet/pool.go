@@ -27,6 +27,7 @@ type PoolSpec struct {
 	PoolGeneration      uint64
 	ChannelCount        uint8
 	MTU                 uint16
+	WriteTimeout        time.Duration
 	Authentication      authentication.Context
 }
 
@@ -72,7 +73,8 @@ func NewPoolBroker() *PoolBroker {
 // Prepare creates one ticket per channel index and replaces older pending state.
 func (broker *PoolBroker) Prepare(spec PoolSpec, lifetime time.Duration) ([]protocol.OpenVNetChannel, error) {
 	if spec.ClientID == "" || spec.SessionID == "" || spec.VirtualIP == "" ||
-		spec.PoolGeneration == 0 || spec.ChannelCount < 1 || spec.ChannelCount > 8 || spec.MTU < 68 {
+		spec.PoolGeneration == 0 || spec.ChannelCount < 1 || spec.ChannelCount > 8 || spec.MTU < 68 ||
+		spec.WriteTimeout <= 0 {
 		return nil, errors.New("invalid VNet pool specification")
 	}
 	if lifetime <= 0 {
@@ -255,7 +257,13 @@ func (pool *Pool) Send(packet []byte, index uint8) error {
 	}
 	pool.writeMutex[index].Lock()
 	defer pool.writeMutex[index].Unlock()
-	return WritePacket(pool.channels[index], packet, pool.spec.MTU)
+	connection := pool.channels[index]
+	if err := connection.SetWriteDeadline(time.Now().Add(pool.spec.WriteTimeout)); err != nil {
+		return err
+	}
+	err := WritePacket(connection, packet, pool.spec.MTU)
+	clearError := connection.SetWriteDeadline(time.Time{})
+	return errors.Join(err, clearError)
 }
 
 // RunReaders reads every channel until one fails or the pool is closed.

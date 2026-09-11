@@ -13,6 +13,10 @@ const (
 )
 
 func validateVirtualNetworkConfig(configuration VirtualNetworkConfig) error {
+	if configuration.NetworkMode != "" && configuration.NetworkMode != VNetNetworkModeTUN &&
+		configuration.NetworkMode != VNetNetworkModeLoopback {
+		return errors.New("virtual_network.network_mode must be tun or loopback")
+	}
 	prefix, err := netip.ParsePrefix(configuration.CIDR)
 	if err != nil || !prefix.Addr().Is4() || prefix != prefix.Masked() ||
 		prefix.String() != configuration.CIDR {
@@ -71,6 +75,14 @@ func validateVirtualNetworkConfig(configuration VirtualNetworkConfig) error {
 		return errors.New("virtual_network must expose at least one TCP or UDP port when enabled")
 	}
 	return nil
+}
+
+// EffectiveVNetNetworkMode returns the defaulted VNet delivery mode.
+func EffectiveVNetNetworkMode(configuration VirtualNetworkConfig) VNetNetworkMode {
+	if configuration.NetworkMode == "" {
+		return VNetNetworkModeTUN
+	}
+	return configuration.NetworkMode
 }
 
 func validateVirtualNetworkManagedClients(configuration ServerConfig) error {

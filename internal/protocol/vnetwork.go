@@ -5,14 +5,17 @@ type VNetState string
 
 const (
 	VNetStateDisabled             VNetState = "disabled"
+	VNetStateEnabled              VNetState = "enabled"
 	VNetStateInstallationRequired VNetState = "installation_required"
 	VNetStateReady                VNetState = "ready"
 	VNetStateActive               VNetState = "active"
+	VNetStateRecovering           VNetState = "recovering"
 	VNetStateFailed               VNetState = "failed"
 )
 
 // VNetAssignment contains the server-owned virtual address and channel policy.
 type VNetAssignment struct {
+	NetworkMode         string    `json:"network_mode"`
 	CIDR                string    `json:"cidr"`
 	ClientIP            string    `json:"client_ip"`
 	ServerIP            string    `json:"server_ip"`

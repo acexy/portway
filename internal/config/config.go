@@ -90,12 +90,21 @@ type VNetNodeConfig struct {
 // VirtualNetworkConfig configures the managed-only IPv4 virtual network.
 type VirtualNetworkConfig struct {
 	Enabled        bool                `yaml:"enabled"`
+	NetworkMode    VNetNetworkMode     `yaml:"network_mode"`
 	CIDR           string              `yaml:"cidr"`
 	ServerIP       string              `yaml:"server_ip"`
 	PacketChannels int                 `yaml:"packet_channels"`
 	ServerPorts    VNetPortPermissions `yaml:"server_ports"`
 	Nodes          []VNetNodeConfig    `yaml:"nodes"`
 }
+
+// VNetNetworkMode selects how inbound traffic reaches services on a VNet node.
+type VNetNetworkMode string
+
+const (
+	VNetNetworkModeTUN      VNetNetworkMode = "tun"
+	VNetNetworkModeLoopback VNetNetworkMode = "loopback"
+)
 
 // ForwardIPRule binds one target network to its permitted protocol ports.
 type ForwardIPRule struct {

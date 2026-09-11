@@ -6,6 +6,9 @@ func (s *Service) validateVNetConfigurationTransition(
 	current config.VirtualNetworkConfig,
 	candidate config.VirtualNetworkConfig,
 ) error {
+	if config.EffectiveVNetNetworkMode(current) != config.EffectiveVNetNetworkMode(candidate) {
+		return restartRequiredError{field: "virtual_network.network_mode"}
+	}
 	if current.Enabled && current.CIDR != candidate.CIDR {
 		return restartRequiredError{field: "virtual_network.cidr"}
 	}

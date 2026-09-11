@@ -326,6 +326,12 @@ virtual_network:
   # Optional. Enables VNet assignment and Packet Channels. Defaults to false.
   enabled: false
 
+  # Optional. Inbound delivery mode. "tun" delivers TCP/UDP to applications
+  # listening on the virtual IP or a wildcard address. "loopback" terminates
+  # authorized TCP/UDP in Portway's userspace stack and connects to 127.0.0.1
+  # on the same port. Defaults to "tun"; changes require a server restart.
+  network_mode: tun
+
   # Optional. Private canonical IPv4 CIDR owned by this VNet.
   # Defaults to 172.20.0.0/16. Network and broadcast addresses cannot be
   # assigned to nodes.

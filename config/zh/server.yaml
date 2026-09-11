@@ -233,6 +233,11 @@ virtual_network:
   # 可选。启用 VNet 地址下发和 Packet Channel，默认 false。
   enabled: false
 
+  # 可选。入站交付模式。tun 把 TCP/UDP 交给监听虚拟 IP 或通配地址的应用；
+  # loopback 由 Portway 用户态栈终止已授权 TCP/UDP，并连接相同端口的 127.0.0.1。
+  # 默认 tun，修改后必须重启服务端。
+  network_mode: tun
+
   # 可选。该 VNet 独占的规范私有 IPv4 CIDR，默认 172.20.0.0/16。
   # 网络地址和广播地址不能分配给节点。
   cidr: 172.20.0.0/16
