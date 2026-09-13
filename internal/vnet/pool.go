@@ -49,7 +49,7 @@ type pendingPool struct {
 type Pool struct {
 	spec       PoolSpec
 	channels   []net.Conn
-	writeMutex []sync.Mutex
+	writers    []*PacketWriter
 	done       chan struct{}
 	closeOnce  sync.Once
 }
@@ -174,7 +174,7 @@ func (broker *PoolBroker) Bind(
 	}
 	select {
 	case <-ctx.Done():
-		broker.Remove(binding.ClientID, binding.SessionID)
+		broker.RemoveGeneration(binding.ClientID, binding.SessionID, binding.PoolGeneration)
 		return ctx.Err()
 	case <-done:
 		return nil
@@ -218,15 +218,22 @@ func (broker *PoolBroker) Active(clientID string) (*Pool, bool) {
 
 // Remove closes pending and active resources owned by one exact session.
 func (broker *PoolBroker) Remove(clientID string, sessionID string) {
+	broker.RemoveGeneration(clientID, sessionID, 0)
+}
+
+// RemoveGeneration removes only the exact generation; zero means the entire session.
+func (broker *PoolBroker) RemoveGeneration(clientID string, sessionID string, generation uint64) {
 	broker.mutex.Lock()
 	pending := broker.pending[clientID]
-	if pending != nil && pending.spec.SessionID == sessionID {
+	if pending != nil && pending.spec.SessionID == sessionID &&
+		(generation == 0 || pending.spec.PoolGeneration == generation) {
 		delete(broker.pending, clientID)
 	} else {
 		pending = nil
 	}
 	pool := broker.active[clientID]
-	if pool != nil && pool.spec.SessionID == sessionID {
+	if pool != nil && pool.spec.SessionID == sessionID &&
+		(generation == 0 || pool.spec.PoolGeneration == generation) {
 		delete(broker.active, clientID)
 	} else {
 		pool = nil
@@ -255,15 +262,11 @@ func (pool *Pool) Send(packet []byte, index uint8) error {
 	if int(index) >= len(pool.channels) {
 		return errors.New("VNet channel index is out of range")
 	}
-	pool.writeMutex[index].Lock()
-	defer pool.writeMutex[index].Unlock()
-	connection := pool.channels[index]
-	if err := connection.SetWriteDeadline(time.Now().Add(pool.spec.WriteTimeout)); err != nil {
-		return err
+	err := pool.writers[index].Send(packet)
+	if err != nil {
+		_ = pool.Close()
 	}
-	err := WritePacket(connection, packet, pool.spec.MTU)
-	clearError := connection.SetWriteDeadline(time.Time{})
-	return errors.Join(err, clearError)
+	return err
 }
 
 // RunReaders reads every channel until one fails or the pool is closed.
@@ -285,6 +288,9 @@ func (pool *Pool) RunReaders(handler func([]byte) error) error {
 	}
 	err := <-errorsChannel
 	pool.Close()
+	for remaining := 1; remaining < len(pool.channels); remaining++ {
+		<-errorsChannel
+	}
 	return err
 }
 
@@ -313,13 +319,15 @@ func bindingMatchesPool(
 
 func activatePendingPool(pending *pendingPool) *Pool {
 	channels := make([]net.Conn, len(pending.channels))
+	writers := make([]*PacketWriter, len(channels))
 	for index := range pending.channels {
 		channels[index] = pending.channels[index].connection
+		writers[index] = NewPacketWriter(context.Background(), channels[index], pending.spec.MTU, pending.spec.WriteTimeout)
 	}
 	return &Pool{
 		spec:       pending.spec,
 		channels:   channels,
-		writeMutex: make([]sync.Mutex, len(channels)),
+		writers:    writers,
 		done:       pending.done,
 	}
 }

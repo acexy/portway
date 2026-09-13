@@ -7,7 +7,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+
+	"golang.org/x/net/route"
 )
 
 func TestDarwinAuthorizationNoticeWithoutTerminalColor(t *testing.T) {
@@ -15,6 +18,22 @@ func TestDarwinAuthorizationNoticeWithoutTerminalColor(t *testing.T) {
 	writeDarwinAuthorizationNotice(&output, "VNet ready", "32")
 	if output.String() != "VNet ready\n" {
 		t.Fatalf("unexpected authorization notice: %q", output.String())
+	}
+}
+
+func TestDarwinRouteSnapshotIncludesDefaultAndHostRoutes(t *testing.T) {
+	defaultRoute := &route.RouteMessage{Addrs: make([]route.Addr, syscall.RTAX_MAX)}
+	defaultRoute.Addrs[syscall.RTAX_DST] = &route.Inet4Addr{}
+	defaultRoute.Addrs[syscall.RTAX_NETMASK] = &route.Inet4Addr{}
+	hostRoute := &route.RouteMessage{Flags: syscall.RTF_HOST, Addrs: make([]route.Addr, syscall.RTAX_MAX)}
+	hostRoute.Addrs[syscall.RTAX_DST] = &route.Inet4Addr{IP: [4]byte{172, 20, 1, 2}}
+	prefixes, err := parseDarwinNetworkRoutes([]route.Message{defaultRoute, hostRoute})
+	if err != nil || len(prefixes) != 2 || prefixes[0].Bits() != 0 || prefixes[1].Bits() != 32 {
+		t.Fatalf("route prefixes = %v, error = %v", prefixes, err)
+	}
+	defaultRoute.Addrs[syscall.RTAX_NETMASK] = nil
+	if _, err := parseDarwinNetworkRoutes([]route.Message{defaultRoute}); err == nil {
+		t.Fatal("missing route mask was accepted")
 	}
 }
 

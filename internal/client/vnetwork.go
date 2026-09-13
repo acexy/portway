@@ -16,23 +16,30 @@ import (
 	"github.com/acexy/portway/internal/vnet"
 )
 
+const clientVNetChannelWriteTimeout = 5 * time.Second
+
 type clientVNetManager struct {
-	context     context.Context
-	cancel      context.CancelFunc
-	logger      *logging.Logger
-	clientID    string
-	sessionID   string
-	writer      *control.Writer
-	transport   transport.ClientSession
-	mutex       sync.Mutex
-	assignment  protocol.VNetAssignment
-	device      vnet.Device
-	userspaceTCP *vnet.UserspaceTCP
-	offers      map[uint8]protocol.OpenVNetChannel
-	activated   bool
-	channels    []transport.Stream
-	waitGroup   sync.WaitGroup
-	deviceWrite sync.Mutex
+	context       context.Context
+	cancel        context.CancelFunc
+	logger        *logging.Logger
+	clientID      string
+	sessionID     string
+	writer        *control.Writer
+	transport     transport.ClientSession
+	mutex         sync.Mutex
+	assignment    protocol.VNetAssignment
+	device        vnet.Device
+	userspaceTCP  *vnet.UserspaceTCP
+	offers        map[uint8]protocol.OpenVNetChannel
+	activated     bool
+	channels      []transport.Stream
+	channelWrites []*vnet.PacketWriter
+	waitGroup     sync.WaitGroup
+	deviceWrite   sync.Mutex
+	prepareMutex sync.Mutex
+	prepareCancel context.CancelFunc
+	poolCancel context.CancelFunc
+	prepareNetwork func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
 }
 
 func newClientVNetManager(
@@ -47,7 +54,7 @@ func newClientVNetManager(
 	return &clientVNetManager{
 		context: ctx, cancel: cancel, logger: logger,
 		clientID: clientID, sessionID: sessionID, writer: writer, transport: transportSession,
-		offers: make(map[uint8]protocol.OpenVNetChannel),
+		offers: make(map[uint8]protocol.OpenVNetChannel), prepareNetwork: vnet.PrepareNetworkContext,
 	}
 }
 
@@ -56,6 +63,12 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 		return fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 	}
 	manager.mutex.Lock()
+	if manager.prepareCancel != nil {
+		manager.prepareCancel()
+	}
+	if manager.poolCancel != nil {
+		manager.poolCancel()
+	}
 	previous := manager.assignment
 	device := manager.device
 	userspaceTCP := manager.userspaceTCP
@@ -65,6 +78,7 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 		previous.NetworkMode == assignment.NetworkMode
 	channels := manager.channels
 	manager.channels = nil
+	manager.channelWrites = nil
 	if !preserveDevice {
 		manager.device = nil
 		manager.userspaceTCP = nil
@@ -74,58 +88,91 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	manager.activated = false
 	manager.mutex.Unlock()
 	closeVNetChannels(channels)
-	if !preserveDevice {
+	if preserveDevice {
+		return manager.reportAssignmentStatus(assignment, protocol.VNetStateReady, "")
+	}
+	ctx, cancel := context.WithCancel(manager.context)
+	manager.mutex.Lock()
+	manager.prepareCancel = cancel
+	manager.mutex.Unlock()
+	manager.waitGroup.Go(func() {
+		manager.prepareMutex.Lock()
+		defer manager.prepareMutex.Unlock()
 		if userspaceTCP != nil {
 			_ = userspaceTCP.Close()
 		}
 		if device != nil {
 			_ = device.Close()
 		}
-	}
-	if assignment.State != protocol.VNetStateEnabled {
-		return manager.reportStatus(assignment.State, "")
-	}
-	if preserveDevice {
-		return manager.reportStatus(protocol.VNetStateReady, "")
-	}
-	preparedDevice, err := vnet.PrepareNetwork(vnet.NetworkSpec{
+		if ctx.Err() != nil {
+			return
+		}
+		if assignment.State != protocol.VNetStateEnabled {
+			_ = manager.reportAssignmentStatus(assignment, assignment.State, "")
+			return
+		}
+		manager.prepareDevice(ctx, assignment)
+	})
+	return nil
+}
+
+func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment protocol.VNetAssignment) {
+	preparedDevice, err := manager.prepareNetwork(ctx, vnet.NetworkSpec{
 		Role: vnet.NetworkRoleClient, CIDR: assignment.CIDR, LocalIP: assignment.ClientIP,
 		ServerIP: assignment.ServerIP, MTU: assignment.MTU, OwnerUID: -1,
 	})
+	if ctx.Err() != nil {
+		if preparedDevice != nil {
+			_ = preparedDevice.Close()
+		}
+		return
+	}
 	if err != nil {
+		if errors.Is(err, vnet.ErrForeignResource) || errors.Is(err, vnet.ErrStateMismatch) {
+			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "network_conflict")
+			return
+		}
 		manager.logger.WarnWithFields("VNet network installation is required", err, map[string]any{
 			"event": "vnet_installation_required",
 		})
-		return manager.reportStatus(protocol.VNetStateInstallationRequired, "device_unavailable")
+		_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateInstallationRequired, "device_unavailable")
+		return
 	}
-	device = preparedDevice
-	manager.mutex.Lock()
-	manager.device = device
-	manager.mutex.Unlock()
+	device := preparedDevice
+	var userspaceTCP *vnet.UserspaceTCP
 	if assignment.NetworkMode == string(config.VNetNetworkModeLoopback) {
 		prefix, _ := netip.ParsePrefix(assignment.CIDR)
-		userspaceTCP, userspaceError := vnet.NewUserspaceTCP(
+		var userspaceError error
+		userspaceTCP, userspaceError = vnet.NewUserspaceTCP(
 			manager.context, netip.MustParseAddr(assignment.ClientIP), prefix.Bits(), assignment.MTU,
 			manager.sendUserspaceTCPPacket,
 		)
 		if userspaceError != nil {
 			_ = device.Close()
-			manager.mutex.Lock()
-			manager.device = nil
-			manager.mutex.Unlock()
-			return manager.reportStatus(protocol.VNetStateFailed, "userspace_stack_unavailable")
+			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "userspace_stack_unavailable")
+			return
 		}
-		manager.mutex.Lock()
-		manager.userspaceTCP = userspaceTCP
-		manager.mutex.Unlock()
 	}
+	manager.mutex.Lock()
+	if ctx.Err() != nil || manager.assignment.PoolGeneration != assignment.PoolGeneration {
+		manager.mutex.Unlock()
+		if userspaceTCP != nil {
+			_ = userspaceTCP.Close()
+		}
+		_ = device.Close()
+		return
+	}
+	manager.device = device
+	manager.userspaceTCP = userspaceTCP
+	manager.waitGroup.Go(func() { manager.readDevice(device, assignment) })
+	manager.mutex.Unlock()
 	manager.logger.InfoWithFields("VNet network is ready", map[string]any{
 		"event":          "vnet_network_ready",
 		"interface_name": device.Name(),
 		"virtual_ip":     assignment.ClientIP,
 		"cidr":           assignment.CIDR,
 	})
-	return manager.reportStatus(protocol.VNetStateReady, "")
+	_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateReady, "")
 }
 
 func (manager *clientVNetManager) activate(activation protocol.VNetActivate) error {
@@ -167,12 +214,28 @@ func (manager *clientVNetManager) offer(offer protocol.OpenVNetChannel) error {
 }
 
 func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
-	channels := make([]transport.Stream, int(assignment.PacketChannels))
-	for index := range channels {
-		manager.mutex.Lock()
-		offer := manager.offers[uint8(index)]
+	manager.mutex.Lock()
+	if manager.assignment.PoolGeneration != assignment.PoolGeneration || !manager.activated {
 		manager.mutex.Unlock()
-		stream, err := manager.transport.OpenDataStream(manager.context)
+		return
+	}
+	ctx, cancel := context.WithCancel(manager.context)
+	manager.poolCancel = cancel
+	offers := make(map[uint8]protocol.OpenVNetChannel, len(manager.offers))
+	for index, offer := range manager.offers {
+		offers[index] = offer
+	}
+	manager.mutex.Unlock()
+	channels := make([]transport.Stream, int(assignment.PacketChannels))
+	channelWrites := make([]*vnet.PacketWriter, len(channels))
+	for index := range channels {
+		offer := offers[uint8(index)]
+		stream, err := manager.transport.OpenDataStream(ctx)
+		var stopCancel func() bool
+		if err == nil {
+			stopCancel = context.AfterFunc(ctx, func() { _ = stream.Close() })
+			err = stream.SetDeadline(time.UnixMilli(offer.ExpiresAtUnixMS))
+		}
 		if err == nil {
 			err = protocol.WriteControl(stream, protocol.MessageBindVNetChannel, protocol.BindVNetChannel{
 				ClientID: manager.clientID, SessionID: manager.sessionID,
@@ -196,27 +259,33 @@ func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
 				}
 			}
 		}
+		if stopCancel != nil {
+			stopCancel()
+		}
 		if err != nil {
+			cancel()
 			if stream != nil {
 				stream.Close()
 			}
 			closeVNetChannels(channels)
-			_ = manager.reportStatus(protocol.VNetStateFailed, "channel_bind_failed")
+			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "channel_bind_failed")
 			return
 		}
 		_ = stream.SetDeadline(time.Time{})
 		channels[index] = stream
+		channelWrites[index] = vnet.NewPacketWriter(ctx, stream, assignment.MTU, clientVNetChannelWriteTimeout)
 	}
 	manager.mutex.Lock()
-	if manager.assignment.PoolGeneration != assignment.PoolGeneration || manager.context.Err() != nil {
+	if manager.assignment.PoolGeneration != assignment.PoolGeneration || ctx.Err() != nil || !manager.activated || manager.device == nil {
 		manager.mutex.Unlock()
 		closeVNetChannels(channels)
 		return
 	}
 	manager.channels = channels
+	manager.channelWrites = channelWrites
 	device := manager.device
 	manager.mutex.Unlock()
-	if err := manager.reportStatus(protocol.VNetStateActive, ""); err != nil {
+	if err := manager.reportAssignmentStatus(assignment, protocol.VNetStateActive, ""); err != nil {
 		manager.failPool(assignment.PoolGeneration, "status_report_failed")
 		return
 	}
@@ -226,7 +295,6 @@ func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
 		"virtual_ip":     assignment.ClientIP,
 		"channel_count":  len(channels),
 	})
-	manager.waitGroup.Go(func() { manager.readDevice(device, assignment, channels) })
 	for _, stream := range channels {
 		channel := stream
 		manager.waitGroup.Go(func() { manager.readChannel(device, assignment, channel) })
@@ -236,13 +304,30 @@ func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
 func (manager *clientVNetManager) readDevice(
 	device vnet.Device,
 	assignment protocol.VNetAssignment,
-	channels []transport.Stream,
 ) {
 	buffer := make([]byte, int(assignment.MTU))
 	for {
 		length, err := device.ReadPacket(buffer)
 		if err != nil {
-			manager.failPool(assignment.PoolGeneration, "device_read_failed")
+			manager.mutex.Lock()
+			if manager.device != device {
+				manager.mutex.Unlock()
+				return
+			}
+			current := manager.assignment
+			hadChannels := len(manager.channels) != 0
+			userspaceTCP := manager.userspaceTCP
+			manager.device = nil
+			manager.userspaceTCP = nil
+			manager.mutex.Unlock()
+			manager.failPool(current.PoolGeneration, "device_read_failed")
+			if !hadChannels && manager.context.Err() == nil {
+				_ = manager.reportAssignmentStatus(current, protocol.VNetStateFailed, "device_read_failed")
+			}
+			_ = device.Close()
+			if userspaceTCP != nil {
+				_ = userspaceTCP.Close()
+			}
 			return
 		}
 		packet := append([]byte(nil), buffer[:length]...)
@@ -250,11 +335,17 @@ func (manager *clientVNetManager) readDevice(
 		if err != nil || flow.SourceIP.String() != assignment.ClientIP {
 			continue
 		}
-		index, err := vnet.ChannelIndex(flow, assignment.PacketChannels)
-		if err != nil || vnet.WritePacket(channels[index], packet, assignment.MTU) != nil {
-			manager.failPool(assignment.PoolGeneration, "channel_write_failed")
+		manager.mutex.Lock()
+		if manager.device != device {
+			manager.mutex.Unlock()
 			return
 		}
+		userspaceTCP := manager.userspaceTCP
+		manager.mutex.Unlock()
+		if userspaceTCP != nil && !userspaceTCP.ObserveHostPacket(packet) {
+			continue
+		}
+		_ = manager.sendUserspaceTCPPacket(packet)
 	}
 }
 
@@ -274,6 +365,10 @@ func (manager *clientVNetManager) readChannel(
 			continue
 		}
 		manager.mutex.Lock()
+		if manager.assignment.PoolGeneration != assignment.PoolGeneration || manager.device != device || len(manager.channels) == 0 {
+			manager.mutex.Unlock()
+			return
+		}
 		userspaceTCP := manager.userspaceTCP
 		manager.mutex.Unlock()
 		if userspaceTCP != nil && userspaceTCP.Handle(packet) {
@@ -296,13 +391,18 @@ func (manager *clientVNetManager) sendUserspaceTCPPacket(packet []byte) error {
 	}
 	manager.mutex.Lock()
 	assignment := manager.assignment
-	channels := append([]transport.Stream(nil), manager.channels...)
+	// Published pool slices are immutable; replacement only swaps the slice headers.
+	channelWrites := manager.channelWrites
 	manager.mutex.Unlock()
 	index, err := vnet.ChannelIndex(flow, assignment.PacketChannels)
-	if err != nil || int(index) >= len(channels) {
+	if err != nil || int(index) >= len(channelWrites) {
 		return errors.New("VNet userspace stack pool is unavailable")
 	}
-	return vnet.WritePacket(channels[index], packet, assignment.MTU)
+	err = channelWrites[index].Send(packet)
+	if err != nil {
+		manager.failPool(assignment.PoolGeneration, "channel_write_failed")
+	}
+	return err
 }
 
 func (manager *clientVNetManager) failPool(generation uint64, code string) {
@@ -311,9 +411,17 @@ func (manager *clientVNetManager) failPool(generation uint64, code string) {
 		manager.mutex.Unlock()
 		return
 	}
+	assignment := manager.assignment
+	channels := manager.channels
+	manager.channels = nil
+	manager.channelWrites = nil
+	manager.activated = false
+	if manager.poolCancel != nil {
+		manager.poolCancel()
+	}
 	manager.mutex.Unlock()
-	manager.closePoolRuntime()
-	_ = manager.reportStatus(protocol.VNetStateFailed, code)
+	closeVNetChannels(channels)
+	_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, code)
 }
 
 func (manager *clientVNetManager) deactivate(deactivation protocol.VNetDeactivate) error {
@@ -339,6 +447,19 @@ func (manager *clientVNetManager) reportStatus(state protocol.VNetState, code st
 	manager.mutex.Lock()
 	assignment := manager.assignment
 	manager.mutex.Unlock()
+	return manager.reportAssignmentStatus(assignment, state, code)
+}
+
+func (manager *clientVNetManager) reportAssignmentStatus(assignment protocol.VNetAssignment, state protocol.VNetState, code string) error {
+	manager.mutex.Lock()
+	current := manager.assignment.PoolGeneration == assignment.PoolGeneration
+	if state == protocol.VNetStateReady || state == protocol.VNetStateActive {
+		current = current && manager.device != nil
+	}
+	manager.mutex.Unlock()
+	if !current {
+		return nil
+	}
 	return manager.writer.Write(protocol.MessageVNetStatus, protocol.VNetStatus{
 		State: state, PoolGeneration: assignment.PoolGeneration,
 		ConfigGeneration: assignment.ConfigGeneration, Code: code,
@@ -346,6 +467,11 @@ func (manager *clientVNetManager) reportStatus(state protocol.VNetState, code st
 }
 
 func (manager *clientVNetManager) closeRuntime() {
+	manager.mutex.Lock()
+	if manager.prepareCancel != nil {
+		manager.prepareCancel()
+	}
+	manager.mutex.Unlock()
 	manager.closePoolRuntime()
 	manager.mutex.Lock()
 	device := manager.device
@@ -363,8 +489,12 @@ func (manager *clientVNetManager) closeRuntime() {
 
 func (manager *clientVNetManager) closePoolRuntime() {
 	manager.mutex.Lock()
+	if manager.poolCancel != nil {
+		manager.poolCancel()
+	}
 	channels := manager.channels
 	manager.channels = nil
+	manager.channelWrites = nil
 	manager.activated = false
 	manager.mutex.Unlock()
 	closeVNetChannels(channels)

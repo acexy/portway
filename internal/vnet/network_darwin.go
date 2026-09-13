@@ -3,6 +3,7 @@
 package vnet
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,15 +37,22 @@ type darwinHelperAccept struct {
 	err        error
 }
 
-func preparePlatformNetwork(spec NetworkSpec) (Device, error) {
+func preparePlatformNetwork(ctx context.Context, spec NetworkSpec) (Device, error) {
 	if os.Geteuid() == 0 {
-		return configureDarwinDevice(spec)
+		return configureDarwinDevice(ctx, spec)
 	}
-	return requestDarwinHelper(spec)
+	return requestDarwinHelper(ctx, spec)
 }
 
-func configureDarwinDevice(spec NetworkSpec) (Device, error) {
+func configureDarwinDevice(ctx context.Context, spec NetworkSpec) (Device, error) {
 	if err := cleanupDarwinLegacyManifest(); err != nil {
+		return nil, err
+	}
+	routes, err := darwinNetworkRoutes()
+	if err != nil {
+		return nil, err
+	}
+	if err := checkNetworkConflicts(spec, routes); err != nil {
 		return nil, err
 	}
 	device, err := OpenDevice()
@@ -50,19 +60,21 @@ func configureDarwinDevice(spec NetworkSpec) (Device, error) {
 		return nil, err
 	}
 	prefixLength, _ := netipPrefixLength(spec.CIDR)
-	if err := exec.Command("/sbin/ifconfig", device.Name(), "inet", spec.LocalIP, spec.ServerIP,
+	if err := exec.CommandContext(ctx, "/sbin/ifconfig", device.Name(), "inet", spec.LocalIP, spec.ServerIP,
 		"netmask", cidrNetmask(prefixLength), "mtu", strconv.Itoa(int(spec.MTU)), "up").Run(); err != nil {
 		device.Close()
 		return nil, fmt.Errorf("configure macOS VNet interface: %w", err)
 	}
-	if err := exec.Command("/sbin/route", "-n", "add", "-net", spec.CIDR, "-interface", device.Name()).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "/sbin/route", "-n", "add", "-net", spec.CIDR, "-interface", device.Name()).Run(); err != nil {
 		device.Close()
 		return nil, fmt.Errorf("configure macOS VNet route: %w", err)
 	}
 	return device, nil
 }
 
-func requestDarwinHelper(spec NetworkSpec) (Device, error) {
+func requestDarwinHelper(ctx context.Context, spec NetworkSpec) (Device, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	directory, err := os.MkdirTemp("/tmp", "portway-vnetwork-*")
 	if err != nil {
 		return nil, fmt.Errorf("create macOS VNet helper directory: %w", err)
@@ -77,6 +89,8 @@ func requestDarwinHelper(spec NetworkSpec) (Device, error) {
 		return nil, fmt.Errorf("listen for macOS VNet helper: %w", err)
 	}
 	defer listener.Close()
+	stopListener := context.AfterFunc(ctx, func() { _ = listener.Close() })
+	defer stopListener()
 	if err := os.Chmod(socketPath, 0600); err != nil {
 		return nil, err
 	}
@@ -93,7 +107,7 @@ func requestDarwinHelper(spec NetworkSpec) (Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	authorizationCached := exec.Command("sudo", "-n", "true").Run() == nil
+	authorizationCached := exec.CommandContext(ctx, "sudo", "-n", "true").Run() == nil
 	if !authorizationCached && !interactiveTerminalAvailable() {
 		return nil, errors.New("macOS VNet requires an interactive administrator authorization")
 	}
@@ -104,7 +118,7 @@ func requestDarwinHelper(spec NetworkSpec) (Device, error) {
 		)
 		writeDarwinAuthorizationNotice(os.Stderr, authorizationNotice, "31")
 	}
-	command := exec.Command("sudo", executable, darwinHelperCommand, socketPath,
+	command := exec.CommandContext(ctx, "sudo", executable, darwinHelperCommand, socketPath,
 		base64.RawURLEncoding.EncodeToString(encodedSpec), nonce)
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := command.Start(); err != nil {
@@ -142,6 +156,8 @@ func requestDarwinHelper(spec NetworkSpec) (Device, error) {
 		return nil, fmt.Errorf("accept macOS VNet helper: %w", accepted.err)
 	}
 	connection := accepted.connection
+	stopConnection := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopConnection()
 	device, receiveError := receiveDarwinDevice(connection, nonce)
 	_ = connection.Close()
 	if !helperExited {
@@ -234,7 +250,7 @@ func receiveDarwinDevice(connection *net.UnixConn, nonce string) (Device, error)
 		return nil, errors.New("invalid macOS VNet interface name")
 	}
 	unix.CloseOnExec(descriptors[0])
-	return newDarwinDevice(descriptors[0], response.InterfaceName), nil
+	return newDarwinDevice(descriptors[0], response.InterfaceName)
 }
 
 func runPlatformHelper(arguments []string) (bool, error) {
@@ -265,7 +281,14 @@ func runPlatformHelper(arguments []string) (bool, error) {
 		return true, fmt.Errorf("connect macOS VNet helper socket: %w", err)
 	}
 	defer connection.Close()
-	device, configureError := configureDarwinDevice(spec)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	go func() {
+		var probe [1]byte
+		_, _ = connection.Read(probe[:])
+		cancel()
+	}()
+	device, configureError := configureDarwinDevice(ctx, spec)
 	response := darwinHelperResponse{Nonce: nonce}
 	var rights []byte
 	if configureError != nil {
@@ -306,7 +329,7 @@ func uninstallPlatformNetwork(ownershipManifest) error {
 	return errors.New("manual VNet management is unavailable on macOS")
 }
 
-func repairPlatformNetwork(spec NetworkSpec) (Device, error) { return preparePlatformNetwork(spec) }
+func repairPlatformNetwork(spec NetworkSpec) (Device, error) { return preparePlatformNetwork(context.Background(), spec) }
 func platformRootGroup() string                              { return "wheel" }
 func manualNetworkManagementSupported() bool                 { return false }
 func runtimeHelperSupported() bool                           { return true }
@@ -323,4 +346,49 @@ func netipPrefixLength(cidr string) (int, error) {
 func cidrNetmask(bits int) string {
 	mask := net.CIDRMask(bits, 32)
 	return net.IP(mask).String()
+}
+
+func platformIdentityMatches(ownershipManifest) bool { return false }
+
+func darwinNetworkRoutes() ([]netip.Prefix, error) {
+	data, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)
+	if err != nil {
+		return nil, fmt.Errorf("inspect macOS VNet routes: %w", err)
+	}
+	messages, err := route.ParseRIB(route.RIBTypeRoute, data)
+	if err != nil {
+		return nil, err
+	}
+	return parseDarwinNetworkRoutes(messages)
+}
+
+func parseDarwinNetworkRoutes(messages []route.Message) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, message := range messages {
+		entry, ok := message.(*route.RouteMessage)
+		if !ok || len(entry.Addrs) <= syscall.RTAX_DST {
+			continue
+		}
+		destination, ok := entry.Addrs[syscall.RTAX_DST].(*route.Inet4Addr)
+		if !ok {
+			continue
+		}
+		bits := 32
+		if entry.Flags&syscall.RTF_HOST == 0 {
+			if len(entry.Addrs) <= syscall.RTAX_NETMASK {
+				return nil, errors.New("macOS IPv4 route has no netmask")
+			}
+			mask, ok := entry.Addrs[syscall.RTAX_NETMASK].(*route.Inet4Addr)
+			if !ok {
+				return nil, errors.New("invalid macOS IPv4 route netmask")
+			}
+			var width int
+			bits, width = net.IPMask(mask.IP[:]).Size()
+			if width != 32 {
+				return nil, errors.New("non-contiguous macOS IPv4 route netmask")
+			}
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom4(destination.IP), bits))
+	}
+	return prefixes, nil
 }

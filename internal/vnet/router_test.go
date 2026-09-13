@@ -97,6 +97,25 @@ func TestRouterRemoveClientRevokesRelatedFlows(t *testing.T) {
 	}
 }
 
+func TestRouterReassignedIPDoesNotInheritPreviousFlows(t *testing.T) {
+	router := testRouter(t)
+	now := time.Now()
+	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
+		t.Fatal(err)
+	}
+	configuration := testVNetConfiguration()
+	configuration.Nodes[1].ClientID = "replacement-client"
+	if err := router.ApplyPolicy(configuration); err != nil {
+		t.Fatal(err)
+	}
+	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply[33] = 0x10
+	if _, err := router.RouteClientPacket("replacement-client", reply, now); !errors.Is(err, ErrFlowRejected) {
+		t.Fatalf("new IP owner inherited old flow authorization: %v", err)
+	}
+}
+
 func testRouter(t *testing.T) *Router {
 	t.Helper()
 	router, err := NewRouter(testVNetConfiguration(), 16)
@@ -104,6 +123,31 @@ func testRouter(t *testing.T) *Router {
 		t.Fatalf("create router: %v", err)
 	}
 	return router
+}
+
+func TestRouterCapacityCleanupIsRateLimited(t *testing.T) {
+	router := testRouter(t)
+	router.maxFlows = 1
+	now := time.Unix(1, 0)
+	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
+		t.Fatal(err)
+	}
+	other := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50001, [4]byte{172, 20, 0, 3}, 8080)
+	if _, err := router.RouteClientPacket("client-a", other, now); !errors.Is(err, ErrFlowCapacity) {
+		t.Fatalf("full router = %v", err)
+	}
+	// Make the occupied entry expire before the next capacity scan is permitted.
+	for key, state := range router.flows {
+		state.expiresAt = now.Add(time.Millisecond)
+		router.flows[key] = state
+	}
+	if _, err := router.RouteClientPacket("client-a", other, now.Add(2*time.Millisecond)); !errors.Is(err, ErrFlowCapacity) {
+		t.Fatalf("unexpected repeated capacity scan: %v", err)
+	}
+	if _, err := router.RouteClientPacket("client-a", other, now.Add(time.Second)); err != nil {
+		t.Fatalf("expired capacity was not recovered: %v", err)
+	}
 }
 
 func testVNetConfiguration() config.VirtualNetworkConfig {

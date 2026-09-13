@@ -1,7 +1,7 @@
 package vnet
 
 import (
-	"crypto/rand"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -82,13 +82,21 @@ func (device *ownedDevice) Close() error {
 }
 
 func PrepareNetwork(spec NetworkSpec) (Device, error) {
+	return PrepareNetworkContext(context.Background(), spec)
+}
+
+// PrepareNetworkContext cancels authorization and configuration when its assignment expires.
+func PrepareNetworkContext(ctx context.Context, spec NetworkSpec) (Device, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if spec.OwnerUID < 0 {
 		spec.OwnerUID = os.Getuid()
 	}
 	if err := validateNetworkSpec(spec); err != nil {
 		return nil, err
 	}
-	return preparePlatformNetwork(spec)
+	return preparePlatformNetwork(ctx, spec)
 }
 
 func ManualNetworkManagementSupported() bool { return manualNetworkManagementSupported() }
@@ -160,33 +168,31 @@ func UninstallNetwork() (string, error) {
 }
 
 func OpenInstalledNetwork() (Device, error) {
-	device, err := OpenDevice()
-	if err != nil {
-		return nil, err
-	}
-	return lockOwnedDevice(device)
-}
-
-func lockOwnedDevice(device Device) (Device, error) {
 	lock, err := os.Open(manifestPath())
 	if err != nil {
-		device.Close()
 		return nil, err
 	}
 	if err := lockNetworkFile(lock, false); err != nil {
 		lock.Close()
-		device.Close()
 		return nil, fmt.Errorf("lock VNet ownership manifest: %w", err)
+	}
+	manifest, err := readManifest()
+	if err != nil || !interfaceMatchesManifest(manifest) {
+		_ = unlockNetworkFile(lock)
+		_ = lock.Close()
+		return nil, errors.Join(ErrStateMismatch, err)
+	}
+	device, err := OpenDevice()
+	if err != nil {
+		_ = unlockNetworkFile(lock)
+		_ = lock.Close()
+		return nil, err
 	}
 	return &ownedDevice{Device: device, lock: lock}, nil
 }
 
-func installManifest(spec NetworkSpec, interfaceName string) error {
-	identifier := make([]byte, 16)
-	if _, err := rand.Read(identifier); err != nil {
-		return err
-	}
-	manifest := ownershipManifest{manifestSchema, hex.EncodeToString(identifier), spec.Role,
+func installManifest(ctx context.Context, spec NetworkSpec, interfaceName, identifier string) error {
+	manifest := ownershipManifest{manifestSchema, identifier, spec.Role,
 		LogicalInterfaceName, interfaceName, spec.CIDR, spec.LocalIP, spec.ServerIP, spec.MTU}
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -198,7 +204,7 @@ func installManifest(spec NetworkSpec, interfaceName string) error {
 	}
 	name := temporary.Name()
 	defer os.Remove(name)
-	if err := temporary.Chmod(0600); err == nil {
+	if err = temporary.Chmod(0600); err == nil {
 		_, err = temporary.Write(data)
 	}
 	closeError := temporary.Close()
@@ -208,10 +214,10 @@ func installManifest(spec NetworkSpec, interfaceName string) error {
 	if closeError != nil {
 		return closeError
 	}
-	if err := privilegedCommand("mkdir", "-p", filepath.Dir(manifestPath())).Run(); err != nil {
+	if err := privilegedCommandContext(ctx, "mkdir", "-p", filepath.Dir(manifestPath())).Run(); err != nil {
 		return err
 	}
-	if err := privilegedCommand("install", "-o", "root", "-g", platformRootGroup(), "-m", "0644", name, manifestPath()).Run(); err != nil {
+	if err := privilegedCommandContext(ctx, "install", "-o", "root", "-g", platformRootGroup(), "-m", "0644", name, manifestPath()).Run(); err != nil {
 		return fmt.Errorf("install VNet ownership manifest: %w", err)
 	}
 	return nil
@@ -248,6 +254,18 @@ func readManifest() (ownershipManifest, error) {
 }
 
 func interfaceMatchesManifest(manifest ownershipManifest) bool {
+	if !platformIdentityMatches(manifest) {
+		return false
+	}
+	return interfaceConfigurationMatches(manifest)
+}
+
+func networkSpecMatchesManifest(spec NetworkSpec, manifest ownershipManifest) bool {
+	return manifest.Role == spec.Role && manifest.CIDR == spec.CIDR && manifest.LocalIP == spec.LocalIP &&
+		manifest.ServerIP == spec.ServerIP && manifest.MTU == spec.MTU
+}
+
+func interfaceConfigurationMatches(manifest ownershipManifest) bool {
 	interfaceValue, err := net.InterfaceByName(manifest.PlatformInterface)
 	if err != nil || interfaceValue.MTU != int(manifest.MTU) {
 		return false
@@ -261,12 +279,18 @@ func interfaceMatchesManifest(manifest ownershipManifest) bool {
 		return false
 	}
 	expected := manifest.LocalIP + "/" + fmt.Sprint(prefix.Bits())
+	found := false
 	for _, address := range addresses {
 		if address.String() == expected {
-			return true
+			found = true
+			continue
+		}
+		prefix, err := netip.ParsePrefix(address.String())
+		if err != nil || prefix.Addr().Is4() || !prefix.Addr().IsLinkLocalUnicast() {
+			return false
 		}
 	}
-	return false
+	return found
 }
 
 func validateNetworkSpec(spec NetworkSpec) error {
@@ -281,15 +305,19 @@ func validateNetworkSpec(spec NetworkSpec) error {
 }
 
 func privilegedCommand(name string, arguments ...string) *exec.Cmd {
+	return privilegedCommandContext(context.Background(), name, arguments...)
+}
+
+func privilegedCommandContext(ctx context.Context, name string, arguments ...string) *exec.Cmd {
 	var command *exec.Cmd
 	if os.Geteuid() == 0 {
-		command = exec.Command(name, arguments...)
+		command = exec.CommandContext(ctx, name, arguments...)
 	} else {
 		sudoArguments := append([]string{name}, arguments...)
 		if !interactiveTerminalAvailable() {
 			sudoArguments = append([]string{"-n"}, sudoArguments...)
 		}
-		command = exec.Command("sudo", sudoArguments...)
+		command = exec.CommandContext(ctx, "sudo", sudoArguments...)
 	}
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout

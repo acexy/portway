@@ -3,7 +3,6 @@ package vnet
 import (
 	"context"
 	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -118,10 +117,43 @@ func TestPoolSendTimesOutBlockedTarget(t *testing.T) {
 	pool := &Pool{
 		spec:       PoolSpec{MTU: 1280, WriteTimeout: 20 * time.Millisecond},
 		channels:   []net.Conn{server},
-		writeMutex: make([]sync.Mutex, 1),
+		writers: []*PacketWriter{NewPacketWriter(context.Background(), server, 1280, 20*time.Millisecond)},
 		done:       make(chan struct{}),
 	}
 	if err := pool.Send([]byte{1, 2, 3}, 0); err == nil {
 		t.Fatal("expected blocked VNet target write to time out")
+	}
+	select {
+	case <-pool.done:
+	default:
+		t.Fatal("failed target pool remained active")
+	}
+}
+
+func TestPoolRemovalPreservesReplacementGeneration(t *testing.T) {
+	broker := NewPoolBroker()
+	defer broker.Close()
+	spec := PoolSpec{
+		ClientID: "client-a", SessionID: "session-a", VirtualIP: "172.20.0.2",
+		PoolGeneration: 2, ChannelCount: 1, MTU: 1280, WriteTimeout: time.Second,
+	}
+	if _, err := broker.Prepare(spec, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	broker.RemoveGeneration(spec.ClientID, spec.SessionID, 1)
+	if broker.pending[spec.ClientID] == nil {
+		t.Fatal("old cleanup removed replacement tickets")
+	}
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	pool := &Pool{spec: spec, channels: []net.Conn{connection}, done: make(chan struct{})}
+	broker.active[spec.ClientID] = pool
+	broker.RemoveGeneration(spec.ClientID, spec.SessionID, 1)
+	if current, ok := broker.Active(spec.ClientID); !ok || current != pool {
+		t.Fatal("old cleanup removed replacement active pool")
+	}
+	broker.RemoveGeneration(spec.ClientID, spec.SessionID, 2)
+	if _, ok := broker.Active(spec.ClientID); ok || broker.pending[spec.ClientID] != nil {
+		t.Fatal("matching generation was not removed")
 	}
 }

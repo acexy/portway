@@ -2,13 +2,43 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
+	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/vnet"
 )
+
+func TestClientVNetPacketWritesAreSerializedPerChannel(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	stream := &observedVNetStream{Conn: client}
+	go func() { _, _ = io.Copy(io.Discard, server) }()
+	writer := vnet.NewPacketWriter(context.Background(), stream, 1280, time.Second)
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	for range 2 {
+		waitGroup.Go(func() {
+			<-start
+			if err := writer.Send([]byte{1}); err != nil {
+				t.Errorf("write VNet packet: %v", err)
+			}
+		})
+	}
+	close(start)
+	waitGroup.Wait()
+	if stream.overlapped.Load() {
+		t.Fatal("one VNet channel was written concurrently")
+	}
+}
 
 func TestValidateVNetAssignment(t *testing.T) {
 	valid := protocol.VNetAssignment{
@@ -114,6 +144,23 @@ func (inertVNetDevice) Close() error                    { return nil }
 type countingVNetDevice struct {
 	closeCount atomic.Int32
 }
+
+type observedVNetStream struct {
+	net.Conn
+	active     atomic.Int32
+	overlapped atomic.Bool
+}
+
+func (stream *observedVNetStream) Write(packet []byte) (int, error) {
+	if stream.active.Add(1) != 1 {
+		stream.overlapped.Store(true)
+	}
+	defer stream.active.Add(-1)
+	time.Sleep(time.Millisecond)
+	return stream.Conn.Write(packet)
+}
+
+func (stream *observedVNetStream) CloseWrite() error { return stream.Close() }
 
 func (*countingVNetDevice) Name() string                    { return "test0" }
 func (*countingVNetDevice) ReadPacket([]byte) (int, error)  { return 0, errors.New("closed") }

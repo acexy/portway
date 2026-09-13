@@ -6,7 +6,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,6 +24,9 @@ const (
 type darwinDevice struct {
 	fileDescriptor int
 	name           string
+	file           *os.File
+	closeOnce      sync.Once
+	closeError     error
 }
 
 func openDevice() (Device, error) {
@@ -49,11 +55,25 @@ func openDevice() (Device, error) {
 		unix.Close(fileDescriptor)
 		return nil, fmt.Errorf("read macOS utun interface name: %w", err)
 	}
-	return newDarwinDevice(fileDescriptor, strings.TrimRight(name, "\x00")), nil
+	return newDarwinDevice(fileDescriptor, strings.TrimRight(name, "\x00"))
 }
 
-func newDarwinDevice(fileDescriptor int, name string) Device {
-	return &darwinDevice{fileDescriptor: fileDescriptor, name: name}
+func newDarwinDevice(fileDescriptor int, name string) (Device, error) {
+	if err := unix.SetNonblock(fileDescriptor, true); err != nil {
+		_ = unix.Close(fileDescriptor)
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fileDescriptor), name)
+	if file == nil {
+		_ = unix.Close(fileDescriptor)
+		return nil, fmt.Errorf("invalid macOS VNet device descriptor")
+	}
+	// Pollable I/O lets Close interrupt a reader during address migration.
+	if err := file.SetDeadline(time.Time{}); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("enable cancellable macOS VNet I/O: %w", err)
+	}
+	return &darwinDevice{fileDescriptor: fileDescriptor, name: name, file: file}, nil
 }
 
 func (device *darwinDevice) Name() string {
@@ -62,7 +82,7 @@ func (device *darwinDevice) Name() string {
 
 func (device *darwinDevice) ReadPacket(packet []byte) (int, error) {
 	framed := make([]byte, len(packet)+4)
-	read, err := unix.Read(device.fileDescriptor, framed)
+	read, err := device.file.Read(framed)
 	if err != nil {
 		return 0, err
 	}
@@ -76,7 +96,7 @@ func (device *darwinDevice) WritePacket(packet []byte) (int, error) {
 	framed := make([]byte, len(packet)+4)
 	binary.BigEndian.PutUint32(framed[:4], darwinIPv4Family)
 	copy(framed[4:], packet)
-	written, err := unix.Write(device.fileDescriptor, framed)
+	written, err := device.file.Write(framed)
 	if err != nil {
 		return 0, err
 	}
@@ -87,5 +107,6 @@ func (device *darwinDevice) WritePacket(packet []byte) (int, error) {
 }
 
 func (device *darwinDevice) Close() error {
-	return unix.Close(device.fileDescriptor)
+	device.closeOnce.Do(func() { device.closeError = device.file.Close() })
+	return device.closeError
 }

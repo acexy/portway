@@ -28,12 +28,14 @@ const (
 )
 
 type serverVNetSession struct {
-	sessionID       string
-	generation      transport.Generation
-	authentication  authentication.Context
-	writer          *control.Writer
-	poolGeneration  uint64
-	channelsOffered bool
+	sessionID        string
+	generation       transport.Generation
+	authentication   authentication.Context
+	writer           *control.Writer
+	poolGeneration   uint64
+	configGeneration uint64
+	channelsOffered  bool
+	lifecycleMutex  *sync.Mutex
 }
 
 type serverVNetRuntime struct {
@@ -51,6 +53,8 @@ type serverVNetRuntime struct {
 	poolGeneration   atomic.Uint64
 	configGeneration atomic.Uint64
 	preparingDevice  atomic.Bool
+	prepareCancel    context.CancelFunc
+	prepareNetwork   func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
 	waitGroup        sync.WaitGroup
 }
 
@@ -69,6 +73,7 @@ func newServerVNetRuntime(
 		context: ctx, cancel: cancel, logger: logger,
 		configuration: configuration, sessions: make(map[string]serverVNetSession),
 		router: router, broker: vnet.NewPoolBroker(), device: device,
+		prepareNetwork: vnet.PrepareNetworkContext,
 	}
 	runtime.configGeneration.Store(1)
 	if device != nil && router != nil {
@@ -131,10 +136,35 @@ func (runtime *serverVNetRuntime) attach(
 	runtime.mutex.Unlock()
 }
 
+// lockSession serializes generation transitions without blocking unrelated clients.
+func (runtime *serverVNetRuntime) lockSession(clientID, sessionID string) func() {
+	runtime.mutex.Lock()
+	session, exists := runtime.sessions[clientID]
+	if !exists || session.sessionID != sessionID {
+		runtime.mutex.Unlock()
+		return func() {}
+	}
+	if session.lifecycleMutex == nil {
+		session.lifecycleMutex = &sync.Mutex{}
+		runtime.sessions[clientID] = session
+	}
+	mutex := session.lifecycleMutex
+	runtime.mutex.Unlock()
+	mutex.Lock()
+	return mutex.Unlock
+}
+
 func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) error {
+	unlock := runtime.lockSession(clientID, sessionID)
+	defer unlock()
+	return runtime.assignLocked(clientID, sessionID)
+}
+
+func (runtime *serverVNetRuntime) assignLocked(clientID string, sessionID string) error {
 	runtime.mutex.RLock()
 	session, exists := runtime.sessions[clientID]
 	configuration := runtime.configuration
+	configurationGeneration := runtime.configGeneration.Load()
 	deviceReady := runtime.device != nil
 	userspaceReady := runtime.userspaceTCP != nil
 	runtime.mutex.RUnlock()
@@ -164,6 +194,7 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 		return errors.New("VNet session is no longer current")
 	}
 	current.poolGeneration = poolGeneration
+	current.configGeneration = configurationGeneration
 	current.channelsOffered = false
 	runtime.sessions[clientID] = current
 	runtime.mutex.Unlock()
@@ -172,7 +203,7 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 		CIDR: configuration.CIDR, ClientIP: node.IP, ServerIP: configuration.ServerIP,
 		MTU: vnetMTU, PacketChannels: uint8(configuration.PacketChannels),
 		TransportGeneration: uint64(session.generation),
-		PoolGeneration:      poolGeneration, ConfigGeneration: runtime.configGeneration.Load(), State: state,
+		PoolGeneration:      poolGeneration, ConfigGeneration: current.configGeneration, State: state,
 	}
 	if err := session.writer.Write(protocol.MessageVNetAssignment, assignment); err != nil {
 		return err
@@ -181,8 +212,22 @@ func (runtime *serverVNetRuntime) assign(clientID string, sessionID string) erro
 }
 
 func (runtime *serverVNetRuntime) activate(clientID string, sessionID string, status protocol.VNetStatus) error {
+	unlock := runtime.lockSession(clientID, sessionID)
+	defer unlock()
+	runtime.mutex.RLock()
+	current := runtime.sessions[clientID]
+	_, configured := config.VNetNode(runtime.configuration, clientID)
+	enabled := runtime.configuration.Enabled
+	runtime.mutex.RUnlock()
+	if current.sessionID == sessionID && (!enabled || !configured || current.poolGeneration == 0 ||
+		status.PoolGeneration < current.poolGeneration) {
+		return nil
+	}
 	if status.State == protocol.VNetStateFailed {
-		return runtime.replaceFailedPool(clientID, sessionID, status)
+		if status.Code == "network_conflict" || status.Code == "userspace_stack_unavailable" {
+			return nil
+		}
+		return runtime.replaceFailedPoolLocked(clientID, sessionID, status)
 	}
 	if status.State != protocol.VNetStateReady {
 		return nil
@@ -190,7 +235,7 @@ func (runtime *serverVNetRuntime) activate(clientID string, sessionID string, st
 	runtime.mutex.Lock()
 	session, exists := runtime.sessions[clientID]
 	configuration := runtime.configuration
-	configurationGeneration := runtime.configGeneration.Load()
+	configurationGeneration := session.configGeneration
 	if !exists || session.sessionID != sessionID || session.poolGeneration != status.PoolGeneration ||
 		status.ConfigGeneration != configurationGeneration {
 		runtime.mutex.Unlock()
@@ -240,10 +285,16 @@ func (runtime *serverVNetRuntime) replaceFailedPool(
 	sessionID string,
 	status protocol.VNetStatus,
 ) error {
+	unlock := runtime.lockSession(clientID, sessionID)
+	defer unlock()
+	return runtime.replaceFailedPoolLocked(clientID, sessionID, status)
+}
+
+func (runtime *serverVNetRuntime) replaceFailedPoolLocked(clientID, sessionID string, status protocol.VNetStatus) error {
 	runtime.mutex.Lock()
 	session, exists := runtime.sessions[clientID]
 	if !exists || session.sessionID != sessionID || session.poolGeneration != status.PoolGeneration ||
-		status.ConfigGeneration != runtime.configGeneration.Load() {
+		status.ConfigGeneration != session.configGeneration {
 		runtime.mutex.Unlock()
 		return errors.New("VNet failure status does not match the current assignment")
 	}
@@ -251,7 +302,7 @@ func (runtime *serverVNetRuntime) replaceFailedPool(
 	runtime.sessions[clientID] = session
 	runtime.mutex.Unlock()
 	runtime.broker.Remove(clientID, sessionID)
-	return runtime.assign(clientID, sessionID)
+	return runtime.assignLocked(clientID, sessionID)
 }
 
 func (runtime *serverVNetRuntime) hasSession(clientID string) bool {
@@ -275,12 +326,24 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	runtime.mutex.Lock()
 	previous := runtime.configuration
 	runtime.configuration = configuration
+	runtime.configGeneration.Store(generation)
 	device := runtime.device
 	userspaceTCP := runtime.userspaceTCP
 	networkChanged := previous.CIDR != configuration.CIDR || previous.ServerIP != configuration.ServerIP
 	if !configuration.Enabled || networkChanged {
+		if runtime.prepareCancel != nil {
+			runtime.prepareCancel()
+		}
 		runtime.device = nil
 		runtime.userspaceTCP = nil
+	}
+	if runtime.router != nil {
+		for _, node := range previous.Nodes {
+			replacement, exists := config.VNetNode(configuration, node.ClientID)
+			if networkChanged || !exists || replacement.IP != node.IP {
+				runtime.router.RemoveClient(node.ClientID)
+			}
+		}
 	}
 	sessions := make([]serverVNetSession, 0, len(runtime.sessions))
 	clientIDs := make([]string, 0, len(runtime.sessions))
@@ -295,50 +358,58 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	if userspaceTCP != nil && (!configuration.Enabled || networkChanged) {
 		_ = userspaceTCP.Close()
 	}
-	runtime.configGeneration.Store(generation)
 	if runtime.router != nil {
 		_ = runtime.router.ApplyPolicy(configuration)
 	}
-	if configuration.Enabled {
-		if !runtime.activateInstalledDevice(configuration) && vnet.RuntimeHelperSupported() {
-			runtime.prepareRuntimeDevice(configuration)
-		}
-	}
 	for index, session := range sessions {
-		clientID := clientIDs[index]
-		oldNode, oldExists := config.VNetNode(previous, clientID)
-		newNode, newExists := config.VNetNode(configuration, clientID)
-		assignmentChanged := previous.Enabled != configuration.Enabled ||
-			previous.PacketChannels != configuration.PacketChannels || networkChanged ||
-			oldExists != newExists || oldNode.IP != newNode.IP
-		if !assignmentChanged {
-			continue
-		}
-		reason := protocol.VNetDeactivatePolicyChanged
-		if previous.Enabled && !configuration.Enabled {
-			reason = protocol.VNetDeactivateDisabled
-		} else if oldExists && !newExists {
-			reason = protocol.VNetDeactivateNodeRemoved
-		}
-		if previous.Enabled || oldExists || oldNode.IP != newNode.IP {
-			_ = session.writer.Write(protocol.MessageVNetDeactivate, protocol.VNetDeactivate{
-				ConfigGeneration: generation, Reason: reason,
-			})
-		}
-		runtime.mutex.Lock()
-		current := runtime.sessions[clientID]
-		if current.sessionID == session.sessionID {
-			current.poolGeneration = 0
-			runtime.sessions[clientID] = current
-		}
-		runtime.mutex.Unlock()
-		runtime.broker.Remove(clientID, session.sessionID)
-		if !newExists && runtime.router != nil {
-			runtime.router.RemoveClient(clientID)
-		}
-		if newExists {
-			_ = runtime.assign(clientID, session.sessionID)
-		}
+		runtime.updateSessionConfiguration(clientIDs[index], session, previous, configuration, generation, networkChanged)
+	}
+	if configuration.Enabled && !runtime.deviceReady() {
+		runtime.prepareRuntimeDevice(configuration)
+	}
+}
+
+func (runtime *serverVNetRuntime) updateSessionConfiguration(
+	clientID string,
+	session serverVNetSession,
+	previous, configuration config.VirtualNetworkConfig,
+	generation uint64,
+	networkChanged bool,
+) {
+	unlock := runtime.lockSession(clientID, session.sessionID)
+	defer unlock()
+	oldNode, oldExists := config.VNetNode(previous, clientID)
+	newNode, newExists := config.VNetNode(configuration, clientID)
+	assignmentChanged := previous.Enabled != configuration.Enabled ||
+		previous.PacketChannels != configuration.PacketChannels || networkChanged ||
+		oldExists != newExists || oldNode.IP != newNode.IP
+	if !assignmentChanged {
+		return
+	}
+	reason := protocol.VNetDeactivatePolicyChanged
+	if previous.Enabled && !configuration.Enabled {
+		reason = protocol.VNetDeactivateDisabled
+	} else if oldExists && !newExists {
+		reason = protocol.VNetDeactivateNodeRemoved
+	}
+	if previous.Enabled || oldExists || oldNode.IP != newNode.IP {
+		_ = session.writer.Write(protocol.MessageVNetDeactivate, protocol.VNetDeactivate{
+			ConfigGeneration: generation, Reason: reason,
+		})
+	}
+	runtime.mutex.Lock()
+	current := runtime.sessions[clientID]
+	if current.sessionID == session.sessionID {
+		current.poolGeneration = 0
+		runtime.sessions[clientID] = current
+	}
+	runtime.mutex.Unlock()
+	runtime.broker.Remove(clientID, session.sessionID)
+	if !newExists && runtime.router != nil {
+		runtime.router.RemoveClient(clientID)
+	}
+	if newExists {
+		_ = runtime.assignLocked(clientID, session.sessionID)
 	}
 }
 
@@ -346,19 +417,43 @@ func (runtime *serverVNetRuntime) prepareRuntimeDevice(configuration config.Virt
 	if !runtime.preparingDevice.CompareAndSwap(false, true) {
 		return
 	}
+	ctx, cancel := context.WithCancel(runtime.context)
+	runtime.mutex.Lock()
+	if runtime.device != nil || !runtime.configuration.Enabled ||
+		runtime.configuration.CIDR != configuration.CIDR || runtime.configuration.ServerIP != configuration.ServerIP {
+		runtime.mutex.Unlock()
+		cancel()
+		runtime.preparingDevice.Store(false)
+		return
+	}
+	runtime.prepareCancel = cancel
+	runtime.mutex.Unlock()
 	runtime.waitGroup.Go(func() {
-		defer runtime.preparingDevice.Store(false)
-		device, err := vnet.PrepareNetwork(vnet.NetworkSpec{
+		defer func() {
+			cancel()
+			runtime.preparingDevice.Store(false)
+			runtime.mutex.RLock()
+			latest := runtime.configuration
+			replaced := latest.CIDR != configuration.CIDR || latest.ServerIP != configuration.ServerIP
+			retry := runtime.context.Err() == nil && latest.Enabled && runtime.device == nil && replaced
+			runtime.mutex.RUnlock()
+			if retry {
+				runtime.prepareRuntimeDevice(latest)
+			}
+		}()
+		device, err := runtime.prepareNetwork(ctx, vnet.NetworkSpec{
 			Role: vnet.NetworkRoleServer, CIDR: configuration.CIDR,
 			LocalIP: configuration.ServerIP, ServerIP: configuration.ServerIP,
 			MTU: vnetMTU, OwnerUID: -1,
 		})
 		if err != nil {
-			runtime.logger.Warn("VNet runtime helper did not activate the network", err)
+			if ctx.Err() == nil {
+				runtime.logger.Warn("VNet network installation did not activate the network", err)
+			}
 			return
 		}
 		runtime.mutex.Lock()
-		if runtime.device != nil || !runtime.configuration.Enabled ||
+		if ctx.Err() != nil || runtime.device != nil || !runtime.configuration.Enabled ||
 			runtime.configuration.CIDR != configuration.CIDR ||
 			runtime.configuration.ServerIP != configuration.ServerIP {
 			runtime.mutex.Unlock()
@@ -382,6 +477,9 @@ func (runtime *serverVNetRuntime) prepareRuntimeDevice(configuration config.Virt
 }
 
 func (runtime *serverVNetRuntime) activateInstalledDevice(configuration config.VirtualNetworkConfig) bool {
+	if runtime.preparingDevice.Load() {
+		return false
+	}
 	runtime.mutex.RLock()
 	ready := runtime.device != nil
 	runtime.mutex.RUnlock()
@@ -398,6 +496,11 @@ func (runtime *serverVNetRuntime) activateInstalledDevice(configuration config.V
 	}
 	runtime.mutex.Lock()
 	if runtime.device != nil || !runtime.configuration.Enabled {
+		runtime.mutex.Unlock()
+		_ = device.Close()
+		return false
+	}
+	if runtime.configuration.CIDR != configuration.CIDR || runtime.configuration.ServerIP != configuration.ServerIP {
 		runtime.mutex.Unlock()
 		_ = device.Close()
 		return false
@@ -474,6 +577,9 @@ func (runtime *serverVNetRuntime) bind(
 		func(pool *vnet.Pool) {
 			runtime.waitGroup.Go(func() {
 				err := pool.RunReaders(func(packet []byte) error {
+					if !runtime.poolIsCurrent(binding.ClientID, binding.SessionID, binding.PoolGeneration) {
+						return net.ErrClosed
+					}
 					return runtime.routeClientPacket(binding.ClientID, packet)
 				})
 				if err != nil && runtime.context.Err() == nil && !isExpectedVNetPoolStop(err) {
@@ -481,11 +587,13 @@ func (runtime *serverVNetRuntime) bind(
 						"client_id": binding.ClientID, "event": "vnet_pool_stopped",
 					})
 				}
-				runtime.broker.Remove(binding.ClientID, binding.SessionID)
+				unlock := runtime.lockSession(binding.ClientID, binding.SessionID)
+				defer unlock()
+				runtime.broker.RemoveGeneration(binding.ClientID, binding.SessionID, binding.PoolGeneration)
 				if runtime.context.Err() == nil && runtime.poolIsCurrent(
 					binding.ClientID, binding.SessionID, binding.PoolGeneration,
 				) {
-					if err := runtime.assign(binding.ClientID, binding.SessionID); err != nil {
+					if err := runtime.assignLocked(binding.ClientID, binding.SessionID); err != nil {
 						runtime.logger.WarnWithFields("failed to replace VNet channel pool", err, map[string]any{
 							"client_id": binding.ClientID, "event": "vnet_pool_replace_failed",
 						})
@@ -516,7 +624,9 @@ func (runtime *serverVNetRuntime) routeClientPacket(clientID string, packet []by
 		}
 		return nil
 	}
-	return runtime.dispatch(destination, packet)
+	// Destination failure must never tear down the source pool.
+	_ = runtime.dispatch(destination, packet)
+	return nil
 }
 
 func (runtime *serverVNetRuntime) readDevice(device vnet.Device) {
@@ -542,6 +652,12 @@ func (runtime *serverVNetRuntime) readDevice(device vnet.Device) {
 			return
 		}
 		packet := append([]byte(nil), buffer[:length]...)
+		runtime.mutex.RLock()
+		userspaceTCP := runtime.userspaceTCP
+		runtime.mutex.RUnlock()
+		if userspaceTCP != nil && !userspaceTCP.ObserveHostPacket(packet) {
+			continue
+		}
 		destination, err := runtime.router.RouteServerPacket(packet, time.Now())
 		if err == nil {
 			_ = runtime.dispatch(destination, packet)
@@ -559,10 +675,13 @@ func (runtime *serverVNetRuntime) dispatch(destination vnet.Destination, packet 
 		}
 		runtime.deviceWrite.Lock()
 		defer runtime.deviceWrite.Unlock()
-		if runtime.device == nil {
+		runtime.mutex.RLock()
+		device := runtime.device
+		runtime.mutex.RUnlock()
+		if device == nil {
 			return vnet.ErrTargetUnavailable
 		}
-		written, err := runtime.device.WritePacket(packet)
+		written, err := device.WritePacket(packet)
 		if err == nil && written != len(packet) {
 			err = errors.New("short VNet device write")
 		}
@@ -580,12 +699,12 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	session, exists := runtime.sessions[clientID]
 	if exists && session.sessionID == sessionID {
 		delete(runtime.sessions, clientID)
+		if runtime.router != nil {
+			runtime.router.RemoveClient(clientID)
+		}
 	}
 	runtime.mutex.Unlock()
 	runtime.broker.Remove(clientID, sessionID)
-	if runtime.router != nil {
-		runtime.router.RemoveClient(clientID)
-	}
 }
 
 func (runtime *serverVNetRuntime) Close() {

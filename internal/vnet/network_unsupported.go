@@ -2,9 +2,12 @@
 
 package vnet
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
-func preparePlatformNetwork(NetworkSpec) (Device, error) {
+func preparePlatformNetwork(context.Context, NetworkSpec) (Device, error) {
 	return nil, errors.New("VNet is supported only on Linux and macOS")
 }
 func uninstallPlatformNetwork(ownershipManifest) error {
@@ -17,3 +20,5 @@ func platformRootGroup() string                { return "root" }
 func manualNetworkManagementSupported() bool   { return false }
 func runtimeHelperSupported() bool             { return false }
 func runPlatformHelper([]string) (bool, error) { return false, nil }
+
+func platformIdentityMatches(ownershipManifest) bool { return false }

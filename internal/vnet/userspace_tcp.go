@@ -47,6 +47,7 @@ type UserspaceTCP struct {
 	output      func([]byte) error
 	mutex       sync.Mutex
 	flows       map[flowKey]time.Time
+	hostFlows   map[flowKey]time.Time
 	connections chan struct{}
 	associations chan struct{}
 	waitGroup   sync.WaitGroup
@@ -92,6 +93,7 @@ func NewUserspaceTCP(
 	runtime := &UserspaceTCP{
 		context: ctx, cancel: cancel, stack: networkStack, link: linkEndpoint,
 		localIP: localIP, output: output, flows: make(map[flowKey]time.Time),
+		hostFlows: make(map[flowKey]time.Time),
 		connections: make(chan struct{}, userspaceTCPMaximumConnections),
 		associations: make(chan struct{}, userspaceUDPMaximumAssociations),
 	}
@@ -106,31 +108,71 @@ func NewUserspaceTCP(
 	return runtime, nil
 }
 
-// Handle injects packets owned by a remote-initiated TCP flow.
-func (runtime *UserspaceTCP) Handle(packet []byte) bool {
+// ObserveHostPacket reserves reply delivery to the host before sending its first packet.
+func (runtime *UserspaceTCP) ObserveHostPacket(packet []byte) bool {
 	flow, err := ParseIPv4(packet)
-	if err != nil || (flow.Protocol != protocolTCP && flow.Protocol != protocolUDP) ||
-		flow.DestinationIP != runtime.localIP {
+	if err != nil || flow.SourceIP != runtime.localIP {
 		return false
 	}
 	key := makeFlowKey(flow)
 	now := time.Now()
 	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	if expires, exists := runtime.flows[key]; exists && now.Before(expires) {
+		return false
+	}
+	expires, exists := runtime.hostFlows[key]
+	if !exists || !now.Before(expires) {
+		if (flow.Protocol == protocolTCP && !flow.IsTCPStart()) ||
+			len(runtime.flows)+len(runtime.hostFlows) >= userspaceTCPMaximumFlows {
+			return false
+		}
+	}
+	runtime.hostFlows[key] = now.Add(userspaceFlowIdle(flow.Protocol))
+	return true
+}
+
+func userspaceFlowIdle(protocol uint8) time.Duration {
+	if protocol == protocolUDP {
+		return userspaceUDPAssociationIdle
+	}
+	return userspaceTCPFlowIdle
+}
+
+// Handle returns false only for a reply belonging to a registered host flow.
+// Rejected input is consumed, so capacity pressure never changes delivery mode.
+func (runtime *UserspaceTCP) Handle(packet []byte) bool {
+	flow, err := ParseIPv4(packet)
+	if err != nil || (flow.Protocol != protocolTCP && flow.Protocol != protocolUDP) ||
+		flow.DestinationIP != runtime.localIP {
+		return true
+	}
+	key := makeFlowKey(flow)
+	now := time.Now()
+	runtime.mutex.Lock()
+	if expires, exists := runtime.hostFlows[key]; exists {
+		if now.Before(expires) {
+			runtime.hostFlows[key] = now.Add(userspaceFlowIdle(flow.Protocol))
+			runtime.mutex.Unlock()
+			return false
+		}
+		delete(runtime.hostFlows, key)
+	}
 	_, owned := runtime.flows[key]
 	if !owned && (flow.Protocol == protocolUDP || flow.IsTCPStart()) &&
-		len(runtime.flows) < userspaceTCPMaximumFlows {
+		len(runtime.flows)+len(runtime.hostFlows) < userspaceTCPMaximumFlows {
 		owned = true
 	}
 	if owned {
 		if flow.IsTCPReset() {
 			delete(runtime.flows, key)
 		} else {
-			runtime.flows[key] = now.Add(userspaceTCPFlowIdle)
+			runtime.flows[key] = now.Add(userspaceFlowIdle(flow.Protocol))
 		}
 	}
 	runtime.mutex.Unlock()
 	if !owned {
-		return false
+		return true
 	}
 	packetBuffer := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: buffer.MakeWithData(packet),
@@ -190,6 +232,12 @@ func forwardUDPAssociation(ctx context.Context, remote, local net.Conn) {
 			}
 			count, err := source.Read(buffer)
 			if err != nil {
+				var timeout net.Error
+				if errors.As(err, &timeout) && timeout.Timeout() &&
+					time.Now().Before(time.Unix(0, lastActivity.Load()).Add(userspaceUDPAssociationIdle)) &&
+					associationContext.Err() == nil {
+					continue
+				}
 				cancel()
 				return
 			}
@@ -269,6 +317,11 @@ func (runtime *UserspaceTCP) expireFlows() {
 			for key, expiresAt := range runtime.flows {
 				if !now.Before(expiresAt) {
 					delete(runtime.flows, key)
+				}
+			}
+			for key, expiresAt := range runtime.hostFlows {
+				if !now.Before(expiresAt) {
+					delete(runtime.hostFlows, key)
 				}
 			}
 			runtime.mutex.Unlock()

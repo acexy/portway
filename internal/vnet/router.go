@@ -3,11 +3,14 @@ package vnet
 import (
 	"errors"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/acexy/portway/internal/config"
 )
+
+const routerCleanupBatchSize = 256
 
 var (
 	// ErrSourceRejected indicates that a packet source does not own its virtual address.
@@ -73,6 +76,7 @@ type Router struct {
 	tcpIdle     time.Duration
 	udpIdle     time.Duration
 	nextCleanup time.Time
+	nextCapacityCleanup time.Time
 }
 
 // NewRouter creates a router from an already validated server configuration.
@@ -100,11 +104,14 @@ func (router *Router) ApplyPolicy(configuration config.VirtualNetworkConfig) err
 		return err
 	}
 	router.mutex.Lock()
+	previous := router.policy
 	router.policy = policy
 	for key, state := range router.flows {
-		_, firstExists := policy.byIP[netip.AddrFrom4(key.firstIP)]
-		_, secondExists := policy.byIP[netip.AddrFrom4(key.secondIP)]
+		firstIP, secondIP := netip.AddrFrom4(key.firstIP), netip.AddrFrom4(key.secondIP)
+		first, firstExists := policy.byIP[firstIP]
+		second, secondExists := policy.byIP[secondIP]
 		if !firstExists || !secondExists ||
+			first.clientID != previous.byIP[firstIP].clientID || second.clientID != previous.byIP[secondIP].clientID ||
 			!policy.serviceAllowed(state.serviceIP, state.protocol, state.servicePort) {
 			delete(router.flows, key)
 		}
@@ -168,7 +175,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 		return Destination{}, ErrTargetUnavailable
 	}
 	if router.nextCleanup.IsZero() || !now.Before(router.nextCleanup) {
-		router.removeExpiredLocked(now)
+		router.removeExpiredLocked(now, routerCleanupBatchSize)
 		router.nextCleanup = now.Add(time.Second)
 	}
 	key := makeFlowKey(flow)
@@ -186,7 +193,13 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 			return Destination{}, ErrFlowRejected
 		}
 		if len(router.flows) >= router.maxFlows {
-			return Destination{}, ErrFlowCapacity
+			if !now.Before(router.nextCapacityCleanup) {
+				router.removeExpiredLocked(now, router.maxFlows)
+				router.nextCapacityCleanup = now.Add(time.Second)
+			}
+			if len(router.flows) >= router.maxFlows {
+				return Destination{}, ErrFlowCapacity
+			}
 		}
 		state = flowState{
 			serviceIP:   flow.DestinationIP,
@@ -218,10 +231,15 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 	return destination, nil
 }
 
-func (router *Router) removeExpiredLocked(now time.Time) {
+func (router *Router) removeExpiredLocked(now time.Time, limit int) {
+	inspected := 0
 	for key, state := range router.flows {
 		if !now.Before(state.expiresAt) {
 			delete(router.flows, key)
+		}
+		inspected++
+		if inspected >= limit {
+			return
 		}
 	}
 }
@@ -275,12 +293,10 @@ func (policy endpointPolicy) allows(protocol uint8, port uint16) bool {
 	} else if protocol != protocolUDP {
 		return false
 	}
-	for _, portRange := range ranges {
-		if port >= portRange.Start && port <= portRange.End {
-			return true
-		}
-	}
-	return false
+	index := sort.Search(len(ranges), func(index int) bool {
+		return ranges[index].End >= port
+	})
+	return index < len(ranges) && port >= ranges[index].Start
 }
 
 func makeFlowKey(flow Flow) flowKey {
