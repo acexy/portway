@@ -1,10 +1,12 @@
-# Proxy and Forward modes
+# Three connectivity modes: Proxy, Forward, and VNet
 
-Portway provides two complementary traffic modes over the same authenticated
-client-server tunnel. Proxy publishes a service reachable by `portway`; Forward
-provides local access to an approved service reachable by `portwayd`.
+Portway provides three modes for different network boundaries. Proxy publishes
+services reachable by `portway`; Forward provides local access to approved
+services reachable by `portwayd`; VNet places the server and explicitly
+configured Managed nodes across networks in a mutually reachable private IPv4
+cluster governed by port policy.
 
-## Traffic directions
+## Modes and traffic directions
 
 ### Proxy: publish a client-side service
 
@@ -108,14 +110,7 @@ Invalid candidates retain the previous snapshot; affected connections close
 automatically after a successful policy change. The client does not reload its
 local YAML, so Shared or Governed listener changes require a client restart.
 
-## Choosing a mode
-
-| Requirement | Mode | Listener owner | Destination |
-| --- | --- | --- | --- |
-| Publish a private client service | Proxy | `portwayd` | Client network |
-| Reach a protected server-side service locally | Forward | `portway` | Server network |
-
-Both modes can coexist in one Shared or Governed client configuration, use TCP
+Proxy and Forward can coexist in one Shared or Governed client configuration and use TCP
 or QUIC as the underlying transport, and retain their application protocol
 semantics across the tunnel.
 
@@ -125,3 +120,39 @@ Shared/Governed clients close their prepared listeners, notify the server on a
 best-effort basis, and exit. Ordinary TCP Proxy and Forward preserve normal
 half-close without a fixed response-drain timeout; I/O errors and session
 cancellation close both directions. Mirror TCP retains its separate drain policy.
+
+### VNet: connect managed nodes through stable private addresses
+
+```text
+Server or VNet client
+          |
+          | Private IPv4 TCP / UDP
+          v
+  Central routing at portwayd
+          |
+          v
+Another authorized VNet node
+```
+
+VNet has neither a public entry nor a client-local forwarding listener. The
+server assigns stable private IPv4 addresses to itself and each Managed client,
+then decides delivery using the destination node's TCP/UDP inbound allowlist.
+Client-to-client traffic is always relayed through `portwayd`. It gives fixed
+nodes in different networks a VPN-like private-access experience and suits
+management, service discovery, and internal service access. It currently does
+not carry arbitrary IP protocols, broadcast, or general Internet egress.
+
+Only the server configures `virtual_network`, and only Managed clients can join.
+VNet uses TUN network resources on Linux or macOS. `network_mode: tun` delivers
+traffic to services on the virtual IP, while `loopback` delivers authorized
+traffic to the same port on `127.0.0.1`. See [VNet configuration and
+operations](../vnetwork/README.md) for configuration, operations, and security
+boundaries.
+
+## Choosing a mode
+
+| Need | Mode | Entry or address owner | Target location |
+| --- | --- | --- | --- |
+| Publish a private client service to visitors | Proxy | Public `portwayd` listener | Client network |
+| Use a server-side service locally on the client | Forward | Local `portway` listener | Server network |
+| Privately connect centrally managed nodes | VNet | Server-assigned private IPv4 addresses | Server or Managed client |

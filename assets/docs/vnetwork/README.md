@@ -1,9 +1,16 @@
 # VNet
 
-VNet connects a `portwayd` server and explicitly configured Managed clients by
-stable private IPv4 addresses. It supports IPv4 TCP and UDP on Linux and macOS.
-Client-to-client packets always pass through the server; VNet is independent of
-Proxy and Forward state.
+VNet connects a `portwayd` server and explicitly configured Managed clients in
+different networks by stable private IPv4 addresses. It supports IPv4 TCP and
+UDP on Linux and macOS. It gives fixed nodes a VPN-like private cluster and
+access experience: applications use the destination's private address and port,
+while client-to-client packets always pass through the server. VNet is
+independent of Proxy and Forward state.
+
+This mutual access is bounded by destination port policy rather than being
+unrestricted network access: each node receives only the TCP/UDP ports explicitly
+allowed by its `ports` value. VNet currently provides neither arbitrary IP
+protocols, broadcast, nor Internet egress.
 
 Configure VNet only on the server. Each endpoint's `ports` value is the inbound
 TCP/UDP allowlist for that endpoint:

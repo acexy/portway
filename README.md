@@ -5,24 +5,27 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  Lightweight bidirectional tunneling for reliable, long-running network access.
+  Lightweight, secure, and stable network connectivity through Proxy, Forward, and VNet modes.
 </p>
 
-Portway establishes an authenticated tunnel between `portway` and `portwayd`,
-then carries traffic in either direction:
+Portway establishes an authenticated, encrypted connection between `portway` and
+`portwayd` and provides three independent capabilities that can be combined as needed:
 
-- **Proxy mode (server to client):** expose a service reachable by `portway`
-  through a TCP/UDP port or HTTP/HTTPS domain on `portwayd`.
-- **Forward mode (client to server):** open a local TCP/UDP listener on
-  `portway` and reach an explicitly allowed IP and port from the `portwayd`
-  network.
+- **Proxy mode:** reach client-side services through a public `portwayd` entry.
+- **Forward mode:** reach restricted server-side services through a local `portway` entry.
+- **VNet mode:** form a mutually reachable private network cluster across networks with the server and Managed clients.
 
-The two modes are independent features and can run separately or share one
-authenticated client-server connection.
+Proxy and Forward address explicit services and ports. VNet provides a
+centralized VPN-like private-network experience: Managed nodes in different
+networks reach each other through stable addresses, with client-to-client traffic
+relayed by the server. VNet currently carries authorized IPv4 TCP/UDP traffic,
+and each destination node's port policy remains the access boundary. Proxy and
+Forward can share an authenticated session; VNet uses server-owned Managed
+identities and address assignments.
 
 [中文版](README_ZH.md)
 
-## Functional architecture
+## Three connectivity modes
 
 ```text
 Portway
@@ -37,6 +40,8 @@ Portway
 └── VNet: connect managed nodes through stable private IPv4 addresses
     └── TCP / UDP over 1-8 isolated packet channels (default: 4)
 ```
+
+### Proxy: publish a client service through a server entry
 
 **Proxy** is for publishing services from a client network. `portwayd` owns the
 public listener and carries visitor traffic through the tunnel to `portway`.
@@ -53,13 +58,19 @@ datagram. See [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.m
 Local service outages do not log clients out; forwarding resumes automatically
 after recovery, without replaying traffic lost during the outage.
 
+### Forward: bring a server-network service to the client
+
 **Forward** is for consuming services from the server network. `portway` owns
 the local TCP/UDP listener and sends connections or datagrams to an explicitly
 allowed target reachable by `portwayd`. Typical uses include private databases,
 administration endpoints, internal DNS, and other services that should remain
 off the public network.
 
-**VNet** is a managed-only Linux/macOS mode. The server owns address
+### VNet: form a cross-network private cluster of managed nodes
+
+**VNet** is a managed-only Linux/macOS mode for forming a VPN-like private
+network cluster from nodes in different private networks, clouds, or edge
+networks. The server owns address
 `172.20.0.1` by default and assigns stable addresses to configured clients;
 client-to-client traffic is relayed centrally. Portway creates only its owned
 logical `portway0` network and enforces each destination's TCP/UDP port allowlist.
@@ -78,12 +89,12 @@ See [VNet configuration and operations](assets/docs/vnetwork/README.md).
 | Access a server-side service locally | Forward | `portway` | Server network | TCP, UDP |
 | Connect managed virtual nodes | VNet | Any configured node | Server or client node | TCP, UDP |
 
-For traffic diagrams and complete mode boundaries, see
-[Proxy and Forward modes](assets/docs/modes/README.md).
+The table helps choose a mode. For traffic diagrams and complete boundaries, see
+[Three connectivity modes](assets/docs/modes/README.md).
 
 ## Highlights
 
-**Bidirectional traffic**
+**Three controlled connectivity capabilities**
 
 - Proxy client-side TCP and UDP services through public listeners on the server.
 - Mirror a governed or managed public TCP/UDP Proxy entry to multiple clients
@@ -93,6 +104,7 @@ For traffic diagrams and complete mode boundaries, see
 - Forward TCP and UDP from client-side listeners to server-side networks. A
   server-wide allowlist restricts every target by CIDR, protocol, and port.
 - Run Proxy and Forward entries together over one authenticated client session.
+- Connect Managed VNet nodes through centrally routed traffic and node-level TCP/UDP inbound policies.
 
 **Transport and security**
 
@@ -116,10 +128,11 @@ For traffic diagrams and complete mode boundaries, see
 
 ## Quick start
 
-The examples below use the Shared authentication mode. Replace
+The first two examples use Shared authentication. Replace
 `REPLACE_WITH_SAME_RANDOM_TOKEN_OVER_32_CHARS` with the same cryptographically
 generated Token in both files. The Token must contain more than 32 UTF-8
-characters. Start `portwayd` before `portway` in either scenario.
+characters. Start `portwayd` before `portway`. The third example uses Managed
+authentication, whose identity and configuration are server-owned.
 
 ### Scenario 1: expose a client-side service through the server
 
@@ -251,6 +264,72 @@ server rule; ranges from different rules are never combined. Bind the client
 listener to loopback unless other hosts intentionally need access. TCP and UDP
 Forward entries are supported, while domain-based HTTP/HTTPS routing belongs to
 Proxy mode.
+
+### Scenario 3: connect managed nodes through private addresses
+
+Use VNet when nodes in different networks, managed by one server, should reach
+each other through stable private addresses, rather than creating a Proxy or
+Forward entry for every service. It makes access feel like a VPN: applications
+connect directly to a node's private address and port. This example assigns
+`172.20.0.1` to the server and `172.20.0.2` to an edge node, exposing only TCP
+port `8080` on that node.
+
+First create a Managed client record in the directory named by
+`managed_clients_path`, for example `managed/edge-a.yaml`:
+
+```yaml
+authentication:
+  client_id: edge-a
+  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_OVER_32_CHARS
+configuration:
+  revision: 1
+  proxies: []
+  forwards: []
+```
+
+Enable its address and port policy in `server.yaml`:
+
+```yaml
+authentication:
+  managed_clients_path: ./managed
+
+virtual_network:
+  enabled: true
+  cidr: 172.20.0.0/16
+  server_ip: 172.20.0.1
+  server_ports:
+    tcp:
+      port_ranges:
+        - start: 22
+          end: 22
+  nodes:
+    - client_id: edge-a
+      ip: 172.20.0.2
+      ports:
+        tcp:
+          port_ranges:
+            - start: 8080
+              end: 8080
+```
+
+Configure the smallest `client.yaml` on the node; its Token must match the
+Managed record:
+
+```yaml
+transport:
+  type: tcp
+  server_address: SERVER_IP:7000
+authentication:
+  client_id: edge-a
+  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_OVER_32_CHARS
+```
+
+After startup, the server can reach `172.20.0.2:8080`, and the node can reach
+authorized `172.20.0.1:22`. All client-to-client traffic is relayed through
+`portwayd`. VNet needs TUN privileges on Linux or macOS and may request operating
+system authorization on first activation. For complete configuration, `tun` and
+`loopback` delivery, port policies, and management commands, see
+[VNet configuration and operations](assets/docs/vnetwork/README.md).
 
 ## HTTP and HTTPS proxy
 
@@ -433,16 +512,25 @@ appropriate `client.yaml` or `server.yaml` before running the installed command.
 
 ## Technical documentation
 
-- [Proxy and Forward modes](assets/docs/modes/README.md)
-- [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md)
-- [Technical overview](assets/docs/technical/README.md)
-- [Operations endpoints](assets/docs/operations/README.md)
-- [Authentication and configuration control](assets/docs/authentication/README.md)
-- [Server configuration reload](assets/docs/reload/README.md)
-- [Security](assets/docs/security/README.md)
-- [Future plans](assets/docs/future/README.md)
+**Getting started**
+
+- [Three connectivity modes: Proxy, Forward, and VNet](assets/docs/modes/README.md)
 - Fully annotated configuration examples:
   [client](config/client.yaml) and [server](config/server.yaml)
+- [Authentication and configuration control](assets/docs/authentication/README.md)
+- [Security](assets/docs/security/README.md)
+
+**Optional capabilities**
+
+- [VNet configuration and operations](assets/docs/vnetwork/README.md)
+- [TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md)
+
+**Architecture and operations**
+
+- [Technical overview](assets/docs/technical/README.md)
+- [Operations endpoints](assets/docs/operations/README.md)
+- [Server configuration reload](assets/docs/reload/README.md)
+- [Future plans](assets/docs/future/README.md)
 
 The technical documentation describes stable behavior and security
 properties without serving as a complete wire-protocol specification.
