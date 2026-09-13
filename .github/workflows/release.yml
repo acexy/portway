@@ -78,7 +78,7 @@ jobs:
         working-directory: target
         run: sha256sum portway-*.tar > checksums.txt
 
-      - name: Publish GitHub Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -86,7 +86,21 @@ jobs:
         shell: bash
         run: |
           download_base="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
+          release_flags=()
+          release_notes_intro="See the full changelog below."
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # Stable releases remain private until their user-facing notes are enhanced.
+            release_flags+=(--draft)
+            release_notes_intro="Release notes are being prepared. This draft will be published after review."
+          else
+            release_flags+=(--prerelease --latest=false)
+          fi
+
           release_intro=$(cat <<EOF
+          ## What's Changed
+
+          ${release_notes_intro}
+
           ## Downloads
 
           | Platform | Architecture | Download |
@@ -100,11 +114,6 @@ jobs:
           Verify downloads with [checksums.txt](${download_base}/checksums.txt).
           EOF
           )
-
-          release_flags=()
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            release_flags+=(--prerelease --latest=false)
-          fi
 
           gh release create "$RELEASE_TAG" \
             target/portway-*.tar \
