@@ -53,7 +53,10 @@ configuration:
   # Across all Managed records, TCP remote ports, UDP remote ports, and HTTP
   # domains must each be globally unique. TCP and UDP may use the same numeric
   # port because they are different network protocols. These resources remain
-  # reserved for this Managed ClientID even while the client is offline.
+  # reserved for this Managed ClientID even while the client is offline. If this
+  # ClientID belongs to a Managed mirror group in server.yaml, this set must
+  # contain exactly one Proxy with the matching type and public port for every
+  # public port in that group; mirror membership does not create those entries.
   proxies:
     # TCP example.
     - name: ssh

@@ -15,6 +15,8 @@ permissions:
     # 协议规则节点存在即表示允许该协议。仅允许 Forward 时可省略整个 proxies。
     tcp:
       # 公网端口闭区间，范围 1-65535；必须排序且不得重叠。
+      # 如果本 ClientID 属于 server.yaml 中的 Governed 镜像组，这些范围必须覆盖
+      # 该组全部公共 TCP 端口。范围可以更大，但不能是其子集；成员身份不会授予权限。
       port_ranges:
         - start: 20000
           end: 20999
@@ -22,6 +24,7 @@ permissions:
           end: 22099
     udp:
       # 公网端口闭区间，范围 1-65535；必须排序且不得重叠。
+      # Governed UDP 镜像成员与 TCP 遵循相同的完整覆盖规则。
       port_ranges:
         - start: 30000
           end: 30999

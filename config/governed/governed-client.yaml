@@ -28,6 +28,9 @@ permissions:
     # proxies node when this client is allowed to declare Forwards only.
     tcp:
       # Inclusive public-port ranges in 1-65535; sorted and non-overlapping.
+      # If this ClientID belongs to a Governed mirror group in server.yaml, these
+      # ranges must cover every public TCP port in that group. They may be
+      # broader, but cannot be a subset; mirror membership grants no permission.
       port_ranges:
         - start: 20000
           end: 20999
@@ -35,6 +38,7 @@ permissions:
           end: 22099
     udp:
       # Inclusive public-port ranges in 1-65535; sorted and non-overlapping.
+      # Governed UDP mirror members follow the same full-coverage rule as TCP.
       port_ranges:
         - start: 30000
           end: 30999

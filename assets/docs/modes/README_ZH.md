@@ -1,10 +1,11 @@
-# Proxy 与 Forward 工作模式
+# 三种连接模式：Proxy、Forward 与 VNet
 
-Portway 在同一条认证客户端-服务端隧道上提供两种互补的流量模式。Proxy 将
-`portway` 可访问的服务发布出去；Forward 则让用户从本地访问 `portwayd`
-所在网络中经过授权的服务。
+Portway 提供三种面向不同网络边界的连接模式。Proxy 将 `portway` 可访问的服务
+发布出去；Forward 让用户从本地访问 `portwayd` 所在网络中经过授权的服务；VNet
+则将跨不同网络的服务端与显式配置的 Managed 节点组成一个受端口策略约束、可彼此访问的
+私有 IPv4 网络集群。
 
-## 流量方向
+## 模式与流量方向
 
 ### Proxy：发布客户端侧服务
 
@@ -103,17 +104,41 @@ Shared、Governed、Managed 客户端都不能绕过全局边界。Governed 和 
 策略成功变更后自动断开受影响连接。客户端不会热加载本地 YAML，因此 Shared 或
 Governed 模式的 Listener 变化需要重启客户端。
 
-## 如何选择
-
-| 需求 | 模式 | Listener 所有者 | 目标位置 |
-| --- | --- | --- | --- |
-| 发布客户端私有服务 | Proxy | `portwayd` | 客户端网络 |
-| 从本地访问受保护的服务端侧服务 | Forward | `portway` | 服务端网络 |
-
-Shared 或 Governed 客户端可以同时配置两种模式。两者都可使用 TCP 或 QUIC 作为
+Shared 或 Governed 客户端可以同时配置 Proxy 与 Forward。两者都可使用 TCP 或 QUIC 作为
 底层传输，并在隧道中保持应用协议语义。
 
 Forward 本地入口在服务端批准后创建，客户端控制会话结束时关闭，恢复后重新创建。
 本地启动失败时，Shared/Governed 客户端关闭本批入口、尽力通知服务端并退出。
 普通 TCP Proxy 和 Forward 正常半关闭不设固定响应排空期限；异常 I/O 或会话取消
 关闭两个方向。镜像 TCP 仍使用独立的排空策略。
+
+### VNet：通过稳定私有地址连接受管节点
+
+```text
+服务端或 VNet 客户端
+          |
+          | 私有 IPv4 TCP / UDP
+          v
+     portwayd 中心路由
+          |
+          v
+另一个已授权的 VNet 节点
+```
+
+VNet 没有“公共入口”或客户端本地转发 Listener。服务端为自身和每个 Managed 客户端
+分配稳定私有 IPv4 地址，并根据目标节点的 TCP/UDP 端口允许列表决定是否递送流量；
+客户端之间始终经由 `portwayd` 中继。它使不同网络中的固定节点获得类似 VPN 的私网互访
+体验，适合管理、服务发现和内部服务访问；当前不承载任意 IP 协议、广播或通用互联网出口。
+
+VNet 只在服务端 `virtual_network` 节点配置，且只允许 Managed 客户端加入。它需要
+Linux 或 macOS 的 TUN 网络资源；`network_mode: tun` 将流量交给虚拟 IP 上的服务，
+`loopback` 将已授权流量送往同端口的 `127.0.0.1` 服务。配置、运维命令和安全边界见
+[VNet 配置与运维](../vnetwork/README_ZH.md)。
+
+## 如何选择
+
+| 需求 | 模式 | 入口或地址所有者 | 目标位置 |
+| --- | --- | --- | --- |
+| 将客户端私有服务提供给访问者 | Proxy | `portwayd` 公共 Listener | 客户端网络 |
+| 在客户端本地使用服务端侧服务 | Forward | `portway` 本地 Listener | 服务端网络 |
+| 让集中管理的节点彼此私网访问 | VNet | 服务端下发的私有 IPv4 地址 | 服务端或 Managed 客户端 |

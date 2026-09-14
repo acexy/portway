@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
@@ -22,6 +24,7 @@ import (
 	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
 	transportfactory "github.com/acexy/portway/internal/transport/factory"
+	"github.com/acexy/portway/internal/vnet"
 )
 
 var errProxyRegistrationRejected = errors.New("proxy registration rejected")
@@ -53,7 +56,9 @@ type Service struct {
 	managed                 *managedCoordinator
 	httpsCertificates       *httpsCertificateManager
 	inboundAdmission        chan struct{}
+	inboundRejections       *logging.WindowCounter
 	ready                   atomic.Bool
+	vnetRuntime             *serverVNetRuntime
 }
 
 // NewService creates a server service.
@@ -71,6 +76,7 @@ func NewService(logger *logging.Logger, configuration config.ServerConfig) *Serv
 			chan struct{},
 			maxUnaffiliatedInboundConnections,
 		),
+		inboundRejections: logging.NewWindowCounter(time.Minute),
 	}
 }
 
@@ -80,13 +86,18 @@ func (s *Service) Run(ctx context.Context) error {
 	if err := config.ValidateProxyMirrorConfiguration(configuration); err != nil {
 		return fmt.Errorf("validate proxy mirror configuration: %w", err)
 	}
-	s.logger.InfoWithFields("server started", map[string]any{
-		"event":                "server_started",
-		"listen_address":       configuration.Transport.ListenAddress,
-		"http_listen_address":  configuration.Proxies.HTTP.ListenAddress,
-		"https_listen_address": configuration.Proxies.HTTPS.ListenAddress,
-	})
-	defer s.logger.Info("server stopped")
+	fields := map[string]any{
+		"event":          "server_started",
+		"listen_address": configuration.Transport.ListenAddress,
+	}
+	if configuration.Proxies.HTTP.ListenAddress != "" {
+		fields["http_listen_address"] = configuration.Proxies.HTTP.ListenAddress
+	}
+	if configuration.Proxies.HTTPS.ListenAddress != "" {
+		fields["https_listen_address"] = configuration.Proxies.HTTPS.ListenAddress
+	}
+	s.logger.InfoWithFields("server started", fields)
+	defer s.logger.InfoWithField("server stopped", "event", "server_stopped")
 
 	sourceFilter, err := ipfilter.New(
 		ctx,
@@ -122,6 +133,24 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
+	var vnetDevice vnet.Device
+	if configuration.VirtualNetwork.Enabled {
+		vnetDevice, err = vnet.PrepareNetwork(vnet.NetworkSpec{
+			Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
+			LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP,
+			MTU: vnetMTU, OwnerUID: os.Getuid(),
+		})
+		if err != nil {
+			s.logger.WithComponent("vnet").Warn("VNet device is not ready; VNet remains installation required", err)
+		}
+	}
+	s.vnetRuntime = newServerVNetRuntime(
+		sessionContext,
+		s.logger.WithComponent("vnet"),
+		configuration.VirtualNetwork,
+		vnetDevice,
+	)
+	defer s.vnetRuntime.Close()
 	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy, func() config.UDPConfig {
 		return config.EffectiveForwardUDPConfig(s.configuration.snapshot().Forwards)
 	})
@@ -346,6 +375,7 @@ func (s *Service) Run(ctx context.Context) error {
 		releaseAdmission, admitted := s.acquireInboundAdmission()
 		if !admitted {
 			_ = inbound.Stream.Close()
+			s.logInboundCapacityRejection(inbound.RemoteAddress)
 			continue
 		}
 
@@ -363,6 +393,26 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 		})
 	}
+}
+
+func (s *Service) logInboundCapacityRejection(remoteAddress string) {
+	count, emit := s.inboundRejections.Record(time.Now())
+	if !emit {
+		return
+	}
+	s.logger.WithComponent("server").WarnWithFields(
+		"client connection rejected at inbound capacity",
+		nil,
+		map[string]any{
+			"event":                "inbound_connection_rejected",
+			"remote_address":       remoteAddress,
+			"result":               "rejected",
+			"reason":               "capacity_exceeded",
+			"error_code":           "inbound_capacity_exceeded",
+			"rejected_connections": count,
+			"capacity":             cap(s.inboundAdmission),
+		},
+	)
 }
 
 func (s *Service) acquireInboundAdmission() (func(), bool) {

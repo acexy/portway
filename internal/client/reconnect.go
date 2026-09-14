@@ -27,7 +27,7 @@ func (s *Service) Run(ctx context.Context) error {
 		"event":          "client_started",
 		"server_address": s.configuration.Transport.ServerAddress,
 	})
-	defer s.logger.Info("client stopped")
+	defer s.logger.InfoWithField("client stopped", "event", "client_stopped")
 
 	reconnectDelay := initialRegistrationReconnectDelay
 	var reconnectAttempt uint64
@@ -107,8 +107,11 @@ func (s *Service) Run(ctx context.Context) error {
 			"control session disconnected; recovery scheduled",
 			err,
 			map[string]any{
-				"event":  "control_session_disconnected",
-				"reason": "recoverable_error",
+				"event":      "control_session_disconnected",
+				"stage":      controlFailureStage(established),
+				"reason":     "recoverable_error",
+				"error_code": controlFailureCode(err),
+				"retryable":  true,
 			},
 		)
 
@@ -141,6 +144,32 @@ func (s *Service) Run(ctx context.Context) error {
 		reconnectDelay = nextReconnectDelay(reconnectDelay, phase)
 	}
 }
+
+func controlFailureStage(established bool) string {
+	if established {
+		return "control_loop"
+	}
+	return "session_setup"
+}
+
+func controlFailureCode(err error) string {
+	var sessionError *remoteSessionError
+	if errors.As(err, &sessionError) {
+		return string(sessionError.code)
+	}
+	var configurationError *configurationRegistrationError
+	if errors.As(err, &configurationError) {
+		return string(configurationError.code)
+	}
+	if errors.Is(err, transport.ErrAuthentication) {
+		return "authentication_failed"
+	}
+	if errors.Is(err, transport.ErrProtocol) {
+		return "protocol_error"
+	}
+	return "transport_error"
+}
+
 func reconnectPhaseForSession(sessionID string) reconnectPhase {
 	if sessionID != "" {
 		return reconnectPhaseRecovery

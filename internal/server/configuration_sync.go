@@ -43,6 +43,7 @@ func (s *Service) synchronizeConfiguration(
 		request,
 	)
 	if synchronizationError != nil {
+		s.logConfigurationSyncRejected(session, request.Revision, synchronizationError)
 		if err := writeConfigurationRejection(
 			session.writer,
 			envelope.RequestID,
@@ -54,12 +55,14 @@ func (s *Service) synchronizeConfiguration(
 		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
 	}
 	if cachedResult != nil {
+		s.logConfigurationSyncApplied(session, request, *cachedResult, true)
 		return *cachedResult, nil
 	}
 	if rejection := validateConfigurationCapabilities(
 		request,
 		session.capabilities,
 	); rejection != nil {
+		s.logConfigurationSyncRejected(session, request.Revision, rejection.Error)
 		if err := session.writer.WriteResponse(
 			protocol.MessageSyncConfigurationResult,
 			envelope.RequestID,
@@ -75,11 +78,13 @@ func (s *Service) synchronizeConfiguration(
 	}
 	if session.mode == authentication.ModeGoverned {
 		if result := s.validateGovernedProxies(session.clientID, proxyRequest); result != nil {
+			rejection := configurationProxyError(result.Error)
+			s.logConfigurationSyncRejected(session, request.Revision, rejection)
 			if err := writeConfigurationRejection(
 				session.writer,
 				envelope.RequestID,
 				request.Revision,
-				configurationProxyError(result.Error),
+				rejection,
 			); err != nil {
 				return protocol.SyncConfigurationResult{}, err
 			}
@@ -103,11 +108,13 @@ func (s *Service) synchronizeConfiguration(
 		request.Forwards,
 	)
 	if forwardError != nil {
+		rejection := configurationForwardError(forwardError)
+		s.logConfigurationSyncRejected(session, request.Revision, rejection)
 		if err := writeConfigurationRejection(
 			session.writer,
 			envelope.RequestID,
 			request.Revision,
-			configurationForwardError(forwardError),
+			rejection,
 		); err != nil {
 			return protocol.SyncConfigurationResult{}, err
 		}
@@ -121,11 +128,13 @@ func (s *Service) synchronizeConfiguration(
 	)
 	if proxyResult.Status == proxyregistry.SyncStatusRejected {
 		forwardTransaction.Rollback()
+		rejection := configurationProxyError(proxyResult.Error)
+		s.logConfigurationSyncRejected(session, request.Revision, rejection)
 		if err := writeConfigurationRejection(
 			session.writer,
 			envelope.RequestID,
 			request.Revision,
-			configurationProxyError(proxyResult.Error),
+			rejection,
 		); err != nil {
 			return protocol.SyncConfigurationResult{}, err
 		}
@@ -141,7 +150,68 @@ func (s *Service) synchronizeConfiguration(
 		return protocol.SyncConfigurationResult{}, errors.New("Forward generation changed while synchronizing")
 	}
 	s.cacheConfigurationSync(session.clientID, session.sessionID, envelope.RequestID, request, result)
+	s.logConfigurationSyncApplied(session, request, result, false)
 	return result, nil
+}
+
+func (s *Service) logConfigurationSyncRejected(
+	session configurationSyncSession,
+	revision uint64,
+	rejection *protocol.ConfigurationError,
+) {
+	if s.logger == nil || rejection == nil {
+		return
+	}
+	s.logger.WithComponent("proxy_registry").WarnWithFields(
+		"client configuration synchronization rejected",
+		nil,
+		map[string]any{
+			"event":         "configuration_sync_rejected",
+			"client_id":     session.clientID,
+			"session_id":    session.sessionID,
+			"result":        "rejected",
+			"revision":      revision,
+			"resource_kind": rejection.ResourceKind,
+			"resource_name": rejection.ResourceName,
+			"error_code":    rejection.Code,
+			"retryable":     rejection.Retryable,
+		},
+	)
+}
+
+func (s *Service) logConfigurationSyncApplied(
+	session configurationSyncSession,
+	request protocol.SyncConfiguration,
+	result protocol.SyncConfigurationResult,
+	replayed bool,
+) {
+	if s.logger == nil {
+		return
+	}
+	proxyCounts := map[protocol.ProxyType]int{}
+	for _, declaration := range request.Proxies {
+		proxyCounts[declaration.Type]++
+	}
+	forwardCounts := map[protocol.ForwardType]int{}
+	for _, declaration := range request.Forwards {
+		forwardCounts[declaration.Type]++
+	}
+	s.logger.WithComponent("proxy_registry").InfoWithFields(
+		"client configuration synchronized",
+		map[string]any{
+			"event":        "configuration_sync_applied",
+			"client_id":    session.clientID,
+			"session_id":   session.sessionID,
+			"result":       result.Status,
+			"revision":     result.Revision,
+			"replayed":     replayed,
+			"tcp_proxies":  proxyCounts[protocol.ProxyTypeTCP],
+			"udp_proxies":  proxyCounts[protocol.ProxyTypeUDP],
+			"http_proxies": proxyCounts[protocol.ProxyTypeHTTP],
+			"tcp_forwards": forwardCounts[protocol.ForwardTypeTCP],
+			"udp_forwards": forwardCounts[protocol.ForwardTypeUDP],
+		},
+	)
 }
 
 func validateConfigurationCapabilities(

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"sync"
 	"time"
@@ -93,6 +94,24 @@ func (connection *publicHTTPConnection) Close() error {
 		connection.admission.mutex.Unlock()
 	})
 	return err
+}
+
+// CloseWrite preserves half-close for hijacked public HTTP connections.
+func (connection *publicHTTPConnection) CloseWrite() error {
+	closeWriter, ok := connection.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.New("public HTTP connection does not support write half-close")
+	}
+	return closeWriter.CloseWrite()
+}
+
+// CloseRead preserves read half-close for hijacked public HTTP connections.
+func (connection *publicHTTPConnection) CloseRead() error {
+	closeReader, ok := connection.Conn.(interface{ CloseRead() error })
+	if !ok {
+		return errors.New("public HTTP connection does not support read half-close")
+	}
+	return closeReader.CloseRead()
 }
 
 func (admission *publicHTTPAdmission) close() {

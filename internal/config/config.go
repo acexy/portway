@@ -74,6 +74,38 @@ type ForwardPortPermission struct {
 	PortRanges []PortRange `yaml:"port_ranges"`
 }
 
+// VNetPortPermissions defines the TCP and UDP ports exposed by one VNet node.
+type VNetPortPermissions struct {
+	TCP ForwardPortPermission `yaml:"tcp"`
+	UDP ForwardPortPermission `yaml:"udp"`
+}
+
+// VNetNodeConfig assigns one managed client a stable virtual address.
+type VNetNodeConfig struct {
+	ClientID string              `yaml:"client_id"`
+	IP       string              `yaml:"ip"`
+	Ports    VNetPortPermissions `yaml:"ports"`
+}
+
+// VirtualNetworkConfig configures the managed-only IPv4 virtual network.
+type VirtualNetworkConfig struct {
+	Enabled        bool                `yaml:"enabled"`
+	NetworkMode    VNetNetworkMode     `yaml:"network_mode"`
+	CIDR           string              `yaml:"cidr"`
+	ServerIP       string              `yaml:"server_ip"`
+	PacketChannels int                 `yaml:"packet_channels"`
+	ServerPorts    VNetPortPermissions `yaml:"server_ports"`
+	Nodes          []VNetNodeConfig    `yaml:"nodes"`
+}
+
+// VNetNetworkMode selects how inbound traffic reaches services on a VNet node.
+type VNetNetworkMode string
+
+const (
+	VNetNetworkModeTUN      VNetNetworkMode = "tun"
+	VNetNetworkModeLoopback VNetNetworkMode = "loopback"
+)
+
 // ForwardIPRule binds one target network to its permitted protocol ports.
 type ForwardIPRule struct {
 	IPRange string                `yaml:"ip_range"`
@@ -296,6 +328,7 @@ type ServerConfig struct {
 	Security       SecurityConfig             `yaml:"security"`
 	Operations     OperationsConfig           `yaml:"operations"`
 	Forwards       ForwardServerConfig        `yaml:"forwards"`
+	VirtualNetwork VirtualNetworkConfig       `yaml:"virtual_network"`
 	LogLevel       LogLevel                   `yaml:"log_level"`
 	Authentication ServerAuthenticationConfig `yaml:"authentication"`
 	// SourcePath is the main file used for server hot reload.

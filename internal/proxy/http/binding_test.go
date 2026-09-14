@@ -79,9 +79,13 @@ func TestReverseProxyReturnsGatewayTimeoutForUpstreamTimeout(t *testing.T) {
 		nil,
 	)
 	response := httptest.NewRecorder()
-	binding.ServeHTTP(response, request)
+	result := binding.ServeHTTPResult(response, request)
 	if response.Code != stdhttp.StatusGatewayTimeout {
 		t.Fatalf("response status = %d, want %d", response.Code, stdhttp.StatusGatewayTimeout)
+	}
+	if result.StatusCode != stdhttp.StatusGatewayTimeout ||
+		result.ErrorCode != "upstream_timeout" || result.Err == nil {
+		t.Fatalf("request result = %+v, want upstream timeout", result)
 	}
 }
 
@@ -98,10 +102,14 @@ func TestReverseProxyRejectsOversizedRequestBody(t *testing.T) {
 	request.ContentLength = -1
 	response := httptest.NewRecorder()
 
-	binding.ServeHTTP(response, request)
+	result := binding.ServeHTTPResult(response, request)
 
 	if response.Code != stdhttp.StatusRequestEntityTooLarge {
 		t.Fatalf("response status = %d, want %d", response.Code, stdhttp.StatusRequestEntityTooLarge)
+	}
+	if result.StatusCode != stdhttp.StatusRequestEntityTooLarge ||
+		result.ErrorCode != "request_body_too_large" || result.Err == nil {
+		t.Fatalf("request result = %+v, want body limit failure", result)
 	}
 }
 
@@ -118,10 +126,14 @@ func TestReverseProxyTimesOutRequestBody(t *testing.T) {
 	request := httptest.NewRequest(stdhttp.MethodPost, "http://app.example.com/", body)
 	response := httptest.NewRecorder()
 
-	binding.ServeHTTP(response, request)
+	result := binding.ServeHTTPResult(response, request)
 
 	if response.Code != stdhttp.StatusRequestTimeout {
 		t.Fatalf("response status = %d, want %d", response.Code, stdhttp.StatusRequestTimeout)
+	}
+	if result.StatusCode != stdhttp.StatusRequestTimeout ||
+		result.ErrorCode != "request_body_timeout" || result.Err == nil {
+		t.Fatalf("request result = %+v, want request body timeout", result)
 	}
 }
 

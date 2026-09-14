@@ -3,6 +3,7 @@ package ipfilter
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,81 @@ func TestWrappedListenerClosesTrackedConnectionAfterReload(t *testing.T) {
 	var buffer [1]byte
 	if _, err := serverConnection.Read(buffer[:]); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Read() error = %v, want net.ErrClosed", err)
+	}
+}
+
+func TestWrappedListenerPreservesTCPHalfClose(t *testing.T) {
+	rulesPath := writeRules(t, "192.0.2.1\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	filter, err := New(ctx, logging.New("ip-filter-test"), rulesPath)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer filter.Close()
+
+	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	listener := WrapListener(rawListener, filter)
+	defer listener.Close()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErrors := make(chan error, 1)
+	go func() {
+		connection, acceptError := listener.Accept()
+		if acceptError != nil {
+			acceptErrors <- acceptError
+			return
+		}
+		accepted <- connection
+	}()
+	clientConnection, err := net.Dial("tcp", rawListener.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer clientConnection.Close()
+
+	var serverConnection net.Conn
+	select {
+	case serverConnection = <-accepted:
+	case acceptError := <-acceptErrors:
+		t.Fatalf("Accept() error = %v", acceptError)
+	case <-time.After(time.Second):
+		t.Fatal("Accept() did not return")
+	}
+	defer serverConnection.Close()
+
+	closeWriter, ok := serverConnection.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatal("wrapped connection does not preserve CloseWrite")
+	}
+	if _, ok := serverConnection.(interface{ CloseRead() error }); !ok {
+		t.Fatal("wrapped connection does not preserve CloseRead")
+	}
+	if err := serverConnection.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serverConnection.Write([]byte("response")); err != nil {
+		t.Fatal(err)
+	}
+	if err := closeWriter.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite() error = %v", err)
+	}
+	received, err := io.ReadAll(clientConnection)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(received) != "response" {
+		t.Fatalf("received %q, want response", received)
+	}
+	if _, err := clientConnection.Write([]byte("request after EOF")); err != nil {
+		t.Fatalf("reverse-direction Write() error = %v", err)
+	}
+	buffer := make([]byte, len("request after EOF"))
+	if _, err := io.ReadFull(serverConnection, buffer); err != nil {
+		t.Fatalf("reverse-direction ReadFull() error = %v", err)
 	}
 }
 

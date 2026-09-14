@@ -119,3 +119,17 @@ func TestWithComponentPreservesContextWithoutMutatingParent(t *testing.T) {
 		t.Fatalf("child fields = %#v", child.fields)
 	}
 }
+
+func TestWindowCounterEmitsFirstAndAggregatesSuppressedEvents(t *testing.T) {
+	counter := NewWindowCounter(time.Minute)
+	startedAt := time.Unix(1, 0)
+	if count, emit := counter.Record(startedAt); !emit || count != 1 {
+		t.Fatalf("first record = (%d, %t), want (1, true)", count, emit)
+	}
+	if count, emit := counter.Record(startedAt.Add(time.Second)); emit || count != 0 {
+		t.Fatalf("suppressed record = (%d, %t), want (0, false)", count, emit)
+	}
+	if count, emit := counter.Record(startedAt.Add(time.Minute)); !emit || count != 2 {
+		t.Fatalf("next window record = (%d, %t), want (2, true)", count, emit)
+	}
+}

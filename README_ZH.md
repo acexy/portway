@@ -5,19 +5,22 @@
 <h1 align="center">Portway</h1>
 
 <p align="center">
-  一款面向长期可靠网络访问的轻量级双向隧道系统。
+一款轻量、安全、稳定的网络连接系统，通过 Proxy、Forward 与 VNet 三种模式，实现服务发布、受限访问与跨网络私网互联。
 </p>
 
-Portway 在 `portway` 与 `portwayd` 之间建立认证隧道，并支持两个流量方向：
+Portway 在 `portway` 与 `portwayd` 之间建立认证、加密的连接，为私有网络提供三种
+彼此独立、可按需组合的能力：
 
-- **Proxy 模式（服务端到客户端）：** 通过 `portwayd` 的 TCP/UDP 端口或
-  HTTP/HTTPS 域名入口，暴露 `portway` 可访问的服务。
-- **Forward 模式（客户端到服务端）：** 在 `portway` 上创建本地 TCP/UDP
-  Listener，访问 `portwayd` 所在网络中明确授权的 IP 和端口。
+- **Proxy 模式：** 从 `portwayd` 的公共入口访问客户端侧服务。
+- **Forward 模式：** 从 `portway` 的本地入口访问服务端侧受限服务。
+- **VNet 模式：** 跨不同网络将服务端与 Managed 客户端组成可互访的私有网络集群。
 
-两种模式是相互独立的功能，既可分别运行，也可复用同一条认证客户端-服务端连接。
+Proxy 和 Forward 面向明确的服务与端口；VNet 则提供类似中心式 VPN 的私网互联体验：
+不同网络中的受管节点以稳定地址彼此访问，客户端之间的流量经服务端中继。当前 VNet
+承载已授权的 IPv4 TCP/UDP 流量，目标节点的端口策略仍是访问边界。三种模式可独立运行，
+Proxy 与 Forward 可共享同一认证会话，VNet 则使用服务端下发的 Managed 节点身份与地址分配。
 
-## 项目总体功能架构
+## 三种连接模式
 
 ```text
 Portway
@@ -27,13 +30,17 @@ Portway
 │   │   └── HTTP / HTTPS 域名
 │   └── 镜像代理：一组公共 TCP/UDP 端口将输入复制给多个客户端
 │       └── 只有指定 Primary 回复，其他客户端的回复被丢弃
-└── Forward：将服务端侧获准服务转发到 portway 本地端口
-    └── TCP / UDP 本地 Listener
+├── Forward：将服务端侧获准服务转发到 portway 本地端口
+│   └── TCP / UDP 本地 Listener
+└── VNet：通过稳定的私有 IPv4 地址连接 Managed 节点
+    └── TCP / UDP 使用 1-8 条隔离 Packet Channel（默认 4）
 ```
+
+### Proxy：把客户端服务发布到服务端入口
 
 **Proxy** 用于发布客户端网络中的服务。公共 Listener 由 `portwayd` 持有，访问者
 流量通过隧道送到 `portway`。普通代理适合 SSH、Web 应用、DNS、游戏服务等需要
-稳定公网入口的服务。
+稳定公共或中心入口的服务。
 
 **镜像 Proxy** 是受控的 TCP/UDP 代理变体，适合流量观测、并行处理、协议迁移、
 审计以及影子服务验证。所有在线成员收到相同的访问者输入，但只有指定 Primary
@@ -42,22 +49,38 @@ Portway
 成员只接收后续数据：TCP 会从任意字节偏移开始，UDP 从下一份数据报开始。
 本地服务不可用不影响客户端登录，服务恢复后自动继续转发，不重放不可用期间丢失的流量。
 
+### Forward：把服务端网络的服务带到客户端本地
+
 **Forward** 用于使用服务端网络中的服务。本地 TCP/UDP Listener 由 `portway`
 持有，连接或数据报会发送到 `portwayd` 可达且明确获准的目标。典型场景包括私有
 数据库、管理接口、内部 DNS，以及其他不应暴露到公网的服务。
+
+### VNet：跨网络组建可互访的私有网络集群
+
+**VNet** 是仅适用于 Managed 身份的 Linux/macOS 模式，适合将分布在不同内网、云主机
+或边缘网络的节点组建为类似 VPN 的私有网络集群。服务端默认占用
+`172.20.0.1`，并为配置的客户端分配稳定地址；客户端之间的流量由服务端集中中继。
+Portway 只创建具有所有权记录的逻辑网络 `portway0`，并执行每个目标节点的 TCP/UDP
+端口允许列表。服务端控制的 `network_mode` 默认使用原生 TUN 交付；`loopback` 使用
+用户态 TCP/IP 栈访问绑定在 `127.0.0.1` 相同端口的 TCP/UDP 服务。Linux 服务端使用
+`portwayd vnetwork status|install|repair|uninstall`；
+Linux 客户端地址由服务端下发，因此只暴露安全的 `portway vnetwork uninstall` 命令。
+macOS 的 `run` 进程自动使用同一二进制的短生命周期提权模式，不提供手工管理命令。
+详见 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。
 
 | 需求 | 功能 | 入口位置 | 目标位置 | 协议 |
 | --- | --- | --- | --- | --- |
 | 发布单个客户端服务 | 普通 Proxy | `portwayd` | 客户端网络 | TCP、UDP、HTTP、HTTPS |
 | 将公共输入复制给多个客户端 | 镜像 Proxy | `portwayd` | 多个客户端网络 | TCP、UDP |
 | 从本地访问服务端侧服务 | Forward | `portway` | 服务端网络 | TCP、UDP |
+| 连接 Managed 虚拟节点 | VNet | 任意已配置节点 | 服务端或客户端节点 | TCP、UDP |
 
-流量图和完整模式边界请参阅
-[Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)。
+下表帮助选择模式；详细流量图和边界请参阅
+[三种连接模式](assets/docs/modes/README_ZH.md)。
 
 ## 功能亮点
 
-**双向流量能力**
+**三种受控连接能力**
 
 - 通过服务端公共 Listener 代理客户端侧 TCP 和 UDP 服务。
 - 将受 Governed 或 Managed 管理的公共 TCP/UDP Proxy 入口镜像给多个客户端，
@@ -67,6 +90,7 @@ Portway
 - 将客户端侧 TCP/UDP Listener 转发到服务端网络，并由服务端 Allowlist 按 CIDR、
   协议和端口限制所有目标。
 - 在同一个认证客户端会话中同时运行 Proxy 和 Forward 条目。
+- 通过服务端集中路由和节点级 TCP/UDP 入站端口策略连接 Managed VNet 节点。
 
 **传输与安全**
 
@@ -85,10 +109,10 @@ Portway
 
 ## 快速开始
 
-以下示例使用 Shared 认证模式。请将
+前两个示例使用 Shared 认证模式。请将
 `REPLACE_WITH_SAME_RANDOM_TOKEN_OVER_32_CHARS` 替换为密码学安全生成的 Token，
-并在两个配置文件中使用相同值。Token 必须包含大于 32 个 UTF-8 字符。两种场景
-均应先启动 `portwayd`，再启动 `portway`。
+并在两个配置文件中使用相同值。Token 必须包含大于 32 个 UTF-8 字符。应先启动
+`portwayd`，再启动 `portway`。第三个示例使用由服务端定义身份与配置的 Managed 模式。
 
 ### 场景一：通过服务端暴露客户端侧服务
 
@@ -216,6 +240,67 @@ portway run client.yaml
 Forward 目标只接受 IP 地址。每个目标必须完整匹配一条服务端规则，不会组合不同
 规则中的范围。除非确实需要其他主机访问，否则应将客户端 Listener 绑定到回环
 地址。Forward 支持 TCP 和 UDP；基于域名的 HTTP/HTTPS 路由属于 Proxy 模式。
+
+### 场景三：让受管节点通过私有地址互相访问
+
+当不希望为每项服务分别创建 Proxy 或 Forward 入口，而需要让分布在不同网络、由同一服务端
+管理的节点以稳定私有地址互访时，使用 VNet。它让私网中的访问体验接近 VPN：应用直接访问
+目标节点私有地址和端口。例如，为服务端分配 `172.20.0.1`，为边缘节点分配 `172.20.0.2`，
+并只允许其他 VNet 节点访问该节点的 TCP `8080` 端口。
+
+先在 `managed_clients_path` 指定的目录中创建一个 Managed 客户端记录，例如
+`managed/edge-a.yaml`：
+
+```yaml
+authentication:
+  client_id: edge-a
+  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_OVER_32_CHARS
+configuration:
+  revision: 1
+  proxies: []
+  forwards: []
+```
+
+在 `server.yaml` 启用该节点的地址与端口策略：
+
+```yaml
+authentication:
+  managed_clients_path: ./managed
+
+virtual_network:
+  enabled: true
+  cidr: 172.20.0.0/16
+  server_ip: 172.20.0.1
+  server_ports:
+    tcp:
+      port_ranges:
+        - start: 22
+          end: 22
+  nodes:
+    - client_id: edge-a
+      ip: 172.20.0.2
+      ports:
+        tcp:
+          port_ranges:
+            - start: 8080
+              end: 8080
+```
+
+在节点上配置最小的 `client.yaml`，其中 Token 必须与该 Managed 记录一致：
+
+```yaml
+transport:
+  type: tcp
+  server_address: SERVER_IP:7000
+authentication:
+  client_id: edge-a
+  token: REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_OVER_32_CHARS
+```
+
+启动后，服务端可访问 `172.20.0.2:8080`，该节点可访问已授权的
+`172.20.0.1:22`；任意客户端到客户端流量均经过 `portwayd` 中继。VNet 需要 Linux 或
+macOS 的 TUN 权限，首次启用可能请求操作系统授权。完整配置、`tun`/`loopback` 交付方式、
+端口策略和安装维护命令请参阅 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。
 
 ## HTTP 与 HTTPS 代理
 
@@ -387,16 +472,25 @@ Formula 不会创建或覆盖配置文件。运行安装后的命令前，需要
 
 ## 技术文档
 
-- [Proxy 与 Forward 工作模式](assets/docs/modes/README_ZH.md)
-- [TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)
-- [技术概览](assets/docs/technical/README_ZH.md)
-- [运维接口](assets/docs/operations/README_ZH.md)
-- [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
-- [服务端配置热加载](assets/docs/reload/README_ZH.md)
-- [安全性](assets/docs/security/README_ZH.md)
-- [未来计划](assets/docs/future/README_ZH.md)
+**开始使用**
+
+- [三种连接模式：Proxy、Forward 与 VNet](assets/docs/modes/README_ZH.md)
 - 完整中文注释配置示例：
   [客户端](config/zh/client.yaml) 和 [服务端](config/zh/server.yaml)
+- [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
+- [安全性](assets/docs/security/README_ZH.md)
+
+**按需功能**
+
+- [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)
+- [TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)
+
+**架构与运维**
+
+- [技术概览](assets/docs/technical/README_ZH.md)
+- [运维接口](assets/docs/operations/README_ZH.md)
+- [服务端配置热加载](assets/docs/reload/README_ZH.md)
+- [未来计划](assets/docs/future/README_ZH.md)
 
 技术文档描述稳定的行为和安全性属性，而非作为完整的线协议规范。
 

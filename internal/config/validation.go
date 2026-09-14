@@ -96,6 +96,9 @@ func validateServer(configuration ServerConfig) error {
 	if err := validateForwardServerConfig(configuration.Forwards); err != nil {
 		return err
 	}
+	if err := validateVirtualNetworkConfig(configuration.VirtualNetwork); err != nil {
+		return err
+	}
 	if strings.TrimSpace(configuration.Security.HTTPClientIPHeader) !=
 		configuration.Security.HTTPClientIPHeader {
 		return errors.New(
