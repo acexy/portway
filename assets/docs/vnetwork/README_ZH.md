@@ -1,7 +1,7 @@
 # VNet
 
 VNet 使用稳定的私有 IPv4 地址连接跨不同网络的 `portwayd` 服务端与显式配置的 Managed
-客户端，支持 Linux 和 macOS 上的 IPv4 TCP、UDP。它让固定节点获得类似 VPN 的私网集群
+客户端，支持 Linux、macOS 和 Windows amd64 上的 IPv4 TCP、UDP。它让固定节点获得类似 VPN 的私网集群
 与互访体验：应用直接使用目标节点的私有地址和端口，客户端之间的数据包始终由服务端中继。
 VNet 状态与 Proxy、Forward 相互独立。
 
@@ -50,6 +50,11 @@ virtual_network:
 短生命周期提权模式，接收其创建的 `utunN` FD 后继续以普通权限运行。macOS 不支持
 手工 `vnetwork` 命令；持有进程关闭 FD 后，接口和路由由系统自动清理。
 
+Windows amd64 发布包内置官方签名的 `wintun.dll`，无需单独安装。启用 VNet 的
+`portway` 或 `portwayd` 必须以管理员身份启动。Portway 仅在实际激活 VNet 时加载
+Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。Windows 不支持
+手工 `vnetwork` 命令。本版本不支持 Windows arm64 及其他 Windows 架构。
+
 Linux 服务端管理命令如下：
 
 ```text
@@ -61,4 +66,5 @@ portwayd vnetwork uninstall
 
 Linux 客户端只能在认证后获得网络参数，因此没有 install、repair 命令，只提供
 `portway vnetwork uninstall`。卸载会拒绝外部资源、配置漂移或正被进程锁定的资源。
-macOS 调用这些命令时会明确报告 VNet 由 `run` 自动管理。
+macOS 调用这些命令时会明确报告 VNet 由 `run` 自动管理。Windows 也会报告由 `run`
+自动管理，并要求 `run` 进程本身已提升权限。

@@ -126,8 +126,8 @@ func installLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
 func migrateLinuxNetwork(ctx context.Context, manifest ownershipManifest, spec NetworkSpec) error {
 	return migrateNetworkInstallation(ctx, manifest, spec, networkMigrationOperations{
 		removeAddress: deleteLinuxNetworkAddress,
-		addAddress: addLinuxNetworkAddress,
-		setIdentity: setLinuxNetworkIdentity,
+		addAddress:    addLinuxNetworkAddress,
+		setIdentity:   setLinuxNetworkIdentity,
 		store: func(ctx context.Context, spec NetworkSpec, identifier string) error {
 			return installManifest(ctx, spec, LogicalInterfaceName, identifier)
 		},
@@ -144,7 +144,7 @@ func deleteLinuxNetworkAddress(ctx context.Context, spec NetworkSpec) error {
 
 func linuxNetworkAddress(spec NetworkSpec) string {
 	bits, _ := netipPrefixLength(spec.CIDR)
-	return spec.LocalIP+"/"+strconv.Itoa(bits)
+	return spec.LocalIP + "/" + strconv.Itoa(bits)
 }
 
 func setLinuxNetworkIdentity(ctx context.Context, spec NetworkSpec, identifier string) error {
@@ -164,6 +164,8 @@ func platformRootGroup() string { return "root" }
 
 func manualNetworkManagementSupported() bool { return true }
 func runtimeHelperSupported() bool           { return false }
+func platformSupported() bool                { return true }
+func runtimeReprepareSupported() bool        { return false }
 
 func runPlatformHelper([]string) (bool, error) { return false, nil }
 
@@ -195,8 +197,8 @@ func parseLinuxNetworkRoutes(data []byte) ([]netip.Prefix, error) {
 func parseLinuxNetworkRoutesExcluding(data []byte, ownedInterface string) ([]netip.Prefix, error) {
 	var entries []struct {
 		Destination string `json:"dst"`
-		Device string `json:"dev"`
-		Protocol string `json:"protocol"`
+		Device      string `json:"dev"`
+		Protocol    string `json:"protocol"`
 	}
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, err

@@ -1,4 +1,4 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && (!windows || !amd64)
 
 package vnet
 
@@ -19,6 +19,8 @@ func repairPlatformNetwork(NetworkSpec) (Device, error) {
 func platformRootGroup() string                { return "root" }
 func manualNetworkManagementSupported() bool   { return false }
 func runtimeHelperSupported() bool             { return false }
+func platformSupported() bool                  { return false }
+func runtimeReprepareSupported() bool          { return false }
 func runPlatformHelper([]string) (bool, error) { return false, nil }
 
 func platformIdentityMatches(ownershipManifest) bool { return false }

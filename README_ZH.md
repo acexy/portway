@@ -57,7 +57,7 @@ Portway
 
 ### VNet：跨网络组建可互访的私有网络集群
 
-**VNet** 是仅适用于 Managed 身份的 Linux/macOS 模式，适合将分布在不同内网、云主机
+**VNet** 是仅适用于 Managed 身份的 Linux、macOS 和 Windows amd64 模式，适合将分布在不同内网、云主机
 或边缘网络的节点组建为类似 VPN 的私有网络集群。服务端默认占用
 `172.20.0.1`，并为配置的客户端分配稳定地址；客户端之间的流量由服务端集中中继。
 Portway 只创建具有所有权记录的逻辑网络 `portway0`，并执行每个目标节点的 TCP/UDP
@@ -66,6 +66,9 @@ Portway 只创建具有所有权记录的逻辑网络 `portway0`，并执行每�
 `portwayd vnetwork status|install|repair|uninstall`；
 Linux 客户端地址由服务端下发，因此只暴露安全的 `portway vnetwork uninstall` 命令。
 macOS 的 `run` 进程自动使用同一二进制的短生命周期提权模式，不提供手工管理命令。
+Windows amd64 发布包会单独内置官方签名的 `wintun.dll`。启用 VNet 的 `portway` 或
+`portwayd` 必须以管理员身份启动；临时 Adapter 仅在实际启用 VNet 时创建，并随持有
+进程关闭而移除。Proxy、Forward 或未启用 VNet 的运行不会加载 Wintun，也不要求管理员权限。
 详见 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。
 
 | 需求 | 功能 | 入口位置 | 目标位置 | 协议 |
@@ -299,7 +302,8 @@ authentication:
 
 启动后，服务端可访问 `172.20.0.2:8080`，该节点可访问已授权的
 `172.20.0.1:22`；任意客户端到客户端流量均经过 `portwayd` 中继。VNet 需要 Linux 或
-macOS 的 TUN 权限，首次启用可能请求操作系统授权。完整配置、`tun`/`loopback` 交付方式、
+macOS 的 TUN 权限，首次启用可能请求操作系统授权。Windows amd64 上需要以管理员身份
+运行启用 VNet 的进程，发布包已内置 Wintun。完整配置、`tun`/`loopback` 交付方式、
 端口策略和安装维护命令请参阅 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。
 
 ## HTTP 与 HTTPS 代理

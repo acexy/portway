@@ -68,7 +68,7 @@ off the public network.
 
 ### VNet: form a cross-network private cluster of managed nodes
 
-**VNet** is a managed-only Linux/macOS mode for forming a VPN-like private
+**VNet** is a managed-only Linux, macOS, and Windows amd64 mode for forming a VPN-like private
 network cluster from nodes in different private networks, clouds, or edge
 networks. The server owns address
 `172.20.0.1` by default and assigns stable addresses to configured clients;
@@ -80,6 +80,10 @@ On Linux use `portwayd vnetwork status|install|repair|uninstall`; Linux clients
 expose only the safe `portway vnetwork uninstall` command because their assignment
 is server-owned. On macOS the `run` process automatically uses a short-lived
 privileged mode of the same binary and manual VNet management commands are unavailable.
+On Windows amd64, the official signed `wintun.dll` is bundled only in the Windows
+amd64 archive. Start a VNet-enabled `portway` or `portwayd` as administrator;
+the temporary adapter is created lazily and removed when its owning process closes it.
+Proxy, Forward, and VNet-disabled runs neither load Wintun nor require elevation.
 See [VNet configuration and operations](assets/docs/vnetwork/README.md).
 
 | Requirement | Feature | Entry location | Target location | Protocols |
@@ -327,7 +331,8 @@ authentication:
 After startup, the server can reach `172.20.0.2:8080`, and the node can reach
 authorized `172.20.0.1:22`. All client-to-client traffic is relayed through
 `portwayd`. VNet needs TUN privileges on Linux or macOS and may request operating
-system authorization on first activation. For complete configuration, `tun` and
+system authorization on first activation. On Windows amd64, run the VNet-enabled
+process as administrator; the release archive already includes Wintun. For complete configuration, `tun` and
 `loopback` delivery, port policies, and management commands, see
 [VNet configuration and operations](assets/docs/vnetwork/README.md).
 

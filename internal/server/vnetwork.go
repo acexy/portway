@@ -35,7 +35,7 @@ type serverVNetSession struct {
 	poolGeneration   uint64
 	configGeneration uint64
 	channelsOffered  bool
-	lifecycleMutex  *sync.Mutex
+	lifecycleMutex   *sync.Mutex
 }
 
 type serverVNetRuntime struct {
@@ -200,7 +200,7 @@ func (runtime *serverVNetRuntime) assignLocked(clientID string, sessionID string
 	runtime.mutex.Unlock()
 	assignment := protocol.VNetAssignment{
 		NetworkMode: string(config.EffectiveVNetNetworkMode(configuration)),
-		CIDR: configuration.CIDR, ClientIP: node.IP, ServerIP: configuration.ServerIP,
+		CIDR:        configuration.CIDR, ClientIP: node.IP, ServerIP: configuration.ServerIP,
 		MTU: vnetMTU, PacketChannels: uint8(configuration.PacketChannels),
 		TransportGeneration: uint64(session.generation),
 		PoolGeneration:      poolGeneration, ConfigGeneration: current.configGeneration, State: state,
@@ -541,6 +541,9 @@ func (runtime *serverVNetRuntime) reconcileDevice() {
 			}
 			delay = time.Second
 			continue
+		}
+		if configuration.Enabled && vnet.RuntimeReprepareSupported() {
+			runtime.prepareRuntimeDevice(configuration)
 		}
 		if delay < 30*time.Second {
 			delay *= 2
