@@ -102,7 +102,7 @@ func TestValidateVNetConfigurationTransitionAllowsAddressMigration(t *testing.T)
 type notifyingVNetDevice struct {
 	*blockingVNetDevice
 	started chan struct{}
-	once sync.Once
+	once    sync.Once
 }
 
 func (device *notifyingVNetDevice) ReadPacket(packet []byte) (int, error) {

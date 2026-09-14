@@ -25,13 +25,13 @@ import (
 )
 
 const (
-	userspaceTCPNICID                = 1
-	userspaceTCPPacketQueue          = 256
-	userspaceTCPMaximumHandshakes    = 256
-	userspaceTCPMaximumConnections   = 1024
-	userspaceTCPMaximumFlows         = 65536
-	userspaceTCPFlowIdle             = 5 * time.Minute
-	userspaceTCPDialTimeout          = 5 * time.Second
+	userspaceTCPNICID               = 1
+	userspaceTCPPacketQueue         = 256
+	userspaceTCPMaximumHandshakes   = 256
+	userspaceTCPMaximumConnections  = 1024
+	userspaceTCPMaximumFlows        = 65536
+	userspaceTCPFlowIdle            = 5 * time.Minute
+	userspaceTCPDialTimeout         = 5 * time.Second
 	userspaceUDPMaximumAssociations = 4096
 	userspaceUDPAssociationIdle     = time.Minute
 	userspaceUDPMaximumPayload      = 65507
@@ -39,19 +39,19 @@ const (
 
 // UserspaceTCP terminates remote-initiated TCP and UDP flows and forwards them to loopback.
 type UserspaceTCP struct {
-	context     context.Context
-	cancel      context.CancelFunc
-	stack       *stack.Stack
-	link        *channel.Endpoint
-	localIP     netip.Addr
-	output      func([]byte) error
-	mutex       sync.Mutex
-	flows       map[flowKey]time.Time
-	hostFlows   map[flowKey]time.Time
-	connections chan struct{}
+	context      context.Context
+	cancel       context.CancelFunc
+	stack        *stack.Stack
+	link         *channel.Endpoint
+	localIP      netip.Addr
+	output       func([]byte) error
+	mutex        sync.Mutex
+	flows        map[flowKey]time.Time
+	hostFlows    map[flowKey]time.Time
+	connections  chan struct{}
 	associations chan struct{}
-	waitGroup   sync.WaitGroup
-	closeOnce   sync.Once
+	waitGroup    sync.WaitGroup
+	closeOnce    sync.Once
 }
 
 // NewUserspaceTCP creates one bounded IPv4 TCP/UDP stack for a VNet endpoint.
@@ -93,8 +93,8 @@ func NewUserspaceTCP(
 	runtime := &UserspaceTCP{
 		context: ctx, cancel: cancel, stack: networkStack, link: linkEndpoint,
 		localIP: localIP, output: output, flows: make(map[flowKey]time.Time),
-		hostFlows: make(map[flowKey]time.Time),
-		connections: make(chan struct{}, userspaceTCPMaximumConnections),
+		hostFlows:    make(map[flowKey]time.Time),
+		connections:  make(chan struct{}, userspaceTCPMaximumConnections),
 		associations: make(chan struct{}, userspaceUDPMaximumAssociations),
 	}
 	forwarder := tcp.NewForwarder(

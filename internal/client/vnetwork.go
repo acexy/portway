@@ -19,26 +19,26 @@ import (
 const clientVNetChannelWriteTimeout = 5 * time.Second
 
 type clientVNetManager struct {
-	context       context.Context
-	cancel        context.CancelFunc
-	logger        *logging.Logger
-	clientID      string
-	sessionID     string
-	writer        *control.Writer
-	transport     transport.ClientSession
-	mutex         sync.Mutex
-	assignment    protocol.VNetAssignment
-	device        vnet.Device
-	userspaceTCP  *vnet.UserspaceTCP
-	offers        map[uint8]protocol.OpenVNetChannel
-	activated     bool
-	channels      []transport.Stream
-	channelWrites []*vnet.PacketWriter
-	waitGroup     sync.WaitGroup
-	deviceWrite   sync.Mutex
-	prepareMutex sync.Mutex
-	prepareCancel context.CancelFunc
-	poolCancel context.CancelFunc
+	context        context.Context
+	cancel         context.CancelFunc
+	logger         *logging.Logger
+	clientID       string
+	sessionID      string
+	writer         *control.Writer
+	transport      transport.ClientSession
+	mutex          sync.Mutex
+	assignment     protocol.VNetAssignment
+	device         vnet.Device
+	userspaceTCP   *vnet.UserspaceTCP
+	offers         map[uint8]protocol.OpenVNetChannel
+	activated      bool
+	channels       []transport.Stream
+	channelWrites  []*vnet.PacketWriter
+	waitGroup      sync.WaitGroup
+	deviceWrite    sync.Mutex
+	prepareMutex   sync.Mutex
+	prepareCancel  context.CancelFunc
+	poolCancel     context.CancelFunc
 	prepareNetwork func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
 }
 

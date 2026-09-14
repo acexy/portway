@@ -29,7 +29,7 @@ func TestNetworkMigrationUpdatesAddressAndRollsBackFailures(t *testing.T) {
 				if value.LocalIP == manifest.LocalIP {
 					generation = "old"
 				}
-				call := action+" "+generation
+				call := action + " " + generation
 				calls = append(calls, call)
 				if call == test.fail {
 					return failure
@@ -38,7 +38,7 @@ func TestNetworkMigrationUpdatesAddressAndRollsBackFailures(t *testing.T) {
 			}
 			operations := networkMigrationOperations{
 				removeAddress: func(_ context.Context, value NetworkSpec) error { return record("remove", value) },
-				addAddress: func(_ context.Context, value NetworkSpec) error { return record("add", value) },
+				addAddress:    func(_ context.Context, value NetworkSpec) error { return record("add", value) },
 				setIdentity: func(_ context.Context, value NetworkSpec, identifier string) error {
 					if identifier != manifest.InstallationID {
 						t.Fatal("migration replaced the installation identity")

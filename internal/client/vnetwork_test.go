@@ -43,7 +43,7 @@ func TestClientVNetPacketWritesAreSerializedPerChannel(t *testing.T) {
 func TestValidateVNetAssignment(t *testing.T) {
 	valid := protocol.VNetAssignment{
 		NetworkMode: "tun",
-		CIDR: "172.20.0.0/16", ClientIP: "172.20.0.2", ServerIP: "172.20.0.1",
+		CIDR:        "172.20.0.0/16", ClientIP: "172.20.0.2", ServerIP: "172.20.0.1",
 		MTU: 1280, PacketChannels: 4, TransportGeneration: 1,
 		PoolGeneration: 3, ConfigGeneration: 2,
 		State: protocol.VNetStateEnabled,
@@ -75,7 +75,7 @@ func TestVNetReplacementAssignmentPreservesCompatibleDevice(t *testing.T) {
 		writer:   control.NewWriter(&bytes.Buffer{}),
 		assignment: protocol.VNetAssignment{
 			NetworkMode: "tun",
-			CIDR: "172.20.0.0/16", ClientIP: "172.20.0.2", ServerIP: "172.20.0.1",
+			CIDR:        "172.20.0.0/16", ClientIP: "172.20.0.2", ServerIP: "172.20.0.1",
 			MTU: 1280, PacketChannels: 1, TransportGeneration: 1,
 			PoolGeneration: 1, ConfigGeneration: 1, State: protocol.VNetStateEnabled,
 		},

@@ -69,13 +69,13 @@ type flowState struct {
 
 // Router owns the bounded authorization state for VNet packet routing.
 type Router struct {
-	mutex       sync.Mutex
-	policy      routingPolicy
-	flows       map[flowKey]flowState
-	maxFlows    int
-	tcpIdle     time.Duration
-	udpIdle     time.Duration
-	nextCleanup time.Time
+	mutex               sync.Mutex
+	policy              routingPolicy
+	flows               map[flowKey]flowState
+	maxFlows            int
+	tcpIdle             time.Duration
+	udpIdle             time.Duration
+	nextCleanup         time.Time
 	nextCapacityCleanup time.Time
 }
 

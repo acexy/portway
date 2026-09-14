@@ -6,7 +6,10 @@ import "testing"
 
 func TestLinuxOwnershipRequiresInterfaceBinding(t *testing.T) {
 	manifest := ownershipManifest{PlatformInterface: LogicalInterfaceName, InstallationID: "installation"}
-	for _, test := range []struct { data string; valid bool }{
+	for _, test := range []struct {
+		data  string
+		valid bool
+	}{
 		{`[{"ifname":"portway0","ifalias":"portway:installation","linkinfo":{"info_kind":"tun","info_data":{"type":"tun"}}}]`, true},
 		{`[{"ifname":"portway0","ifalias":"portway:installation","linkinfo":{"info_kind":"tun","info_data":{"type":"tap"}}}]`, false},
 		{`[{"ifname":"portway0","linkinfo":{"info_kind":"tun","info_data":{"type":"tun"}}}]`, false},

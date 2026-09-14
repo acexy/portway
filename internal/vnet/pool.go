@@ -47,11 +47,11 @@ type pendingPool struct {
 
 // Pool is one atomically activated set of VNet packet channels.
 type Pool struct {
-	spec       PoolSpec
-	channels   []net.Conn
-	writers    []*PacketWriter
-	done       chan struct{}
-	closeOnce  sync.Once
+	spec      PoolSpec
+	channels  []net.Conn
+	writers   []*PacketWriter
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // PoolBroker owns pending and active VNet channel pool generations.
@@ -325,10 +325,10 @@ func activatePendingPool(pending *pendingPool) *Pool {
 		writers[index] = NewPacketWriter(context.Background(), channels[index], pending.spec.MTU, pending.spec.WriteTimeout)
 	}
 	return &Pool{
-		spec:       pending.spec,
-		channels:   channels,
-		writers:    writers,
-		done:       pending.done,
+		spec:     pending.spec,
+		channels: channels,
+		writers:  writers,
+		done:     pending.done,
 	}
 }
 

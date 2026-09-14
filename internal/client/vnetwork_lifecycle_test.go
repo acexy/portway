@@ -87,9 +87,9 @@ func TestVNetPreparationIsAsyncAndDiscardsCancelledDevice(t *testing.T) {
 
 type queuedVNetDevice struct {
 	packets chan []byte
-	closed chan struct{}
-	reads atomic.Int32
-	once sync.Once
+	closed  chan struct{}
+	reads   atomic.Int32
+	once    sync.Once
 }
 
 func (*queuedVNetDevice) Name() string { return "test0" }
