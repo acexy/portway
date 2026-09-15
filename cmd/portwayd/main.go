@@ -136,7 +136,7 @@ func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer
 		return 1
 	}
 	spec := vnet.NetworkSpec{Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
-		LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP, MTU: 1280, OwnerUID: os.Getuid()}
+		LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP, MTU: 1280, OwnerUID: -1}
 	var device vnet.Device
 	if repair {
 		device, err = vnet.RepairNetwork(spec)

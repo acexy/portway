@@ -542,6 +542,9 @@ func (runtime *serverVNetRuntime) reconcileDevice() {
 			delay = time.Second
 			continue
 		}
+		if configuration.Enabled && vnet.RuntimeReprepareSupported() {
+			runtime.prepareRuntimeDevice(configuration)
+		}
 		if delay < 30*time.Second {
 			delay *= 2
 			if delay > 30*time.Second {

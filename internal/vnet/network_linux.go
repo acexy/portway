@@ -164,6 +164,8 @@ func platformRootGroup() string { return "root" }
 
 func manualNetworkManagementSupported() bool { return true }
 func runtimeHelperSupported() bool           { return false }
+func platformSupported() bool                { return true }
+func runtimeReprepareSupported() bool        { return false }
 
 func runPlatformHelper([]string) (bool, error) { return false, nil }
 

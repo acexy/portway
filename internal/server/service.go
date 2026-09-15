@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,7 +137,7 @@ func (s *Service) Run(ctx context.Context) error {
 		vnetDevice, err = vnet.PrepareNetwork(vnet.NetworkSpec{
 			Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
 			LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP,
-			MTU: vnetMTU, OwnerUID: os.Getuid(),
+			MTU: vnetMTU, OwnerUID: -1,
 		})
 		if err != nil {
 			s.logger.WithComponent("vnet").Warn("VNet device is not ready; VNet remains installation required", err)

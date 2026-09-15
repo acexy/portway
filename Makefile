@@ -38,6 +38,7 @@ build:
 		-o "$(TARGET_DIR)/bin/portway" ./cmd/portway
 	CGO_ENABLED=0 "$(GO)" build -trimpath -ldflags "$(LDFLAGS)" \
 		-o "$(TARGET_DIR)/bin/portwayd" ./cmd/portwayd
+	$(if $(and $(filter Windows_NT,$(OS)),$(filter AMD64,$(PROCESSOR_ARCHITECTURE))),cp assets/wintun/bin/amd64/wintun.dll "$(TARGET_DIR)/bin/wintun.dll"; cp assets/wintun/LICENSE.txt "$(TARGET_DIR)/bin/WINTUN-LICENSE.txt";)
 
 release: $(RELEASE_ARCHIVES)
 	@printf 'Release archives created in %s\n' "$(TARGET_DIR)"
@@ -55,12 +56,10 @@ $(TARGET_DIR)/build/$(1)-$(2)/portwayd$(3): force
 	CGO_ENABLED=0 GOOS=$(1) GOARCH=$(2) "$(GO)" build -trimpath \
 		-ldflags "$(LDFLAGS)" -o "$$@" ./cmd/portwayd
 
-$(TARGET_DIR)/portway-$(4)-$(2).tar: \
-		$(TARGET_DIR)/build/$(1)-$(2)/portway$(3) \
-		$(TARGET_DIR)/build/$(1)-$(2)/portwayd$(3)
+$(TARGET_DIR)/portway-$(4)-$(2).tar: $(TARGET_DIR)/build/$(1)-$(2)/portway$(3) $(TARGET_DIR)/build/$(1)-$(2)/portwayd$(3) $(if $(filter windows,$(1)),assets/wintun/bin/amd64/wintun.dll assets/wintun/LICENSE.txt)
 	cp LICENSE NOTICE "$(TARGET_DIR)/build/$(1)-$(2)/"
-	tar -C "$(TARGET_DIR)/build/$(1)-$(2)" -cf "$$@" \
-		"portway$(3)" "portwayd$(3)" LICENSE NOTICE
+	$(if $(filter windows,$(1)),cp assets/wintun/bin/amd64/wintun.dll "$(TARGET_DIR)/build/$(1)-$(2)/"; cp assets/wintun/LICENSE.txt "$(TARGET_DIR)/build/$(1)-$(2)/WINTUN-LICENSE.txt";)
+	tar -C "$(TARGET_DIR)/build/$(1)-$(2)" -cf "$$@" "portway$(3)" "portwayd$(3)" LICENSE NOTICE $(if $(filter windows,$(1)),wintun.dll WINTUN-LICENSE.txt)
 endef
 
 $(eval $(call RELEASE_RULES,linux,amd64,,linux))

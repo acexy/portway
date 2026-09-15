@@ -335,6 +335,8 @@ func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
 func platformRootGroup() string              { return "wheel" }
 func manualNetworkManagementSupported() bool { return false }
 func runtimeHelperSupported() bool           { return true }
+func platformSupported() bool                { return true }
+func runtimeReprepareSupported() bool        { return false }
 
 func netipPrefixLength(cidr string) (int, error) {
 	_, network, err := net.ParseCIDR(cidr)

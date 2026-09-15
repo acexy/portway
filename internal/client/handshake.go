@@ -15,6 +15,7 @@ import (
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
+	"github.com/acexy/portway/internal/vnet"
 )
 
 func (s *Service) runControlSession(
@@ -68,19 +69,24 @@ func (s *Service) runControlSession(
 		serverIdentification.Version,
 	)
 
+	capabilities := []protocol.Capability{
+		protocol.CapabilityTCP,
+		protocol.CapabilityUDP,
+		protocol.CapabilityHTTP,
+		protocol.CapabilityJSONControl,
+		protocol.CapabilityTCPForward,
+		protocol.CapabilityUDPForward,
+	}
+	if vnet.PlatformSupported() {
+		capabilities = append(capabilities,
+			protocol.CapabilityVNetIPv4,
+			protocol.CapabilityVNetLoopback,
+		)
+	}
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
 		ClientID:        s.configuration.Authentication.ClientID,
 		ResumeSessionID: resumeSessionID,
-		Capabilities: []protocol.Capability{
-			protocol.CapabilityTCP,
-			protocol.CapabilityUDP,
-			protocol.CapabilityHTTP,
-			protocol.CapabilityJSONControl,
-			protocol.CapabilityTCPForward,
-			protocol.CapabilityUDPForward,
-			protocol.CapabilityVNetIPv4,
-			protocol.CapabilityVNetLoopback,
-		},
+		Capabilities:    capabilities,
 	}); err != nil {
 		return "", false, err
 	}

@@ -9,9 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 )
 
@@ -91,7 +89,7 @@ func PrepareNetworkContext(ctx context.Context, spec NetworkSpec) (Device, error
 		return nil, err
 	}
 	if spec.OwnerUID < 0 {
-		spec.OwnerUID = os.Getuid()
+		spec.OwnerUID = platformOwnerID()
 	}
 	if err := validateNetworkSpec(spec); err != nil {
 		return nil, err
@@ -103,11 +101,17 @@ func ManualNetworkManagementSupported() bool { return manualNetworkManagementSup
 
 func RuntimeHelperSupported() bool { return runtimeHelperSupported() }
 
+// PlatformSupported reports whether this executable can provide a VNet packet device.
+func PlatformSupported() bool { return platformSupported() }
+
+// RuntimeReprepareSupported reports whether a failed process-owned device can be recreated without new authorization.
+func RuntimeReprepareSupported() bool { return runtimeReprepareSupported() }
+
 func RunPlatformHelper(arguments []string) (bool, error) { return runPlatformHelper(arguments) }
 
 func RepairNetwork(spec NetworkSpec) (Device, error) {
 	if spec.OwnerUID < 0 {
-		spec.OwnerUID = os.Getuid()
+		spec.OwnerUID = platformOwnerID()
 	}
 	if err := validateNetworkSpec(spec); err != nil {
 		return nil, err
@@ -304,35 +308,7 @@ func validateNetworkSpec(spec NetworkSpec) error {
 	return nil
 }
 
-func privilegedCommand(name string, arguments ...string) *exec.Cmd {
-	return privilegedCommandContext(context.Background(), name, arguments...)
-}
-
-func privilegedCommandContext(ctx context.Context, name string, arguments ...string) *exec.Cmd {
-	var command *exec.Cmd
-	if os.Geteuid() == 0 {
-		command = exec.CommandContext(ctx, name, arguments...)
-	} else {
-		sudoArguments := append([]string{name}, arguments...)
-		if !interactiveTerminalAvailable() {
-			sudoArguments = append([]string{"-n"}, sudoArguments...)
-		}
-		command = exec.CommandContext(ctx, "sudo", sudoArguments...)
-	}
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	return command
-}
-
 func interactiveTerminalAvailable() bool {
 	info, err := os.Stdin.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
-}
-
-func manifestPath() string {
-	if runtime.GOOS == "darwin" {
-		return "/Library/Application Support/Portway/vnetwork/portway0.json"
-	}
-	return "/var/lib/portway/vnetwork/portway0.json"
 }

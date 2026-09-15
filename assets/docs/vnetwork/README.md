@@ -2,7 +2,7 @@
 
 VNet connects a `portwayd` server and explicitly configured Managed clients in
 different networks by stable private IPv4 addresses. It supports IPv4 TCP and
-UDP on Linux and macOS. It gives fixed nodes a VPN-like private cluster and
+UDP on Linux, macOS, and Windows amd64. It gives fixed nodes a VPN-like private cluster and
 access experience: applications use the destination's private address and port,
 while client-to-client packets always pass through the server. VNet is
 independent of Proxy and Forward state.
@@ -58,6 +58,13 @@ receives its process-owned `utunN` descriptor, and remains unprivileged. macOS
 does not support manual `vnetwork` commands; the interface and route are removed
 by the operating system when the owning process closes the descriptor.
 
+The Windows amd64 release archive bundles the official signed `wintun.dll`; it
+is not a separate installer. Start a VNet-enabled `portway` or `portwayd` as
+administrator. Portway loads Wintun and creates its temporary `portway0` adapter
+only when VNet is actually activated, then removes the adapter when the owning
+process closes it. Windows does not support manual `vnetwork` commands. Windows
+arm64 and other Windows architectures are not supported in this release.
+
 Linux server management commands are:
 
 ```text
@@ -71,3 +78,4 @@ The Linux client receives its network parameters only after authentication, so i
 no install or repair command. It exposes only `portway vnetwork uninstall`.
 Uninstall refuses foreign, drifted, or currently locked resources. On macOS all
 of these commands report that VNet is managed automatically during `run`.
+Windows reports the same and requires the `run` process itself to be elevated.
