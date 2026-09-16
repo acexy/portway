@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -21,41 +23,53 @@ import (
 )
 
 const (
-	vnetMTU                 = 1280
+	// vnetMTU leaves room for the QUIC Datagram and Portway peer frame on a
+	// minimum-size QUIC path without relying on outer IP fragmentation.
+	vnetMTU                 = 1150
 	vnetPoolTicketLifetime  = 10 * time.Second
 	vnetMaximumTrackedFlows = 65536
 	vnetChannelWriteTimeout = 5 * time.Second
 )
 
 type serverVNetSession struct {
-	sessionID        string
-	generation       transport.Generation
-	authentication   authentication.Context
-	writer           *control.Writer
-	poolGeneration   uint64
-	configGeneration uint64
-	channelsOffered  bool
-	lifecycleMutex   *sync.Mutex
+	sessionID              string
+	generation             transport.Generation
+	authentication         authentication.Context
+	writer                 *control.Writer
+	poolGeneration         uint64
+	configGeneration       uint64
+	channelsOffered        bool
+	lifecycleMutex         *sync.Mutex
+	peerRegistrationSecret []byte
+	peerFingerprint        string
+	peerCandidates         []protocol.VNetPeerCandidate
+	peerAddress            string
+	peerNegotiated         bool
 }
 
 type serverVNetRuntime struct {
-	context          context.Context
-	cancel           context.CancelFunc
-	logger           *logging.Logger
-	mutex            sync.RWMutex
-	configuration    config.VirtualNetworkConfig
-	sessions         map[string]serverVNetSession
-	router           *vnet.Router
-	broker           *vnet.PoolBroker
-	device           vnet.Device
-	userspaceTCP     *vnet.UserspaceTCP
-	deviceWrite      sync.Mutex
-	poolGeneration   atomic.Uint64
-	configGeneration atomic.Uint64
-	preparingDevice  atomic.Bool
-	prepareCancel    context.CancelFunc
-	prepareNetwork   func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
-	waitGroup        sync.WaitGroup
+	context           context.Context
+	cancel            context.CancelFunc
+	logger            *logging.Logger
+	mutex             sync.RWMutex
+	configuration     config.VirtualNetworkConfig
+	sessions          map[string]serverVNetSession
+	router            *vnet.Router
+	broker            *vnet.PoolBroker
+	device            vnet.Device
+	userspaceTCP      *vnet.UserspaceTCP
+	deviceWrite       sync.Mutex
+	poolGeneration    atomic.Uint64
+	configGeneration  atomic.Uint64
+	preparingDevice   atomic.Bool
+	prepareCancel     context.CancelFunc
+	prepareNetwork    func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
+	waitGroup         sync.WaitGroup
+	peerConnection    *net.UDPConn
+	peerListenAddress string
+	peerFatal         func(error)
+	peerPairs         map[string]*serverVNetPeerPair
+	peerSequence      atomic.Uint64
 }
 
 func newServerVNetRuntime(
@@ -73,6 +87,7 @@ func newServerVNetRuntime(
 		context: ctx, cancel: cancel, logger: logger,
 		configuration: configuration, sessions: make(map[string]serverVNetSession),
 		router: router, broker: vnet.NewPoolBroker(), device: device,
+		peerPairs:      make(map[string]*serverVNetPeerPair),
 		prepareNetwork: vnet.PrepareNetworkContext,
 	}
 	runtime.configGeneration.Store(1)
@@ -127,11 +142,13 @@ func (runtime *serverVNetRuntime) attach(
 	generation transport.Generation,
 	authenticationContext authentication.Context,
 	writer *control.Writer,
+	peerNegotiatedValues ...bool,
 ) {
+	peerNegotiated := len(peerNegotiatedValues) != 0 && peerNegotiatedValues[0]
 	runtime.mutex.Lock()
 	runtime.sessions[clientID] = serverVNetSession{
 		sessionID: sessionID, generation: generation,
-		authentication: authenticationContext, writer: writer,
+		authentication: authenticationContext, writer: writer, peerNegotiated: peerNegotiated,
 	}
 	runtime.mutex.Unlock()
 }
@@ -187,6 +204,10 @@ func (runtime *serverVNetRuntime) assignLocked(clientID string, sessionID string
 		}
 	}
 	poolGeneration := runtime.poolGeneration.Add(1)
+	registrationSecret := make([]byte, 32)
+	if _, err := rand.Read(registrationSecret); err != nil {
+		return fmt.Errorf("generate VNet peer registration ticket: %w", err)
+	}
 	runtime.mutex.Lock()
 	current := runtime.sessions[clientID]
 	if current.sessionID != sessionID {
@@ -196,6 +217,14 @@ func (runtime *serverVNetRuntime) assignLocked(clientID string, sessionID string
 	current.poolGeneration = poolGeneration
 	current.configGeneration = configurationGeneration
 	current.channelsOffered = false
+	if current.peerNegotiated && configuration.Enabled {
+		current.peerRegistrationSecret = registrationSecret
+	} else {
+		current.peerRegistrationSecret = nil
+	}
+	current.peerFingerprint = ""
+	current.peerCandidates = nil
+	current.peerAddress = ""
 	runtime.sessions[clientID] = current
 	runtime.mutex.Unlock()
 	assignment := protocol.VNetAssignment{
@@ -204,6 +233,9 @@ func (runtime *serverVNetRuntime) assignLocked(clientID string, sessionID string
 		MTU: vnetMTU, PacketChannels: uint8(configuration.PacketChannels),
 		TransportGeneration: uint64(session.generation),
 		PoolGeneration:      poolGeneration, ConfigGeneration: current.configGeneration, State: state,
+	}
+	if len(current.peerRegistrationSecret) != 0 {
+		assignment.PeerRegistrationTicket = base64.RawURLEncoding.EncodeToString(registrationSecret)
 	}
 	if err := session.writer.Write(protocol.MessageVNetAssignment, assignment); err != nil {
 		return err
@@ -352,6 +384,18 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 		sessions = append(sessions, session)
 	}
 	runtime.mutex.Unlock()
+	if previous.Enabled && !configuration.Enabled {
+		runtime.stopPeerCoordinator()
+	}
+	if !previous.Enabled && configuration.Enabled {
+		if err := runtime.startPeerCoordinator(runtime.peerListenAddress); err != nil {
+			runtime.logger.Warn("VNet P2P UDP port is unavailable; server is exiting", err)
+			if runtime.peerFatal != nil {
+				runtime.peerFatal(fmt.Errorf("start VNet P2P coordinator: %w", err))
+			}
+		}
+	}
+	runtime.revokeAllPeers("configuration_changed")
 	if device != nil && (!configuration.Enabled || networkChanged) {
 		_ = device.Close()
 	}
@@ -627,6 +671,9 @@ func (runtime *serverVNetRuntime) routeClientPacket(clientID string, packet []by
 		}
 		return nil
 	}
+	if destination.Kind == vnet.DestinationClient && destination.ClientID != clientID {
+		runtime.offerPeer(clientID, destination.ClientID)
+	}
 	// Destination failure must never tear down the source pool.
 	_ = runtime.dispatch(destination, packet)
 	return nil
@@ -707,11 +754,13 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 		}
 	}
 	runtime.mutex.Unlock()
+	runtime.revokeClientPeers(clientID, "session_closed")
 	runtime.broker.Remove(clientID, sessionID)
 }
 
 func (runtime *serverVNetRuntime) Close() {
 	runtime.cancel()
+	runtime.stopPeerCoordinator()
 	runtime.broker.Close()
 	runtime.mutex.Lock()
 	device := runtime.device

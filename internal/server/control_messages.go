@@ -12,6 +12,15 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
+func containsCapability(capabilities []protocol.Capability, expected protocol.Capability) bool {
+	for _, capability := range capabilities {
+		if capability == expected {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) serveControlMessages(
 	connection net.Conn,
 	clientID string,
@@ -151,6 +160,28 @@ func (s *Service) serveControlMessages(
 				"config_generation": status.ConfigGeneration,
 				"pool_generation":   status.PoolGeneration,
 			})
+		case protocol.MessageVNetPeerStatus:
+			if !vnetNegotiated || !containsCapability(negotiatedCapabilities, protocol.CapabilityVNetP2PQUIC) {
+				return false, errors.New("VNet peer status received without negotiated capability")
+			}
+			var status protocol.VNetPeerStatus
+			if err := protocol.DecodePayload(envelope, &status); err != nil {
+				return false, err
+			}
+			if err := s.vnetRuntime.peerStatus(clientID, sessionID, status); err != nil {
+				return false, fmt.Errorf("update VNet peer status: %w", err)
+			}
+		case protocol.MessageVNetPeerFlowOpen:
+			if !vnetNegotiated || !containsCapability(negotiatedCapabilities, protocol.CapabilityVNetP2PQUIC) {
+				return false, errors.New("VNet peer flow received without negotiated capability")
+			}
+			var flow protocol.VNetPeerFlowOpen
+			if err := protocol.DecodePayload(envelope, &flow); err != nil {
+				return false, err
+			}
+			if err := s.vnetRuntime.openPeerFlow(clientID, sessionID, flow); err != nil {
+				return false, fmt.Errorf("authorize VNet peer flow: %w", err)
+			}
 		case protocol.MessageSyncConfiguration:
 			result, err := s.synchronizeConfiguration(configurationSession, envelope)
 			if err != nil {

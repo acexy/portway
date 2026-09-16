@@ -2,6 +2,7 @@ package vnet
 
 import (
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -41,6 +42,26 @@ func TestRouterRejectsSpoofingAndUnsolicitedReply(t *testing.T) {
 	packet[33] = 0x10
 	if _, err := router.RouteClientPacket("client-b", packet, now); !errors.Is(err, ErrFlowRejected) {
 		t.Fatalf("expected unsolicited reply rejection, got %v", err)
+	}
+}
+
+func TestRouterAuthorizesDirectFlowForRelayFallback(t *testing.T) {
+	router := testRouter(t)
+	now := time.Unix(1, 0)
+	destination, err := router.AuthorizePeerFlow("client-a", Flow{
+		Protocol: protocolTCP,
+		SourceIP: netip.MustParseAddr("172.20.0.2"), SourcePort: 50000,
+		DestinationIP: netip.MustParseAddr("172.20.0.3"), DestinationPort: 8080,
+		TCPFlags: 0x02,
+	}, now)
+	if err != nil || destination.Kind != DestinationClient || destination.ClientID != "client-b" {
+		t.Fatalf("authorize direct flow: destination=%+v err=%v", destination, err)
+	}
+	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply[33] = 0x10
+	destination, err = router.RouteClientPacket("client-b", reply, now.Add(time.Millisecond))
+	if err != nil || destination.ClientID != "client-a" {
+		t.Fatalf("relay fallback reply: destination=%+v err=%v", destination, err)
 	}
 }
 

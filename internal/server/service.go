@@ -126,6 +126,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	s.transportServer = transportServer
 	defer transportServer.Close()
+	listenerErrors := make(chan error, 4)
 
 	var sessions sync.WaitGroup
 	defer sessions.Wait()
@@ -149,6 +150,19 @@ func (s *Service) Run(ctx context.Context) error {
 		configuration.VirtualNetwork,
 		vnetDevice,
 	)
+	s.vnetRuntime.configurePeerCoordinator(configuration.Transport.ListenAddress, func(err error) {
+		select {
+		case listenerErrors <- err:
+		default:
+		}
+		_ = transportServer.Close()
+	})
+	if configuration.VirtualNetwork.Enabled {
+		if err := s.vnetRuntime.startPeerCoordinator(configuration.Transport.ListenAddress); err != nil {
+			s.logger.WithComponent("vnet").Warn("VNet P2P UDP port is unavailable; server is exiting", err)
+			return fmt.Errorf("start VNet P2P coordinator: %w", err)
+		}
+	}
 	defer s.vnetRuntime.Close()
 	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy, func() config.UDPConfig {
 		return config.EffectiveForwardUDPConfig(s.configuration.snapshot().Forwards)
@@ -177,7 +191,6 @@ func (s *Service) Run(ctx context.Context) error {
 	defer cancelSessions()
 	publicAdmission := &publicHTTPAdmission{limit: maxPublicHTTPConnections, connections: make(map[*publicHTTPConnection]struct{})}
 	defer publicAdmission.close()
-	listenerErrors := make(chan error, 3)
 	if configuration.Proxies.HTTP.ListenAddress != "" {
 		httpListener, listenError := (&net.ListenConfig{}).Listen(
 			ctx,

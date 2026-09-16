@@ -155,6 +155,22 @@ func (router *Router) RouteClientPacket(
 	return router.routeLocked(flow, now)
 }
 
+// AuthorizePeerFlow validates and records the first packet metadata of a direct flow.
+// The resulting state allows the same flow to fall back through the center router.
+func (router *Router) AuthorizePeerFlow(clientID string, flow Flow, now time.Time) (Destination, error) {
+	if !flow.SourceIP.Is4() || !flow.DestinationIP.Is4() ||
+		(flow.Protocol != protocolTCP && flow.Protocol != protocolUDP) {
+		return Destination{}, ErrInvalidPacket
+	}
+	router.mutex.Lock()
+	defer router.mutex.Unlock()
+	ownedIP, exists := router.policy.byClientID[clientID]
+	if !exists || ownedIP != flow.SourceIP {
+		return Destination{}, ErrSourceRejected
+	}
+	return router.routeLocked(flow, now)
+}
+
 // RouteServerPacket validates and routes one packet read from the server TUN.
 func (router *Router) RouteServerPacket(packet []byte, now time.Time) (Destination, error) {
 	flow, err := ParseIPv4(packet)

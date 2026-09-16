@@ -35,6 +35,7 @@ const (
 	CapabilityUDPForward   Capability = "udp_forward"
 	CapabilityVNetIPv4     Capability = "vnet_ipv4"
 	CapabilityVNetLoopback Capability = "vnet_loopback"
+	CapabilityVNetP2PQUIC  Capability = "vnet_p2p_quic"
 )
 
 // ManagementMode identifies who owns a client's proxy configuration.
@@ -113,6 +114,16 @@ const (
 	MessageVNetBindResult MessageType = "vnet_bind_result"
 	// MessageVNetStatus reports the client's current VNet readiness.
 	MessageVNetStatus MessageType = "vnet_status"
+	// MessageVNetPeerOffer coordinates one client-to-client QUIC path.
+	MessageVNetPeerOffer MessageType = "vnet_peer_offer"
+	// MessageVNetPeerActivate atomically publishes one ready peer path.
+	MessageVNetPeerActivate MessageType = "vnet_peer_activate"
+	// MessageVNetPeerStatus reports peer path readiness or failure.
+	MessageVNetPeerStatus MessageType = "vnet_peer_status"
+	// MessageVNetPeerRevoke closes one peer path generation.
+	MessageVNetPeerRevoke MessageType = "vnet_peer_revoke"
+	// MessageVNetPeerFlowOpen registers one authorized direct flow for relay fallback.
+	MessageVNetPeerFlowOpen MessageType = "vnet_peer_flow_open"
 )
 
 // SessionErrorCode identifies a stable session registration or recovery failure.

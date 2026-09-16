@@ -17,8 +17,9 @@ Portway establishes an authenticated, encrypted connection between `portway` and
 
 Proxy and Forward address explicit services and ports. VNet provides a
 centralized VPN-like private-network experience: Managed nodes in different
-networks reach each other through stable addresses, with client-to-client traffic
-relayed by the server. VNet currently carries authorized IPv4 TCP/UDP traffic,
+networks reach each other through stable addresses. Client-to-client traffic starts
+through the server and automatically upgrades new flows to a direct QUIC Datagram path
+when peer probing succeeds; client-to-server traffic always remains relayed. VNet carries authorized IPv4 TCP/UDP traffic,
 and each destination node's port policy remains the access boundary. Proxy and
 Forward can share an authenticated session; VNet uses server-owned Managed
 identities and address assignments.
@@ -72,7 +73,7 @@ off the public network.
 network cluster from nodes in different private networks, clouds, or edge
 networks. The server owns address
 `172.20.0.1` by default and assigns stable addresses to configured clients;
-client-to-client traffic is relayed centrally. Portway creates only its owned
+client-to-client traffic uses automatic QUIC P2P when reachable and otherwise remains centrally relayed. Portway creates only its owned
 logical `portway0` network and enforces each destination's TCP/UDP port allowlist.
 The server-owned `network_mode` defaults to native TUN delivery; `loopback` uses
 a userspace TCP/IP stack to reach same-port TCP/UDP services bound to `127.0.0.1`.
@@ -329,8 +330,9 @@ authentication:
 ```
 
 After startup, the server can reach `172.20.0.2:8080`, and the node can reach
-authorized `172.20.0.1:22`. All client-to-client traffic is relayed through
-`portwayd`. VNet needs TUN privileges on Linux or macOS and may request operating
+authorized `172.20.0.1:22`. Client-to-client traffic automatically uses direct QUIC
+when probing succeeds and otherwise remains relayed through `portwayd`; traffic involving
+the server is never upgraded to P2P. VNet needs TUN privileges on Linux or macOS and may request operating
 system authorization on first activation. On Windows amd64, run the VNet-enabled
 process as administrator; the release archive already includes Wintun. For complete configuration, `tun` and
 `loopback` delivery, port policies, and management commands, see

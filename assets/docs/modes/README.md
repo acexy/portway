@@ -128,7 +128,7 @@ Server or VNet client
           |
           | Private IPv4 TCP / UDP
           v
-  Central routing at portwayd
+ portwayd Relay or QUIC P2P
           |
           v
 Another authorized VNet node
@@ -137,7 +137,8 @@ Another authorized VNet node
 VNet has neither a public entry nor a client-local forwarding listener. The
 server assigns stable private IPv4 addresses to itself and each Managed client,
 then decides delivery using the destination node's TCP/UDP inbound allowlist.
-Client-to-client traffic is always relayed through `portwayd`. It gives fixed
+Client-to-client traffic starts through `portwayd`; successful automatic probing
+upgrades only new flows to QUIC P2P, while traffic involving the server remains relayed. It gives fixed
 nodes in different networks a VPN-like private-access experience and suits
 management, service discovery, and internal service access. It currently does
 not carry arbitrary IP protocols, broadcast, or general Internet egress.

@@ -3,8 +3,10 @@
 VNet connects a `portwayd` server and explicitly configured Managed clients in
 different networks by stable private IPv4 addresses. It supports IPv4 TCP and
 UDP on Linux, macOS, and Windows amd64. It gives fixed nodes a VPN-like private cluster and
-access experience: applications use the destination's private address and port,
-while client-to-client packets always pass through the server. VNet is
+access experience: applications use the destination's private address and port.
+Client-to-client traffic starts on the server relay and automatically uses a
+QUIC Datagram direct path for new flows after successful probing. Traffic involving
+the server always remains relayed. VNet is
 independent of Proxy and Forward state.
 
 This mutual access is bounded by destination port policy rather than being
@@ -14,6 +16,11 @@ protocols, broadcast, nor Internet egress.
 
 Configure VNet only on the server. Each endpoint's `ports` value is the inbound
 TCP/UDP allowlist for that endpoint:
+
+P2P has no configuration switch. When VNet is enabled, both `portwayd` and each
+participating `portway` exclusively bind UDP port `P+1`, where `P` is the configured
+transport port. Permit both the transport port and `P+1/UDP` through the firewall.
+A local bind conflict is fatal; NAT or firewall traversal failure only keeps Relay active.
 
 ```yaml
 virtual_network:

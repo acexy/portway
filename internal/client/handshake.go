@@ -81,6 +81,7 @@ func (s *Service) runControlSession(
 		capabilities = append(capabilities,
 			protocol.CapabilityVNetIPv4,
 			protocol.CapabilityVNetLoopback,
+			protocol.CapabilityVNetP2PQUIC,
 		)
 	}
 	if err := protocol.WriteControl(connection, protocol.MessageClientHello, protocol.ClientHello{
@@ -252,6 +253,7 @@ func (s *Service) runControlSession(
 		transportSession,
 		serverHello.ManagementMode,
 		coll.SliceContains(serverHello.Capabilities, protocol.CapabilityVNetIPv4),
+		coll.SliceContains(serverHello.Capabilities, protocol.CapabilityVNetP2PQUIC),
 		forwardRuntime,
 	)
 }

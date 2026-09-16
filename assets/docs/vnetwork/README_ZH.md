@@ -2,7 +2,8 @@
 
 VNet 使用稳定的私有 IPv4 地址连接跨不同网络的 `portwayd` 服务端与显式配置的 Managed
 客户端，支持 Linux、macOS 和 Windows amd64 上的 IPv4 TCP、UDP。它让固定节点获得类似 VPN 的私网集群
-与互访体验：应用直接使用目标节点的私有地址和端口，客户端之间的数据包始终由服务端中继。
+与互访体验：应用直接使用目标节点的私有地址和端口。客户端间流量先经服务端中继，探测成功后
+自动让新 Flow 使用 QUIC Datagram 直连；涉及服务端的流量始终保持中继。
 VNet 状态与 Proxy、Forward 相互独立。
 
 这里的“互访”受目标节点的端口策略约束，而非无边界网络访问：每个节点只接收其 `ports`
@@ -10,6 +11,10 @@ VNet 状态与 Proxy、Forward 相互独立。
 
 VNet 只在服务端配置。每个节点的 `ports` 是其他节点访问该节点时的 TCP/UDP 入站
 允许列表：
+
+P2P 不提供配置开关。启用 VNet 后，`portwayd` 和每个参与的 `portway` 都会独占绑定
+UDP 端口 `P+1`，其中 `P` 是已配置的 Transport 端口。防火墙需要同时允许 Transport
+端口和 `P+1/UDP`。本地端口绑定冲突会终止进程；NAT 或防火墙穿透失败只会保持 Relay。
 
 ```yaml
 virtual_network:
