@@ -334,6 +334,7 @@ func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
 }
 func platformRootGroup() string              { return "wheel" }
 func manualNetworkManagementSupported() bool { return false }
+func networkUninstallSupported() bool         { return false }
 func runtimeHelperSupported() bool           { return true }
 func platformSupported() bool                { return true }
 func runtimeReprepareSupported() bool        { return false }
@@ -353,6 +354,8 @@ func cidrNetmask(bits int) string {
 }
 
 func platformIdentityMatches(ownershipManifest) bool { return false }
+
+func uninstallEphemeralNetwork() (string, bool, error) { return "", false, nil }
 
 func darwinNetworkRoutes() ([]netip.Prefix, error) {
 	data, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)

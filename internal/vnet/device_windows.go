@@ -39,16 +39,17 @@ type windowsWintunAPI struct {
 }
 
 type windowsDevice struct {
-	api        *windowsWintunAPI
-	adapter    uintptr
-	session    uintptr
-	readEvent  windows.Handle
-	closeEvent windows.Handle
-	closed     atomic.Bool
-	operations sync.RWMutex
-	writeMutex sync.Mutex
-	closeOnce  sync.Once
-	closeError error
+	api         *windowsWintunAPI
+	adapter     uintptr
+	session     uintptr
+	networkLock windows.Handle
+	readEvent   windows.Handle
+	closeEvent  windows.Handle
+	closed      atomic.Bool
+	operations  sync.RWMutex
+	writeMutex  sync.Mutex
+	closeOnce   sync.Once
+	closeError  error
 }
 
 func openDevice() (Device, error) {
@@ -64,6 +65,21 @@ func createWindowsDevice() (*windowsDevice, error) {
 }
 
 func createWindowsDeviceFrom(dllPath string) (*windowsDevice, error) {
+	networkLock, inUse, err := acquireWindowsNetworkLock()
+	if err != nil {
+		return nil, err
+	}
+	if inUse {
+		_ = windows.CloseHandle(networkLock)
+		return nil, errors.New("Windows VNet network is in use")
+	}
+	releaseNetworkLock := true
+	defer func() {
+		if releaseNetworkLock {
+			_ = windows.ReleaseMutex(networkLock)
+			_ = windows.CloseHandle(networkLock)
+		}
+	}()
 	api, err := loadWindowsWintun(dllPath)
 	if err != nil {
 		return nil, err
@@ -99,9 +115,14 @@ func createWindowsDeviceFrom(dllPath string) (*windowsDevice, error) {
 		api.dll.Release()
 		return nil, fmt.Errorf("create Windows VNet close event: %w", err)
 	}
+	releaseNetworkLock = false
 	return &windowsDevice{
-		api: api, adapter: adapter, session: session,
-		readEvent: windows.Handle(readEvent), closeEvent: closeEvent,
+		api:         api,
+		adapter:     adapter,
+		session:     session,
+		networkLock: networkLock,
+		readEvent:   windows.Handle(readEvent),
+		closeEvent:  closeEvent,
 	}, nil
 }
 
@@ -243,6 +264,12 @@ func (device *windowsDevice) Close() error {
 			device.closeError = err
 		}
 		if err := device.api.dll.Release(); device.closeError == nil {
+			device.closeError = err
+		}
+		if err := windows.ReleaseMutex(device.networkLock); device.closeError == nil {
+			device.closeError = err
+		}
+		if err := windows.CloseHandle(device.networkLock); device.closeError == nil {
 			device.closeError = err
 		}
 		device.operations.Unlock()

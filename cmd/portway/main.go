@@ -27,46 +27,49 @@ func main() {
 }
 
 func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	commands := []cli.Command{
+		{
+			Name:    "run",
+			Usage:   "run [config]",
+			Summary: "Start the Portway client",
+			Execute: runClientCommand,
+		},
+		{
+			Name:    "gen",
+			Summary: "Generate client resources",
+			Subcommands: []cli.Command{{
+				Name:    "config",
+				Usage:   "config [full]",
+				Summary: "Generate client.yaml in the current directory",
+				Options: []cli.Option{{
+					Usage:       "full",
+					Description: "Generate the complete annotated configuration",
+				}},
+				Execute: runGenerateClientConfiguration,
+			}},
+		},
+	}
+	if vnet.NetworkUninstallSupported() {
+		commands = append(commands, cli.Command{
+			Name: "vnetwork", Summary: "Manage the Portway virtual network",
+			Subcommands: []cli.Command{{
+				Name: "uninstall", Summary: "Safely remove the owned portway0 network",
+				Execute: runUninstallVNetwork,
+			}},
+		})
+	}
 	application := cli.Application{
 		Name:        "portway",
 		Title:       "Portway Client",
-		Description: "Secure reverse tunneling client",
+		Description: "Lightweight, secure, and stable network connectivity through Proxy, Forward, and VNet modes.",
 		Version:     buildinfo.Current(),
-		Commands: []cli.Command{
-			{
-				Name:    "run",
-				Usage:   "run [FILE]",
-				Summary: "Start the Portway client",
-				Execute: runClientCommand,
-			},
-			{
-				Name:    "gen",
-				Summary: "Generate client resources",
-				Subcommands: []cli.Command{{
-					Name:    "config",
-					Usage:   "config [full]",
-					Summary: "Generate client.yaml in the current directory",
-					Options: []cli.Option{{
-						Usage:       "full",
-						Description: "Generate the complete annotated configuration",
-					}},
-					Execute: runGenerateClientConfiguration,
-				}},
-			},
-			{
-				Name: "vnetwork", Summary: "Manage the Portway virtual network",
-				Subcommands: []cli.Command{{
-					Name: "uninstall", Summary: "Safely remove the owned portway0 network",
-					Execute: runUninstallVNetwork,
-				}},
-			},
-		},
+		Commands:    commands,
 	}
 	return application.Run(arguments, stdout, stderr)
 }
 
 func runUninstallVNetwork(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.ManualNetworkManagementSupported() {
+	if !vnet.NetworkUninstallSupported() {
 		_, _ = io.WriteString(stderr, "portway vnetwork: manual management is unavailable on this platform; VNet is managed automatically during run\n")
 		return 1
 	}

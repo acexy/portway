@@ -163,11 +163,14 @@ func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
 func platformRootGroup() string { return "root" }
 
 func manualNetworkManagementSupported() bool { return true }
+func networkUninstallSupported() bool         { return true }
 func runtimeHelperSupported() bool           { return false }
 func platformSupported() bool                { return true }
 func runtimeReprepareSupported() bool        { return false }
 
 func runPlatformHelper([]string) (bool, error) { return false, nil }
+
+func uninstallEphemeralNetwork() (string, bool, error) { return "", false, nil }
 
 func netipPrefixLength(cidr string) (int, error) {
 	_, network, err := net.ParseCIDR(cidr)

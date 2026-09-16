@@ -74,6 +74,16 @@ func TestApplicationColorCanBeForced(t *testing.T) {
 	if !strings.Contains(stdout.String(), "\x1b[") {
 		t.Fatalf("stdout = %q, want ANSI style", stdout.String())
 	}
+	for _, expected := range []string{
+		"\x1b[36mSecure reverse tunneling client",
+		"\x1b[1;32mrun",
+		"\x1b[1;35mgen",
+		"\x1b[1;34mvnetwork",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("stdout = %q, want command style %q", stdout.String(), expected)
+		}
+	}
 	if !strings.Contains(stdout.String(), "gen config [full]") {
 		t.Fatalf("stdout = %q, want nested configuration command", stdout.String())
 	}
@@ -149,6 +159,7 @@ func testApplication() Application {
 		Commands: []Command{
 			{
 				Name:    "run",
+				Usage:   "run [config]",
 				Summary: "Start the client",
 				Execute: func([]string, io.Writer, io.Writer) int { return 0 },
 			},
@@ -161,6 +172,10 @@ func testApplication() Application {
 					Summary: "Generate configuration",
 					Execute: func([]string, io.Writer, io.Writer) int { return 0 },
 				}},
+			},
+			{
+				Name:    "vnetwork",
+				Summary: "Manage the virtual network",
 			},
 		},
 	}

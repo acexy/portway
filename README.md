@@ -89,6 +89,8 @@ privileged mode of the same binary and manual VNet management commands are unava
 On Windows amd64, the official signed `wintun.dll` is bundled only in the Windows
 amd64 archive. Start a VNet-enabled `portway` or `portwayd` as administrator;
 the temporary adapter is created lazily and removed when its owning process closes it.
+Windows exposes `portway vnetwork uninstall` and `portwayd vnetwork uninstall`
+for safely removing an owned adapter left outside the normal process lifecycle.
 Proxy, Forward, and VNet-disabled runs neither load Wintun nor require elevation.
 See [VNet configuration and operations](assets/docs/vnetwork/README.md).
 
@@ -480,11 +482,11 @@ need either private key.
 ## Commands
 
 ```text
-portway run [FILE]
+portway run [config]
 portway gen config [full]
 portway version
 
-portwayd run [FILE]
+portwayd run [config]
 portwayd gen config [full]
 portwayd gen cert [options]
 portwayd version

@@ -30,70 +30,72 @@ func main() {
 }
 
 func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	application := cli.Application{
-		Name:        "portwayd",
-		Title:       "Portway Server",
-		Description: "Secure reverse tunneling server",
-		Version:     buildinfo.Current(),
-		Commands: []cli.Command{
-			{
-				Name:    "run",
-				Usage:   "run [FILE]",
-				Summary: "Start the Portway server",
-				Execute: runServerCommand,
-			},
-			{
-				Name:    "gen",
-				Summary: "Generate server resources",
-				Subcommands: []cli.Command{
-					{
-						Name:    "config",
-						Usage:   "config [full]",
-						Summary: "Generate server.yaml in the current directory",
-						Options: []cli.Option{{
-							Usage:       "full",
-							Description: "Generate the complete annotated configuration",
-						}},
-						Execute: runGenerateServerConfiguration,
-					},
-					{
-						Name:    "cert",
-						Usage:   "cert [options]",
-						Summary: "Generate an internal CA and server certificate",
-						Options: []cli.Option{
-							{
-								Usage:       "--output-dir DIR",
-								Description: "Certificate output directory (default: certs)",
-							},
-							{
-								Usage:       "--server-name NAME",
-								Description: "Server DNS SAN; may be repeated",
-							},
-							{
-								Usage:       "--ip ADDRESS",
-								Description: "Server IP SAN; may be repeated",
-							},
-						},
-						Execute: runGenerateCertificate,
-					},
+	commands := []cli.Command{
+		{
+			Name:    "run",
+			Usage:   "run [config]",
+			Summary: "Start the Portway server",
+			Execute: runServerCommand,
+		},
+		{
+			Name:    "gen",
+			Summary: "Generate server resources",
+			Subcommands: []cli.Command{
+				{
+					Name:    "config",
+					Usage:   "config [full]",
+					Summary: "Generate server.yaml in the current directory",
+					Options: []cli.Option{{
+						Usage:       "full",
+						Description: "Generate the complete annotated configuration",
+					}},
+					Execute: runGenerateServerConfiguration,
 				},
-			},
-			{
-				Name: "vnetwork", Summary: "Manage the Portway virtual network",
-				Subcommands: []cli.Command{
-					{Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus},
-					{Name: "install", Usage: "install [FILE]", Summary: "Install the configured portway0 network", Execute: runVNetworkInstall},
-					{Name: "repair", Usage: "repair [FILE]", Summary: "Repair the owned portway0 network", Execute: runVNetworkRepair},
-					{Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runServerVNetworkUninstall},
+				{
+					Name:    "cert",
+					Usage:   "cert [options]",
+					Summary: "Generate an internal CA and server certificate",
+					Options: []cli.Option{
+						{Usage: "--output-dir DIR", Description: "Certificate output directory (default: certs)"},
+						{Usage: "--server-name NAME", Description: "Server DNS SAN; may be repeated"},
+						{Usage: "--ip ADDRESS", Description: "Server IP SAN; may be repeated"},
+					},
+					Execute: runGenerateCertificate,
 				},
 			},
 		},
+	}
+	if vnet.ManualNetworkManagementSupported() {
+		commands = append(commands, cli.Command{
+			Name: "vnetwork", Summary: "Manage the Portway virtual network",
+			Subcommands: []cli.Command{
+				{Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus},
+				{Name: "install", Usage: "install [FILE]", Summary: "Install the configured portway0 network", Execute: runVNetworkInstall},
+				{Name: "repair", Usage: "repair [FILE]", Summary: "Repair the owned portway0 network", Execute: runVNetworkRepair},
+				{Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runServerVNetworkUninstall},
+			},
+		})
+	} else if vnet.NetworkUninstallSupported() {
+		commands = append(commands, cli.Command{
+			Name: "vnetwork", Summary: "Manage the Portway virtual network",
+			Subcommands: []cli.Command{{
+				Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network",
+				Execute: runServerVNetworkUninstall,
+			}},
+		})
+	}
+	application := cli.Application{
+		Name:        "portwayd",
+		Title:       "Portway Server",
+		Description: "Lightweight, secure, and stable network connectivity through Proxy, Forward, and VNet modes.",
+		Version:     buildinfo.Current(),
+		Commands:    commands,
 	}
 	return application.Run(arguments, stdout, stderr)
 }
 
 func runVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.ManualNetworkManagementSupported() {
+	if !vnet.NetworkUninstallSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
 	if len(arguments) != 0 {

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/acexy/portway/internal/vnet"
 )
 
 func TestRunWithoutArgumentsPrintsServerHelp(t *testing.T) {
@@ -22,8 +24,9 @@ func TestRunWithoutArgumentsPrintsServerHelp(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"Portway Server",
+		"Lightweight, secure, and stable network connectivity through Proxy, Forward, and VNet modes.",
 		"portwayd <command> [options]",
-		"run",
+		"run [config]",
 		"gen config [full]",
 		"gen cert [options]",
 		"version",
@@ -31,6 +34,34 @@ func TestRunWithoutArgumentsPrintsServerHelp(t *testing.T) {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("stdout = %q, want %q", stdout.String(), expected)
 		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunShowsOnlySupportedServerVNetworkCommands(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"help"}, &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d", exitCode)
+	}
+	for _, usage := range []string{
+		"vnetwork status",
+		"vnetwork install [FILE]",
+		"vnetwork repair [FILE]",
+	} {
+		hasUsage := strings.Contains(stdout.String(), usage)
+		if hasUsage != vnet.ManualNetworkManagementSupported() {
+			t.Fatalf("stdout = %q, %q visibility = %t", stdout.String(), usage, hasUsage)
+		}
+	}
+	hasUninstall := strings.Contains(stdout.String(), "vnetwork uninstall")
+	if hasUninstall != vnet.NetworkUninstallSupported() {
+		t.Fatalf("stdout = %q, uninstall visibility = %t", stdout.String(), hasUninstall)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())

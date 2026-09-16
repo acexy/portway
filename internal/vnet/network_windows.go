@@ -12,9 +12,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
+
+const windowsNetworkLockName = `Global\PortwayVNetwork-portway0`
+
+var windowsNetworkClassGUID = windows.GUID{
+	Data1: 0x4d36e972,
+	Data2: 0xe325,
+	Data3: 0x11ce,
+	Data4: [8]byte{0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18},
+}
 
 func preparePlatformNetwork(ctx context.Context, spec NetworkSpec) (Device, error) {
 	dllPath, err := windowsWintunPath()
@@ -201,8 +212,109 @@ func parseWindowsNetworkRoutes(data []byte) ([]netip.Prefix, error) {
 	return routes, nil
 }
 
+func acquireWindowsNetworkLock() (windows.Handle, bool, error) {
+	name, err := windows.UTF16PtrFromString(windowsNetworkLockName)
+	if err != nil {
+		return 0, false, err
+	}
+	handle, err := windows.CreateMutex(nil, true, name)
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		return handle, true, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("acquire Windows VNet ownership lock: %w", err)
+	}
+	return handle, false, nil
+}
+
+func uninstallEphemeralNetwork() (string, bool, error) {
+	if !windowsProcessElevated() {
+		return "PermissionDenied", true, errors.New("Windows VNet uninstall requires administrator privileges")
+	}
+	lock, inUse, err := acquireWindowsNetworkLock()
+	if err != nil {
+		return "StateMismatch", true, err
+	}
+	if inUse {
+		_ = windows.CloseHandle(lock)
+		return "InUse", true, errors.New("VNet network is in use")
+	}
+	defer windows.CloseHandle(lock)
+	defer windows.ReleaseMutex(lock)
+
+	removed, err := removeWindowsNetworkAdapter()
+	if err != nil {
+		return "PartialFailure", true, err
+	}
+	if !removed {
+		return "AlreadyAbsent", true, nil
+	}
+	return "Removed", true, nil
+}
+
+func removeWindowsNetworkAdapter() (bool, error) {
+	deviceInformation, err := windows.SetupDiGetClassDevsEx(
+		&windowsNetworkClassGUID,
+		"",
+		0,
+		windows.DIGCF_PRESENT,
+		0,
+		"",
+	)
+	if err != nil {
+		return false, fmt.Errorf("enumerate Windows network adapters: %w", err)
+	}
+	defer deviceInformation.Close()
+
+	for index := 0; ; index++ {
+		device, enumerateError := deviceInformation.EnumDeviceInfo(index)
+		if errors.Is(enumerateError, windows.ERROR_NO_MORE_ITEMS) {
+			return false, nil
+		}
+		if enumerateError != nil {
+			continue
+		}
+		keyHandle, openError := deviceInformation.OpenDevRegKey(
+			device,
+			windows.DICS_FLAG_GLOBAL,
+			0,
+			windows.DIREG_DRV,
+			windows.KEY_QUERY_VALUE,
+		)
+		if openError != nil {
+			continue
+		}
+		key := registry.Key(keyHandle)
+		identifier, _, identifierError := key.GetStringValue("NetCfgInstanceId")
+		_ = key.Close()
+		if identifierError != nil {
+			continue
+		}
+		adapterGUID, parseError := windows.GUIDFromString(identifier)
+		if parseError != nil || adapterGUID != windowsAdapterGUID {
+			continue
+		}
+
+		parameters := windows.RemoveDeviceParams{
+			ClassInstallHeader: *windows.MakeClassInstallHeader(windows.DIF_REMOVE),
+			Scope:              windows.DI_REMOVEDEVICE_GLOBAL,
+		}
+		if err := deviceInformation.SetClassInstallParams(
+			device,
+			&parameters.ClassInstallHeader,
+			uint32(unsafe.Sizeof(parameters)),
+		); err != nil {
+			return false, fmt.Errorf("configure Windows VNet adapter removal: %w", err)
+		}
+		if err := deviceInformation.CallClassInstaller(windows.DIF_REMOVE, device); err != nil {
+			return false, fmt.Errorf("remove Windows VNet adapter: %w", err)
+		}
+		return true, nil
+	}
+}
+
 func uninstallPlatformNetwork(ownershipManifest) error {
-	return errors.New("manual VNet management is unavailable on Windows")
+	return errors.New("Windows VNet does not use persistent network manifests")
 }
 
 func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
@@ -211,6 +323,7 @@ func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
 
 func platformRootGroup() string                      { return "" }
 func manualNetworkManagementSupported() bool         { return false }
+func networkUninstallSupported() bool                 { return true }
 func runtimeHelperSupported() bool                   { return false }
 func platformSupported() bool                        { return true }
 func runtimeReprepareSupported() bool                { return windowsProcessElevated() }

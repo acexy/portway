@@ -99,6 +99,9 @@ func PrepareNetworkContext(ctx context.Context, spec NetworkSpec) (Device, error
 
 func ManualNetworkManagementSupported() bool { return manualNetworkManagementSupported() }
 
+// NetworkUninstallSupported reports whether this platform has a safe manual removal path.
+func NetworkUninstallSupported() bool { return networkUninstallSupported() }
+
 func RuntimeHelperSupported() bool { return runtimeHelperSupported() }
 
 // PlatformSupported reports whether this executable can provide a VNet packet device.
@@ -137,6 +140,9 @@ func InspectNetwork() (NetworkStatus, error) {
 }
 
 func UninstallNetwork() (string, error) {
+	if result, handled, err := uninstallEphemeralNetwork(); handled {
+		return result, err
+	}
 	manifest, err := readManifest()
 	if errors.Is(err, os.ErrNotExist) {
 		if _, interfaceError := net.InterfaceByName(LogicalInterfaceName); interfaceError == nil {

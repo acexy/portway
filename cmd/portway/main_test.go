@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/acexy/portway/internal/vnet"
 )
 
 func TestRunWithoutArgumentsPrintsClientHelp(t *testing.T) {
@@ -20,8 +22,9 @@ func TestRunWithoutArgumentsPrintsClientHelp(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"Portway Client",
+		"Lightweight, secure, and stable network connectivity through Proxy, Forward, and VNet modes.",
 		"portway <command> [options]",
-		"run",
+		"run [config]",
 		"gen config [full]",
 		"version",
 	} {
@@ -31,6 +34,27 @@ func TestRunWithoutArgumentsPrintsClientHelp(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "\x1b[") {
 		t.Fatalf("redirected stdout contains ANSI styles: %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunShowsOnlySupportedClientVNetworkCommands(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"help"}, &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d", exitCode)
+	}
+	hasVNetwork := strings.Contains(stdout.String(), "vnetwork uninstall")
+	if hasVNetwork != vnet.NetworkUninstallSupported() {
+		t.Fatalf("stdout = %q, vnetwork visibility = %t", stdout.String(), hasVNetwork)
+	}
+	if strings.Contains(stdout.String(), "vnetwork install") || strings.Contains(stdout.String(), "vnetwork repair") {
+		t.Fatalf("stdout exposes unsupported client VNet commands: %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())

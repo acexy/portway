@@ -80,7 +80,8 @@ virtual_network:
 Windows amd64 发布包内置官方签名的 `wintun.dll`，无需单独安装。启用 VNet 的
 `portway` 或 `portwayd` 必须以管理员身份启动。Portway 仅在实际激活 VNet 时加载
 Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。Windows 不支持
-手工 `vnetwork` 命令。Windows arm64 及其他 Windows 架构不受支持。
+其他手工管理命令，但提供 `vnetwork uninstall`，用于安全移除正常进程生命周期之外
+残留的自有 Adapter。Windows arm64 及其他 Windows 架构不受支持。
 
 Linux 服务端管理命令如下：
 
@@ -93,5 +94,6 @@ portwayd vnetwork uninstall
 
 Linux 客户端只能在认证后获得网络参数，因此没有 install、repair 命令，只提供
 `portway vnetwork uninstall`。卸载会拒绝外部资源、配置漂移或正被进程锁定的资源。
-macOS 调用这些命令时会明确报告 VNet 由 `run` 自动管理。Windows 也会报告由 `run`
-自动管理，并要求 `run` 进程本身已提升权限。
+Windows amd64 的客户端和服务端都只提供 `vnetwork uninstall`；该命令要求管理员权限，
+通过 Portway 固定 GUID 识别 Adapter，并拒绝删除仍被 Portway 进程持有的网络。macOS
+的 VNet 由 `run` 自动管理，因此命令帮助中不显示 `vnetwork`。

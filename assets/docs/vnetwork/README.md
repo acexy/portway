@@ -95,8 +95,10 @@ The Windows amd64 release archive bundles the official signed `wintun.dll`; it
 is not a separate installer. Start a VNet-enabled `portway` or `portwayd` as
 administrator. Portway loads Wintun and creates its temporary `portway0` adapter
 only when VNet is actually activated, then removes the adapter when the owning
-process closes it. Windows does not support manual `vnetwork` commands. Windows
-arm64 and other Windows architectures are not supported.
+process closes it. Windows provides only `vnetwork uninstall` for safely
+removing an owned adapter left
+outside the normal process lifecycle. Windows arm64 and other Windows
+architectures are not supported.
 
 Linux server management commands are:
 
@@ -109,6 +111,8 @@ portwayd vnetwork uninstall
 
 The Linux client receives its network parameters only after authentication, so it has
 no install or repair command. It exposes only `portway vnetwork uninstall`.
-Uninstall refuses foreign, drifted, or currently locked resources. On macOS all
-of these commands report that VNet is managed automatically during `run`.
-Windows reports the same and requires the `run` process itself to be elevated.
+Uninstall refuses foreign, drifted, or currently locked resources. On Windows
+amd64, both executables expose only `vnetwork uninstall`; it requires administrator
+privileges, identifies the adapter by Portway's fixed GUID, and refuses removal
+while a Portway process owns the network. On macOS, `vnetwork` is omitted from
+command help because VNet is managed automatically during `run`.
