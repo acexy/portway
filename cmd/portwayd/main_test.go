@@ -68,6 +68,24 @@ func TestRunShowsOnlySupportedServerVNetworkCommands(t *testing.T) {
 	}
 }
 
+func TestVNetworkConfigureResultMatchesCommand(t *testing.T) {
+	tests := []struct {
+		repair        bool
+		wantOperation string
+		wantResult    string
+	}{
+		{repair: false, wantOperation: "install", wantResult: "Installed"},
+		{repair: true, wantOperation: "repair", wantResult: "Repaired"},
+	}
+	for _, test := range tests {
+		operation, result := vnetworkConfigureResult(test.repair)
+		if operation != test.wantOperation || result != test.wantResult {
+			t.Fatalf("vnetworkConfigureResult(%t) = (%q, %q), want (%q, %q)",
+				test.repair, operation, result, test.wantOperation, test.wantResult)
+		}
+	}
+}
+
 func TestRunVersionPrintsServerVersion(t *testing.T) {
 	var stdout bytes.Buffer
 

@@ -77,7 +77,7 @@ func runUninstallVNetwork(arguments []string, stdout io.Writer, stderr io.Writer
 		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: no arguments are allowed\n")
 		return 2
 	}
-	result, err := vnet.UninstallNetwork()
+	result, err := vnet.UninstallNetworkAuthorized()
 	if err != nil {
 		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: "+result+": "+err.Error()+"\n")
 		return 1
@@ -122,6 +122,12 @@ func runClientCommand(
 	if err != nil {
 		log.Error("failed to load client configuration", err)
 		return 1
+	}
+	if exitCode, relaunched, err := vnet.ElevateCurrentProcess(); err != nil {
+		log.Error("failed to obtain Windows administrator authorization", err)
+		return 1
+	} else if relaunched {
+		return exitCode
 	}
 	if err := logging.EnableConsole(configuration.LogLevel); err != nil {
 		log.Error("failed to configure logging", err)

@@ -77,10 +77,12 @@ virtual_network:
 短生命周期提权模式，接收其创建的 `utunN` FD 后继续以普通权限运行。macOS 不支持
 手工 `vnetwork` 命令；持有进程关闭 FD 后，接口和路由由系统自动清理。
 
-Windows amd64 发布包内置官方签名的 `wintun.dll`，无需单独安装。启用 VNet 的
-`portway` 或 `portwayd` 必须以管理员身份启动。Portway 仅在实际激活 VNet 时加载
-Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。Windows 不支持
-其他手工管理命令，但提供 `vnetwork uninstall`，用于安全移除正常进程生命周期之外
+Windows amd64 发布包内置官方签名的 `wintun.dll`，无需单独安装。可能需要 Windows
+VNet 权限的命令会通过 UAC 申请管理员授权；用户确认后，命令在重新启动的提升权限进程中
+继续执行。客户端只能在认证后得知是否启用 VNet，因此 `portway run` 在启动前申请授权；
+`portwayd run` 仅在 `virtual_network.enabled` 为 true 时申请。Portway 仅在实际激活
+VNet 时加载 Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。
+Windows 不支持其他手工管理命令，但提供 `vnetwork uninstall`，用于安全移除正常进程生命周期之外
 残留的自有 Adapter。Windows arm64 及其他 Windows 架构不受支持。
 
 Linux 服务端管理命令如下：
@@ -92,9 +94,13 @@ portwayd vnetwork repair [server.yaml]
 portwayd vnetwork uninstall
 ```
 
+每个命令都会向原调用终端报告结果：`status` 输出网络字段，`install` 和 `repair` 成功时
+分别输出 `Installed` 和 `Repaired`，`uninstall` 输出稳定的删除结果。Windows UAC 操作会
+把结果回传到原终端，输出重定向时行为保持不变。
+
 Linux 客户端只能在认证后获得网络参数，因此没有 install、repair 命令，只提供
 `portway vnetwork uninstall`。卸载按名称删除唯一的 `portway0` 网络，但会拒绝删除正被
 Portway 进程锁定的网络。Windows amd64 的客户端和服务端都只提供
-`vnetwork uninstall`；该命令要求管理员权限，并拒绝删除仍被 Portway 进程持有的网络。
+`vnetwork uninstall`；该命令在需要时申请 UAC 授权，并拒绝删除仍被 Portway 进程持有的网络。
 Windows 运行期地址变更会原地迁移现有 Adapter；启动前会替换残留的同名 Adapter。macOS
 的 VNet 由 `run` 自动管理，因此命令帮助中不显示 `vnetwork`。

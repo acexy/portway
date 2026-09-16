@@ -459,5 +459,7 @@ func networkUninstallSupported() bool                 { return true }
 func runtimeHelperSupported() bool                   { return false }
 func platformSupported() bool                        { return true }
 func runtimeReprepareSupported() bool                { return windowsProcessElevated() }
-func runPlatformHelper([]string) (bool, error)       { return false, nil }
+func runPlatformHelper(arguments []string) (bool, error) {
+	return runWindowsElevationHelper(arguments)
+}
 func platformIdentityMatches(ownershipManifest) bool { return false }

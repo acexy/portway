@@ -177,6 +177,12 @@ func UninstallNetwork() (string, error) {
 	return "Removed", nil
 }
 
+// UninstallNetworkAuthorized requests platform authorization when required and
+// returns the same stable result as UninstallNetwork to the original process.
+func UninstallNetworkAuthorized() (string, error) {
+	return uninstallNetworkAuthorized()
+}
+
 func OpenInstalledNetwork() (Device, error) {
 	lock, err := os.Open(manifestPath())
 	if err != nil {

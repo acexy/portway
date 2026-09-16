@@ -123,18 +123,19 @@ func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer
 	if !vnet.ManualNetworkManagementSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
+	operation, successResult := vnetworkConfigureResult(repair)
 	path, valid := serverConfigurationPath(arguments)
 	if !valid {
-		_, _ = io.WriteString(stderr, "portwayd vnetwork install: at most one configuration file is allowed\n")
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: at most one configuration file is allowed\n", operation)
 		return 2
 	}
 	configuration, err := config.LoadServer(path, false)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork install: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: %v\n", operation, err)
 		return 1
 	}
 	if !configuration.VirtualNetwork.Enabled {
-		_, _ = io.WriteString(stderr, "portwayd vnetwork install: virtual_network is disabled\n")
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: virtual_network is disabled\n", operation)
 		return 1
 	}
 	spec := vnet.NetworkSpec{Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
@@ -146,12 +147,22 @@ func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer
 		device, err = vnet.PrepareNetwork(spec)
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork install: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: %v\n", operation, err)
 		return 1
 	}
-	_ = device.Close()
-	_, _ = io.WriteString(stdout, "Installed\n")
+	if err := device.Close(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: close configured network: %v\n", operation, err)
+		return 1
+	}
+	_, _ = fmt.Fprintln(stdout, successResult)
 	return 0
+}
+
+func vnetworkConfigureResult(repair bool) (operation string, successResult string) {
+	if repair {
+		return "repair", "Repaired"
+	}
+	return "install", "Installed"
 }
 
 func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.Writer) int {
@@ -162,7 +173,7 @@ func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.
 		_, _ = io.WriteString(stderr, "portwayd vnetwork uninstall: no arguments are allowed\n")
 		return 2
 	}
-	result, err := vnet.UninstallNetwork()
+	result, err := vnet.UninstallNetworkAuthorized()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork uninstall: %s: %v\n", result, err)
 		return 1
@@ -224,6 +235,14 @@ func runServerCommand(
 	if err != nil {
 		log.Error("failed to load server configuration", err)
 		return 1
+	}
+	if configuration.VirtualNetwork.Enabled {
+		if exitCode, relaunched, err := vnet.ElevateCurrentProcess(); err != nil {
+			log.Error("failed to obtain Windows administrator authorization", err)
+			return 1
+		} else if relaunched {
+			return exitCode
+		}
 	}
 	if err := logging.EnableConsole(configuration.LogLevel); err != nil {
 		log.Error("failed to configure logging", err)
