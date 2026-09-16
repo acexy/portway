@@ -53,6 +53,10 @@ func TestRunShowsOnlySupportedClientVNetworkCommands(t *testing.T) {
 	if hasVNetwork != vnet.NetworkUninstallSupported() {
 		t.Fatalf("stdout = %q, vnetwork visibility = %t", stdout.String(), hasVNetwork)
 	}
+	hasStatus := strings.Contains(stdout.String(), "vnetwork status")
+	if hasStatus != vnet.NetworkStatusSupported() {
+		t.Fatalf("stdout = %q, status visibility = %t", stdout.String(), hasStatus)
+	}
 	if strings.Contains(stdout.String(), "vnetwork install") || strings.Contains(stdout.String(), "vnetwork repair") {
 		t.Fatalf("stdout exposes unsupported client VNet commands: %q", stdout.String())
 	}

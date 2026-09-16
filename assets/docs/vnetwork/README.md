@@ -99,8 +99,8 @@ only after authentication, `portway run` requests authorization before startup;
 `portwayd run` does so only when `virtual_network.enabled` is true. Portway loads
 Wintun and creates its temporary `portway0` adapter only when VNet is actually
 activated, then removes the adapter when the owning process closes it. Windows
-provides only `vnetwork uninstall` for safely
-removing an owned adapter left
+provides read-only `vnetwork status` and `vnetwork uninstall` for safely
+inspecting or removing an owned adapter left
 outside the normal process lifecycle. Windows arm64 and other Windows
 architectures are not supported.
 
@@ -123,8 +123,9 @@ The Linux client receives its network parameters only after authentication, so i
 no install or repair command. It exposes only `portway vnetwork uninstall`.
 Uninstall removes the single `portway0` network by name but refuses a network
 currently locked by Portway. On Windows
-amd64, both executables expose only `vnetwork uninstall`; it requests UAC
-authorization when necessary and refuses removal while a Portway process owns
-the network. Live Windows address changes migrate the existing Adapter in place; a stale
+amd64, both executables expose `vnetwork status` and `vnetwork uninstall`.
+Status is read-only and does not request UAC; uninstall requests authorization
+when necessary and refuses removal while a Portway process owns the network.
+Live Windows address changes migrate the existing Adapter in place; a stale
 same-named Adapter is replaced before startup. On macOS, `vnetwork` is omitted from
 command help because VNet is managed automatically during `run`.

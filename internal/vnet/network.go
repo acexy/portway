@@ -99,6 +99,9 @@ func PrepareNetworkContext(ctx context.Context, spec NetworkSpec) (Device, error
 
 func ManualNetworkManagementSupported() bool { return manualNetworkManagementSupported() }
 
+// NetworkStatusSupported reports whether this platform supports safe offline inspection.
+func NetworkStatusSupported() bool { return networkStatusSupported() }
+
 // NetworkUninstallSupported reports whether this platform has a safe manual removal path.
 func NetworkUninstallSupported() bool { return networkUninstallSupported() }
 
@@ -123,6 +126,9 @@ func RepairNetwork(spec NetworkSpec) (Device, error) {
 }
 
 func InspectNetwork() (NetworkStatus, error) {
+	if status, handled, err := inspectEphemeralNetwork(); handled {
+		return status, err
+	}
 	manifest, err := readManifest()
 	if errors.Is(err, os.ErrNotExist) {
 		return NetworkStatus{}, nil

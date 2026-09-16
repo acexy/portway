@@ -75,13 +75,22 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 				{Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runServerVNetworkUninstall},
 			},
 		})
-	} else if vnet.NetworkUninstallSupported() {
-		commands = append(commands, cli.Command{
-			Name: "vnetwork", Summary: "Manage the Portway virtual network",
-			Subcommands: []cli.Command{{
+	} else if vnet.NetworkStatusSupported() || vnet.NetworkUninstallSupported() {
+		subcommands := make([]cli.Command, 0, 2)
+		if vnet.NetworkStatusSupported() {
+			subcommands = append(subcommands, cli.Command{
+				Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus,
+			})
+		}
+		if vnet.NetworkUninstallSupported() {
+			subcommands = append(subcommands, cli.Command{
 				Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network",
 				Execute: runServerVNetworkUninstall,
-			}},
+			})
+		}
+		commands = append(commands, cli.Command{
+			Name: "vnetwork", Summary: "Manage the Portway virtual network",
+			Subcommands: subcommands,
 		})
 	}
 	application := cli.Application{
@@ -95,7 +104,7 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.NetworkUninstallSupported() {
+	if !vnet.ManualNetworkManagementSupported() && !vnet.NetworkStatusSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
 	if len(arguments) != 0 {

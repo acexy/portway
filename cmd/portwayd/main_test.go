@@ -50,7 +50,6 @@ func TestRunShowsOnlySupportedServerVNetworkCommands(t *testing.T) {
 		t.Fatalf("run() exit code = %d", exitCode)
 	}
 	for _, usage := range []string{
-		"vnetwork status",
 		"vnetwork install [FILE]",
 		"vnetwork repair [FILE]",
 	} {
@@ -58,6 +57,10 @@ func TestRunShowsOnlySupportedServerVNetworkCommands(t *testing.T) {
 		if hasUsage != vnet.ManualNetworkManagementSupported() {
 			t.Fatalf("stdout = %q, %q visibility = %t", stdout.String(), usage, hasUsage)
 		}
+	}
+	hasStatus := strings.Contains(stdout.String(), "vnetwork status")
+	if hasStatus != (vnet.ManualNetworkManagementSupported() || vnet.NetworkStatusSupported()) {
+		t.Fatalf("stdout = %q, status visibility = %t", stdout.String(), hasStatus)
 	}
 	hasUninstall := strings.Contains(stdout.String(), "vnetwork uninstall")
 	if hasUninstall != vnet.NetworkUninstallSupported() {

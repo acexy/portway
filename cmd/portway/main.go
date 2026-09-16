@@ -49,13 +49,21 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 			}},
 		},
 	}
-	if vnet.NetworkUninstallSupported() {
+	if vnet.NetworkStatusSupported() || vnet.NetworkUninstallSupported() {
+		subcommands := make([]cli.Command, 0, 2)
+		if vnet.NetworkStatusSupported() {
+			subcommands = append(subcommands, cli.Command{
+				Name: "status", Summary: "Inspect the owned portway0 network", Execute: runClientVNetworkStatus,
+			})
+		}
+		if vnet.NetworkUninstallSupported() {
+			subcommands = append(subcommands, cli.Command{
+				Name: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runUninstallVNetwork,
+			})
+		}
 		commands = append(commands, cli.Command{
 			Name: "vnetwork", Summary: "Manage the Portway virtual network",
-			Subcommands: []cli.Command{{
-				Name: "uninstall", Summary: "Safely remove the owned portway0 network",
-				Execute: runUninstallVNetwork,
-			}},
+			Subcommands: subcommands,
 		})
 	}
 	application := cli.Application{
@@ -66,6 +74,24 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 		Commands:    commands,
 	}
 	return application.Run(arguments, stdout, stderr)
+}
+
+func runClientVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if !vnet.NetworkStatusSupported() {
+		_, _ = io.WriteString(stderr, "portway vnetwork: status is unavailable on this platform\n")
+		return 1
+	}
+	if len(arguments) != 0 {
+		_, _ = io.WriteString(stderr, "portway vnetwork status: no arguments are allowed\n")
+		return 2
+	}
+	status, err := vnet.InspectNetwork()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portway vnetwork status: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "installed: %t\ninterface: %s\ncidr: %s\nlocal_ip: %s\n", status.Installed, status.InterfaceName, status.CIDR, status.LocalIP)
+	return 0
 }
 
 func runUninstallVNetwork(arguments []string, stdout io.Writer, stderr io.Writer) int {

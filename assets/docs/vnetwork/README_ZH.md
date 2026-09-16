@@ -82,8 +82,9 @@ VNet 权限的命令会通过 UAC 申请管理员授权；用户确认后，命�
 继续执行。客户端只能在认证后得知是否启用 VNet，因此 `portway run` 在启动前申请授权；
 `portwayd run` 仅在 `virtual_network.enabled` 为 true 时申请。Portway 仅在实际激活
 VNet 时加载 Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。
-Windows 不支持其他手工管理命令，但提供 `vnetwork uninstall`，用于安全移除正常进程生命周期之外
-残留的自有 Adapter。Windows arm64 及其他 Windows 架构不受支持。
+Windows 不支持 install 或 repair，但提供只读的 `vnetwork status` 和 `vnetwork uninstall`，
+用于检查或安全移除正常进程生命周期之外残留的自有 Adapter。Windows arm64 及其他
+Windows 架构不受支持。
 
 Linux 服务端管理命令如下：
 
@@ -100,7 +101,8 @@ portwayd vnetwork uninstall
 
 Linux 客户端只能在认证后获得网络参数，因此没有 install、repair 命令，只提供
 `portway vnetwork uninstall`。卸载按名称删除唯一的 `portway0` 网络，但会拒绝删除正被
-Portway 进程锁定的网络。Windows amd64 的客户端和服务端都只提供
-`vnetwork uninstall`；该命令在需要时申请 UAC 授权，并拒绝删除仍被 Portway 进程持有的网络。
+Portway 进程锁定的网络。Windows amd64 的客户端和服务端都提供 `vnetwork status` 和
+`vnetwork uninstall`；status 只读且不申请 UAC，uninstall 在需要时申请 UAC 授权，并拒绝
+删除仍被 Portway 进程持有的网络。
 Windows 运行期地址变更会原地迁移现有 Adapter；启动前会替换残留的同名 Adapter。macOS
 的 VNet 由 `run` 自动管理，因此命令帮助中不显示 `vnetwork`。

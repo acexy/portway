@@ -344,6 +344,9 @@ func uninstallEphemeralNetwork() (string, bool, error) {
 
 	removed, err := removeWindowsNetworkAdapter()
 	if err != nil {
+		if errors.Is(err, ErrForeignResource) {
+			return "ForeignResource", true, err
+		}
 		return "PartialFailure", true, err
 	}
 	if !removed {
@@ -355,6 +358,9 @@ func uninstallEphemeralNetwork() (string, bool, error) {
 func removeWindowsNetworkAdapter() (bool, error) {
 	interfaceGUID, found, err := windowsInterfaceGUID(LogicalInterfaceName)
 	if err != nil || !found {
+		return false, err
+	}
+	if err := validateWindowsAdapterGUID(interfaceGUID); err != nil {
 		return false, err
 	}
 	deviceInformation, err := windows.SetupDiGetClassDevsEx(
@@ -415,6 +421,13 @@ func removeWindowsNetworkAdapter() (bool, error) {
 		}
 		return true, nil
 	}
+}
+
+func validateWindowsAdapterGUID(interfaceGUID windows.GUID) error {
+	if interfaceGUID != windowsAdapterGUID {
+		return fmt.Errorf("%w: interface %s is not the Portway adapter", ErrForeignResource, LogicalInterfaceName)
+	}
+	return nil
 }
 
 func windowsInterfaceGUID(interfaceName string) (windows.GUID, bool, error) {
