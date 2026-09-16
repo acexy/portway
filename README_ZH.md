@@ -76,8 +76,8 @@ macOS 的 `run` 进程自动使用同一二进制的短生命周期提权模式�
 Windows amd64 发布包会单独内置官方签名的 `wintun.dll`。启用 VNet 的 `portway` 或
 `portwayd` 必须以管理员身份启动；临时 Adapter 仅在实际启用 VNet 时创建，并随持有
 进程关闭而移除。Windows 提供 `portway vnetwork uninstall` 和
-`portwayd vnetwork uninstall`，用于安全移除正常进程生命周期之外残留的自有
-Adapter。Proxy、Forward 或未启用 VNet 的运行不会加载 Wintun，也不要求管理员权限。
+`portwayd vnetwork uninstall`，用于移除正常进程生命周期之外残留的同名
+`portway0` Adapter。Proxy、Forward 或未启用 VNet 的运行不会加载 Wintun，也不要求管理员权限。
 详见 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。
 
 | 需求 | 功能 | 入口位置 | 目标位置 | 协议 |

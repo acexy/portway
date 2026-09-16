@@ -44,13 +44,17 @@ func TestLinuxLegacyIdentityCanBeInstalledWithoutAcceptingForeignAlias(t *testin
 	}
 }
 
-func TestLinuxMigrationExcludesOnlyOwnedConnectedRoutes(t *testing.T) {
+func TestLinuxMigrationExcludesAllRoutesOnReplacedInterface(t *testing.T) {
 	data := []byte(`[{"dst":"172.20.0.0/16","dev":"portway0","protocol":"kernel"},{"dst":"172.21.0.0/16","dev":"other0","protocol":"kernel"}]`)
 	routes, err := parseLinuxNetworkRoutesExcluding(data, LogicalInterfaceName)
 	if err != nil || len(routes) != 1 || routes[0].String() != "172.21.0.0/16" {
 		t.Fatalf("migration routes = %v, error = %v", routes, err)
 	}
-	if _, err := parseLinuxNetworkRoutesExcluding([]byte(`[{"dst":"172.20.0.0/16","dev":"portway0","protocol":"static"}]`), LogicalInterfaceName); err == nil {
-		t.Fatal("manually attached route was silently taken over")
+	routes, err = parseLinuxNetworkRoutesExcluding(
+		[]byte(`[{"dst":"172.20.0.0/16","dev":"portway0","protocol":"static"}]`),
+		LogicalInterfaceName,
+	)
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("replaced interface routes = %v, error = %v", routes, err)
 	}
 }

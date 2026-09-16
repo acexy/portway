@@ -39,6 +39,33 @@ func prepareWindowsNetwork(ctx context.Context, spec NetworkSpec, dllPath string
 	if !windowsProcessElevated() {
 		return nil, errors.New("Windows VNet requires portway to run as administrator")
 	}
+	networkLock, inUse, err := acquireWindowsNetworkLock()
+	if err != nil {
+		return nil, err
+	}
+	if inUse {
+		_ = windows.CloseHandle(networkLock)
+		return nil, errors.New("Windows VNet network is in use")
+	}
+	releaseNetworkLock := true
+	defer func() {
+		if releaseNetworkLock {
+			_ = windows.ReleaseMutex(networkLock)
+			_ = windows.CloseHandle(networkLock)
+		}
+	}()
+	if _, interfaceError := net.InterfaceByName(LogicalInterfaceName); interfaceError == nil {
+		removed, removeError := removeWindowsNetworkAdapter()
+		if removeError != nil {
+			return nil, removeError
+		}
+		if !removed {
+			return nil, fmt.Errorf("remove existing Windows network interface %s", LogicalInterfaceName)
+		}
+		if err := waitForWindowsNetworkRemoval(ctx); err != nil {
+			return nil, err
+		}
+	}
 	routes, err := windowsNetworkRoutes(ctx)
 	if err != nil {
 		return nil, err
@@ -46,14 +73,11 @@ func prepareWindowsNetwork(ctx context.Context, spec NetworkSpec, dllPath string
 	if err := checkNetworkConflicts(spec, routes); err != nil {
 		return nil, err
 	}
-	if _, err := net.InterfaceByName(LogicalInterfaceName); err == nil {
-		// A process-owned Windows adapter must never adopt an existing name.
-		return nil, fmt.Errorf("%w: Windows network interface %s already exists", ErrForeignResource, LogicalInterfaceName)
-	}
-	device, err := createWindowsDeviceFrom(dllPath)
+	device, err := createWindowsDeviceWithLock(dllPath, networkLock)
 	if err != nil {
 		return nil, err
 	}
+	releaseNetworkLock = false
 	if err := configureWindowsNetwork(ctx, spec); err != nil {
 		_ = device.Close()
 		return nil, err
@@ -63,6 +87,25 @@ func prepareWindowsNetwork(ctx context.Context, spec NetworkSpec, dllPath string
 		return nil, fmt.Errorf("%w: Windows VNet interface configuration did not converge: %v", ErrStateMismatch, err)
 	}
 	return device, nil
+}
+
+func waitForWindowsNetworkRemoval(ctx context.Context) error {
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := net.InterfaceByName(LogicalInterfaceName); err != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("Windows network interface %s was not removed", LogicalInterfaceName)
+		case <-ticker.C:
+		}
+	}
 }
 
 func waitForWindowsNetworkConfiguration(ctx context.Context, spec NetworkSpec) error {
@@ -114,6 +157,63 @@ func configureWindowsNetwork(ctx context.Context, spec NetworkSpec) error {
 		}
 	}
 	return nil
+}
+
+func migrateWindowsNetwork(ctx context.Context, previous, next NetworkSpec) (result error) {
+	if previous.CIDR == next.CIDR && previous.LocalIP == next.LocalIP && previous.MTU == next.MTU {
+		return validateWindowsNetworkConfiguration(ctx, next)
+	}
+	if err := validateWindowsNetworkConfiguration(ctx, previous); err != nil {
+		return fmt.Errorf("validate previous Windows VNet configuration: %w", err)
+	}
+	if err := deleteWindowsNetworkRoute(ctx, previous); err != nil {
+		return err
+	}
+	defer func() {
+		if result == nil {
+			return
+		}
+		rollbackContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = deleteWindowsNetworkRoute(rollbackContext, next)
+		if rollbackError := configureWindowsNetwork(rollbackContext, previous); rollbackError != nil {
+			result = errors.Join(result, fmt.Errorf("restore previous Windows VNet configuration: %w", rollbackError))
+			return
+		}
+		if rollbackError := validateWindowsNetworkConfiguration(rollbackContext, previous); rollbackError != nil {
+			result = errors.Join(result, fmt.Errorf("validate restored Windows VNet configuration: %w", rollbackError))
+		}
+	}()
+	if err := configureWindowsNetwork(ctx, next); err != nil {
+		return err
+	}
+	if err := waitForWindowsNetworkConfiguration(ctx, next); err != nil {
+		return err
+	}
+	return nil
+}
+
+func deleteWindowsNetworkRoute(ctx context.Context, spec NetworkSpec) error {
+	prefix, _ := netip.ParsePrefix(spec.CIDR)
+	output, err := exec.CommandContext(
+		ctx,
+		"netsh",
+		"interface",
+		"ipv4",
+		"delete",
+		"route",
+		"prefix="+prefix.Masked().String(),
+		"interface="+LogicalInterfaceName,
+		"store=active",
+	).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	message := strings.TrimSpace(string(output))
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	return fmt.Errorf("remove previous Windows VNet route: %w: %s", err, message)
 }
 
 func windowsProcessElevated() bool {
@@ -253,6 +353,10 @@ func uninstallEphemeralNetwork() (string, bool, error) {
 }
 
 func removeWindowsNetworkAdapter() (bool, error) {
+	interfaceGUID, found, err := windowsInterfaceGUID(LogicalInterfaceName)
+	if err != nil || !found {
+		return false, err
+	}
 	deviceInformation, err := windows.SetupDiGetClassDevsEx(
 		&windowsNetworkClassGUID,
 		"",
@@ -291,7 +395,7 @@ func removeWindowsNetworkAdapter() (bool, error) {
 			continue
 		}
 		adapterGUID, parseError := windows.GUIDFromString(identifier)
-		if parseError != nil || adapterGUID != windowsAdapterGUID {
+		if parseError != nil || adapterGUID != interfaceGUID {
 			continue
 		}
 
@@ -310,6 +414,34 @@ func removeWindowsNetworkAdapter() (bool, error) {
 			return false, fmt.Errorf("remove Windows VNet adapter: %w", err)
 		}
 		return true, nil
+	}
+}
+
+func windowsInterfaceGUID(interfaceName string) (windows.GUID, bool, error) {
+	bufferSize := uint32(15 * 1024)
+	for {
+		buffer := make([]byte, bufferSize)
+		addresses := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buffer[0]))
+		err := windows.GetAdaptersAddresses(
+			windows.AF_UNSPEC,
+			windows.GAA_FLAG_SKIP_UNICAST|windows.GAA_FLAG_SKIP_ANYCAST|
+				windows.GAA_FLAG_SKIP_MULTICAST|windows.GAA_FLAG_SKIP_DNS_SERVER,
+			0,
+			addresses,
+			&bufferSize,
+		)
+		if errors.Is(err, windows.ERROR_BUFFER_OVERFLOW) {
+			continue
+		}
+		if err != nil {
+			return windows.GUID{}, false, fmt.Errorf("inspect Windows network interfaces: %w", err)
+		}
+		for address := addresses; address != nil; address = address.Next {
+			if windows.UTF16PtrToString(address.FriendlyName) == interfaceName {
+				return address.NetworkGuid, true, nil
+			}
+		}
+		return windows.GUID{}, false, nil
 	}
 }
 

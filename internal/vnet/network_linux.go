@@ -29,20 +29,34 @@ func ensureLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
 	_, interfaceError := net.InterfaceByName(LogicalInterfaceName)
 	if errors.Is(manifestError, os.ErrNotExist) {
 		if interfaceError == nil {
-			return ErrForeignResource
+			if err := replaceLinuxNetwork(ctx, spec, false); err != nil {
+				return err
+			}
+			return nil
 		}
 		return installLinuxNetwork(ctx, spec)
 	}
 	if manifestError != nil {
-		return manifestError
-	}
-	if manifest.Role != spec.Role || manifest.PlatformInterface != LogicalInterfaceName {
-		return ErrStateMismatch
+		lock, err := os.Open(manifestPath())
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		if err := lockNetworkFile(lock, true); err != nil {
+			return fmt.Errorf("VNet network is in use: %w", err)
+		}
+		defer unlockNetworkFile(lock)
+		if interfaceError == nil {
+			return replaceLinuxNetwork(ctx, spec, true)
+		}
+		if err := privilegedCommandContext(ctx, "rm", "-f", manifestPath()).Run(); err != nil {
+			return err
+		}
+		return installLinuxNetwork(ctx, spec)
 	}
 	if interfaceError == nil && networkSpecMatchesManifest(spec, manifest) && interfaceMatchesManifest(manifest) {
 		return nil
 	}
-	// Configuration replacement must not alter an interface held by another runtime.
 	lock, err := os.Open(manifestPath())
 	if err != nil {
 		return err
@@ -56,14 +70,16 @@ func ensureLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
 	if err != nil || current != manifest {
 		return ErrStateMismatch
 	}
-	if _, err := net.InterfaceByName(LogicalInterfaceName); err != nil {
+	if interfaceError != nil {
+		if err := privilegedCommandContext(ctx, "rm", "-f", manifestPath()).Run(); err != nil {
+			return err
+		}
 		return installLinuxNetwork(ctx, spec)
 	}
 	identity, err := exec.CommandContext(ctx, "ip", "-d", "-j", "link", "show", "dev", LogicalInterfaceName).Output()
-	if err != nil || !linuxIdentityCanBeInstalled(identity, manifest) || !interfaceConfigurationMatches(manifest) {
-		return ErrForeignResource
-	}
-	if !networkSpecMatchesManifest(spec, manifest) {
+	owned := manifest.Role == spec.Role && manifest.PlatformInterface == LogicalInterfaceName &&
+		linuxIdentityCanBeInstalled(identity, manifest) && interfaceConfigurationMatches(manifest)
+	if owned && !networkSpecMatchesManifest(spec, manifest) {
 		routes, err := linuxNetworkRoutesExcluding(ctx, LogicalInterfaceName)
 		if err != nil {
 			return err
@@ -73,9 +89,30 @@ func ensureLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
 		}
 		return migrateLinuxNetwork(ctx, manifest, spec)
 	}
-	// A legacy installation is adopted only after validating the complete old state.
-	return privilegedCommandContext(ctx, "ip", "link", "set", "dev", LogicalInterfaceName,
-		"alias", "portway:"+manifest.InstallationID).Run()
+	if owned {
+		return privilegedCommandContext(ctx, "ip", "link", "set", "dev", LogicalInterfaceName,
+			"alias", "portway:"+manifest.InstallationID).Run()
+	}
+	return replaceLinuxNetwork(ctx, spec, true)
+}
+
+func replaceLinuxNetwork(ctx context.Context, spec NetworkSpec, removeManifest bool) error {
+	routes, err := linuxNetworkRoutesExcluding(ctx, LogicalInterfaceName)
+	if err != nil {
+		return err
+	}
+	if err := checkNetworkConflictsExcluding(spec, routes, LogicalInterfaceName); err != nil {
+		return err
+	}
+	if err := privilegedCommandContext(ctx, "ip", "link", "delete", "dev", LogicalInterfaceName).Run(); err != nil {
+		return fmt.Errorf("remove previous VNet interface: %w", err)
+	}
+	if removeManifest {
+		if err := privilegedCommandContext(ctx, "rm", "-f", manifestPath()).Run(); err != nil {
+			return fmt.Errorf("remove previous VNet ownership manifest: %w", err)
+		}
+	}
+	return installLinuxNetwork(ctx, spec)
 }
 
 func installLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
@@ -170,7 +207,42 @@ func runtimeReprepareSupported() bool        { return false }
 
 func runPlatformHelper([]string) (bool, error) { return false, nil }
 
-func uninstallEphemeralNetwork() (string, bool, error) { return "", false, nil }
+func uninstallEphemeralNetwork() (string, bool, error) {
+	_, interfaceError := net.InterfaceByName(LogicalInterfaceName)
+	_, manifestError := os.Lstat(manifestPath())
+	if manifestError != nil && !errors.Is(manifestError, os.ErrNotExist) {
+		return "StateMismatch", true, manifestError
+	}
+	interfaceExists := interfaceError == nil
+	manifestExists := manifestError == nil
+	if !interfaceExists && !manifestExists {
+		return "AlreadyAbsent", true, nil
+	}
+	var lock *os.File
+	if manifestExists {
+		var err error
+		lock, err = os.Open(manifestPath())
+		if err != nil {
+			return "StateMismatch", true, err
+		}
+		defer lock.Close()
+		if err := lockNetworkFile(lock, true); err != nil {
+			return "InUse", true, errors.New("VNet network is in use")
+		}
+		defer unlockNetworkFile(lock)
+	}
+	if interfaceExists {
+		if err := privilegedCommand("ip", "link", "delete", "dev", LogicalInterfaceName).Run(); err != nil {
+			return "PartialFailure", true, err
+		}
+	}
+	if manifestExists {
+		if err := privilegedCommand("rm", "-f", manifestPath()).Run(); err != nil {
+			return "PartialFailure", true, err
+		}
+	}
+	return "Removed", true, nil
+}
 
 func netipPrefixLength(cidr string) (int, error) {
 	_, network, err := net.ParseCIDR(cidr)
@@ -209,9 +281,6 @@ func parseLinuxNetworkRoutesExcluding(data []byte, ownedInterface string) ([]net
 	var routes []netip.Prefix
 	for _, entry := range entries {
 		if ownedInterface != "" && entry.Device == ownedInterface {
-			if entry.Protocol != "kernel" {
-				return nil, fmt.Errorf("%w: VNet interface has an unmanaged route", ErrStateMismatch)
-			}
 			continue
 		}
 		if entry.Destination == "default" {

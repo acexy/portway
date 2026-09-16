@@ -362,6 +362,8 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	device := runtime.device
 	userspaceTCP := runtime.userspaceTCP
 	networkChanged := previous.CIDR != configuration.CIDR || previous.ServerIP != configuration.ServerIP
+	canMigrateDevice := configuration.Enabled && networkChanged && device != nil &&
+		vnet.NetworkMigrationSupported(device)
 	if !configuration.Enabled || networkChanged {
 		if runtime.prepareCancel != nil {
 			runtime.prepareCancel()
@@ -396,7 +398,7 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 		}
 	}
 	runtime.revokeAllPeers("configuration_changed")
-	if device != nil && (!configuration.Enabled || networkChanged) {
+	if device != nil && (!configuration.Enabled || networkChanged) && !canMigrateDevice {
 		_ = device.Close()
 	}
 	if userspaceTCP != nil && (!configuration.Enabled || networkChanged) {
@@ -408,9 +410,96 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	for index, session := range sessions {
 		runtime.updateSessionConfiguration(clientIDs[index], session, previous, configuration, generation, networkChanged)
 	}
-	if configuration.Enabled && !runtime.deviceReady() {
+	migrationStarted := false
+	if configuration.Enabled && canMigrateDevice {
+		migrationStarted = runtime.migrateRuntimeDevice(device, previous, configuration)
+		if !migrationStarted {
+			_ = device.Close()
+		}
+	}
+	if configuration.Enabled && !runtime.deviceReady() && !migrationStarted {
 		runtime.prepareRuntimeDevice(configuration)
 	}
+}
+
+func serverNetworkSpec(configuration config.VirtualNetworkConfig) vnet.NetworkSpec {
+	return vnet.NetworkSpec{
+		Role: vnet.NetworkRoleServer, CIDR: configuration.CIDR,
+		LocalIP: configuration.ServerIP, ServerIP: configuration.ServerIP,
+		MTU: vnetMTU, OwnerUID: -1,
+	}
+}
+
+func (runtime *serverVNetRuntime) migrateRuntimeDevice(
+	device vnet.Device,
+	previous, configuration config.VirtualNetworkConfig,
+) bool {
+	if !runtime.preparingDevice.CompareAndSwap(false, true) {
+		return false
+	}
+	ctx, cancel := context.WithCancel(runtime.context)
+	runtime.mutex.Lock()
+	runtime.prepareCancel = cancel
+	runtime.mutex.Unlock()
+	runtime.waitGroup.Go(func() {
+		startReader := false
+		defer func() {
+			cancel()
+			runtime.preparingDevice.Store(false)
+			runtime.mutex.RLock()
+			latest := runtime.configuration
+			retry := runtime.context.Err() == nil && latest.Enabled && runtime.device == nil
+			runtime.mutex.RUnlock()
+			if retry {
+				runtime.prepareRuntimeDevice(latest)
+			}
+		}()
+		err := vnet.MigrateNetworkContext(
+			ctx,
+			device,
+			serverNetworkSpec(previous),
+			serverNetworkSpec(configuration),
+		)
+		if err != nil {
+			runtime.logger.Warn("failed to migrate VNet network; recreating the device", err)
+			_ = device.Close()
+			if ctx.Err() != nil {
+				return
+			}
+			device, err = runtime.prepareNetwork(ctx, serverNetworkSpec(configuration))
+			if err != nil {
+				if ctx.Err() == nil {
+					runtime.logger.Warn("VNet network installation did not activate the network", err)
+				}
+				return
+			}
+			startReader = true
+		}
+		runtime.mutex.Lock()
+		if ctx.Err() != nil || runtime.device != nil || !runtime.configuration.Enabled ||
+			runtime.configuration.CIDR != configuration.CIDR ||
+			runtime.configuration.ServerIP != configuration.ServerIP {
+			runtime.mutex.Unlock()
+			_ = device.Close()
+			return
+		}
+		runtime.device = device
+		runtime.prepareUserspaceTCPLocked(configuration)
+		sessions := make([]serverVNetSession, 0, len(runtime.sessions))
+		clientIDs := make([]string, 0, len(runtime.sessions))
+		for clientID, session := range runtime.sessions {
+			clientIDs = append(clientIDs, clientID)
+			sessions = append(sessions, session)
+		}
+		runtime.mutex.Unlock()
+		if startReader {
+			runtime.waitGroup.Go(func() { runtime.readDevice(device) })
+		}
+		for index, session := range sessions {
+			_ = runtime.assign(clientIDs[index], session.sessionID)
+		}
+	})
+	return true
 }
 
 func (runtime *serverVNetRuntime) updateSessionConfiguration(
@@ -485,11 +574,7 @@ func (runtime *serverVNetRuntime) prepareRuntimeDevice(configuration config.Virt
 				runtime.prepareRuntimeDevice(latest)
 			}
 		}()
-		device, err := runtime.prepareNetwork(ctx, vnet.NetworkSpec{
-			Role: vnet.NetworkRoleServer, CIDR: configuration.CIDR,
-			LocalIP: configuration.ServerIP, ServerIP: configuration.ServerIP,
-			MTU: vnetMTU, OwnerUID: -1,
-		})
+		device, err := runtime.prepareNetwork(ctx, serverNetworkSpec(configuration))
 		if err != nil {
 			if ctx.Err() == nil {
 				runtime.logger.Warn("VNet network installation did not activate the network", err)

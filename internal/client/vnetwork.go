@@ -122,6 +122,25 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	manager.waitGroup.Go(func() {
 		manager.prepareMutex.Lock()
 		defer manager.prepareMutex.Unlock()
+		if device != nil && previous.State == protocol.VNetStateEnabled &&
+			assignment.State == protocol.VNetStateEnabled && previous.NetworkMode == assignment.NetworkMode &&
+			vnet.NetworkMigrationSupported(device) {
+			if userspaceTCP != nil {
+				_ = userspaceTCP.Close()
+				userspaceTCP = nil
+			}
+			migrationError := vnet.MigrateNetworkContext(
+				ctx,
+				device,
+				clientNetworkSpec(previous),
+				clientNetworkSpec(assignment),
+			)
+			if migrationError == nil {
+				manager.activatePreparedDevice(ctx, assignment, device, false)
+				return
+			}
+			manager.logger.Warn("failed to migrate VNet network; recreating the device", migrationError)
+		}
 		if userspaceTCP != nil {
 			_ = userspaceTCP.Close()
 		}
@@ -232,10 +251,7 @@ func (manager *clientVNetManager) peerRevoke(revocation protocol.VNetPeerRevoke)
 }
 
 func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment protocol.VNetAssignment) {
-	preparedDevice, err := manager.prepareNetwork(ctx, vnet.NetworkSpec{
-		Role: vnet.NetworkRoleClient, CIDR: assignment.CIDR, LocalIP: assignment.ClientIP,
-		ServerIP: assignment.ServerIP, MTU: assignment.MTU, OwnerUID: -1,
-	})
+	preparedDevice, err := manager.prepareNetwork(ctx, clientNetworkSpec(assignment))
 	if ctx.Err() != nil {
 		if preparedDevice != nil {
 			_ = preparedDevice.Close()
@@ -253,7 +269,22 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 		_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateInstallationRequired, "device_unavailable")
 		return
 	}
-	device := preparedDevice
+	manager.activatePreparedDevice(ctx, assignment, preparedDevice, true)
+}
+
+func clientNetworkSpec(assignment protocol.VNetAssignment) vnet.NetworkSpec {
+	return vnet.NetworkSpec{
+		Role: vnet.NetworkRoleClient, CIDR: assignment.CIDR, LocalIP: assignment.ClientIP,
+		ServerIP: assignment.ServerIP, MTU: assignment.MTU, OwnerUID: -1,
+	}
+}
+
+func (manager *clientVNetManager) activatePreparedDevice(
+	ctx context.Context,
+	assignment protocol.VNetAssignment,
+	device vnet.Device,
+	startReader bool,
+) {
 	var userspaceTCP *vnet.UserspaceTCP
 	if assignment.NetworkMode == string(config.VNetNetworkModeLoopback) {
 		prefix, _ := netip.ParsePrefix(assignment.CIDR)
@@ -279,7 +310,9 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 	}
 	manager.device = device
 	manager.userspaceTCP = userspaceTCP
-	manager.waitGroup.Go(func() { manager.readDevice(device, assignment) })
+	if startReader {
+		manager.waitGroup.Go(func() { manager.readDevice(device, assignment) })
+	}
 	manager.mutex.Unlock()
 	manager.logger.InfoWithFields("VNet network is ready", map[string]any{
 		"event":          "vnet_network_ready",
@@ -446,17 +479,18 @@ func (manager *clientVNetManager) readDevice(
 			return
 		}
 		packet := append([]byte(nil), buffer[:length]...)
-		flow, err := vnet.ParseIPv4(packet)
-		if err != nil || flow.SourceIP.String() != assignment.ClientIP {
-			continue
-		}
 		manager.mutex.Lock()
 		if manager.device != device {
 			manager.mutex.Unlock()
 			return
 		}
+		current := manager.assignment
 		userspaceTCP := manager.userspaceTCP
 		manager.mutex.Unlock()
+		flow, err := vnet.ParseIPv4(packet)
+		if err != nil || flow.SourceIP.String() != current.ClientIP {
+			continue
+		}
 		if userspaceTCP != nil && !userspaceTCP.ObserveHostPacket(packet) {
 			continue
 		}

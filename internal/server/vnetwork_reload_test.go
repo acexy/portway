@@ -105,6 +105,58 @@ type notifyingVNetDevice struct {
 	once    sync.Once
 }
 
+type migratingServerVNetDevice struct {
+	*blockingVNetDevice
+	migrations chan vnet.NetworkSpec
+}
+
+func (device *migratingServerVNetDevice) MigrateNetwork(
+	_ context.Context,
+	_ vnet.NetworkSpec,
+	next vnet.NetworkSpec,
+) error {
+	device.migrations <- next
+	return nil
+}
+
+func TestVNetMigrationPreservesSupportedServerDevice(t *testing.T) {
+	configuration := config.DefaultServer().VirtualNetwork
+	configuration.Enabled = true
+	device := &migratingServerVNetDevice{
+		blockingVNetDevice: newBlockingVNetDevice(),
+		migrations:         make(chan vnet.NetworkSpec, 1),
+	}
+	runtime := newServerVNetRuntime(context.Background(), logging.New("test"), configuration, device)
+	defer runtime.Close()
+	candidate := configuration
+	candidate.CIDR, candidate.ServerIP = "172.21.0.0/16", "172.21.0.1"
+	runtime.applyConfiguration(candidate, 2)
+	select {
+	case spec := <-device.migrations:
+		if spec.CIDR != candidate.CIDR || spec.LocalIP != candidate.ServerIP {
+			t.Fatalf("migration target = %+v", spec)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server address change did not migrate the live device")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		runtime.mutex.RLock()
+		active := runtime.device
+		runtime.mutex.RUnlock()
+		if active == device {
+			select {
+			case <-device.closed:
+				t.Fatal("server migration closed the live device")
+			default:
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("migrated server device was not reactivated")
+}
+
 func (device *notifyingVNetDevice) ReadPacket(packet []byte) (int, error) {
 	device.once.Do(func() { close(device.started) })
 	return device.blockingVNetDevice.ReadPacket(packet)

@@ -93,7 +93,8 @@ portwayd vnetwork uninstall
 ```
 
 Linux 客户端只能在认证后获得网络参数，因此没有 install、repair 命令，只提供
-`portway vnetwork uninstall`。卸载会拒绝外部资源、配置漂移或正被进程锁定的资源。
-Windows amd64 的客户端和服务端都只提供 `vnetwork uninstall`；该命令要求管理员权限，
-通过 Portway 固定 GUID 识别 Adapter，并拒绝删除仍被 Portway 进程持有的网络。macOS
+`portway vnetwork uninstall`。卸载按名称删除唯一的 `portway0` 网络，但会拒绝删除正被
+Portway 进程锁定的网络。Windows amd64 的客户端和服务端都只提供
+`vnetwork uninstall`；该命令要求管理员权限，并拒绝删除仍被 Portway 进程持有的网络。
+Windows 运行期地址变更会原地迁移现有 Adapter；启动前会替换残留的同名 Adapter。macOS
 的 VNet 由 `run` 自动管理，因此命令帮助中不显示 `vnetwork`。

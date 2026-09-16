@@ -3,6 +3,7 @@
 package vnet
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -80,6 +81,15 @@ func createWindowsDeviceFrom(dllPath string) (*windowsDevice, error) {
 			_ = windows.CloseHandle(networkLock)
 		}
 	}()
+	device, err := createWindowsDeviceWithLock(dllPath, networkLock)
+	if err != nil {
+		return nil, err
+	}
+	releaseNetworkLock = false
+	return device, nil
+}
+
+func createWindowsDeviceWithLock(dllPath string, networkLock windows.Handle) (*windowsDevice, error) {
 	api, err := loadWindowsWintun(dllPath)
 	if err != nil {
 		return nil, err
@@ -115,7 +125,6 @@ func createWindowsDeviceFrom(dllPath string) (*windowsDevice, error) {
 		api.dll.Release()
 		return nil, fmt.Errorf("create Windows VNet close event: %w", err)
 	}
-	releaseNetworkLock = false
 	return &windowsDevice{
 		api:         api,
 		adapter:     adapter,
@@ -124,6 +133,10 @@ func createWindowsDeviceFrom(dllPath string) (*windowsDevice, error) {
 		readEvent:   windows.Handle(readEvent),
 		closeEvent:  closeEvent,
 	}, nil
+}
+
+func (device *windowsDevice) MigrateNetwork(ctx context.Context, previous, next NetworkSpec) error {
+	return migrateWindowsNetwork(ctx, previous, next)
 }
 
 func windowsWintunPath() (string, error) {

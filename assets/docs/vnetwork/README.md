@@ -111,8 +111,10 @@ portwayd vnetwork uninstall
 
 The Linux client receives its network parameters only after authentication, so it has
 no install or repair command. It exposes only `portway vnetwork uninstall`.
-Uninstall refuses foreign, drifted, or currently locked resources. On Windows
+Uninstall removes the single `portway0` network by name but refuses a network
+currently locked by Portway. On Windows
 amd64, both executables expose only `vnetwork uninstall`; it requires administrator
-privileges, identifies the adapter by Portway's fixed GUID, and refuses removal
-while a Portway process owns the network. On macOS, `vnetwork` is omitted from
+privileges and refuses removal while a Portway process owns the network. Live
+Windows address changes migrate the existing Adapter in place; a stale
+same-named Adapter is replaced before startup. On macOS, `vnetwork` is omitted from
 command help because VNet is managed automatically during `run`.

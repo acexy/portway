@@ -57,6 +57,49 @@ func TestVNetAddressChangeClosesOldDeviceBeforeInstallation(t *testing.T) {
 	}
 }
 
+type migratingClientVNetDevice struct {
+	countingVNetDevice
+	migrations chan vnet.NetworkSpec
+}
+
+func (device *migratingClientVNetDevice) MigrateNetwork(
+	_ context.Context,
+	_ vnet.NetworkSpec,
+	next vnet.NetworkSpec,
+) error {
+	device.migrations <- next
+	return nil
+}
+
+func TestVNetAddressChangeMigratesSupportedDeviceInPlace(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	device := &migratingClientVNetDevice{migrations: make(chan vnet.NetworkSpec, 1)}
+	manager := &clientVNetManager{context: ctx, cancel: cancel, clientID: "managed-a",
+		assignment: lifecycleVNetAssignment(), device: device,
+		logger: logging.New("test"), writer: control.NewWriter(&bytes.Buffer{})}
+	defer manager.close()
+	assignment := manager.assignment
+	assignment.PoolGeneration++
+	assignment.CIDR, assignment.ClientIP, assignment.ServerIP = "172.21.0.0/16", "172.21.0.2", "172.21.0.1"
+	if err := manager.applyAssignment(assignment); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case spec := <-device.migrations:
+		if spec.CIDR != assignment.CIDR || spec.LocalIP != assignment.ClientIP {
+			t.Fatalf("migration target = %+v", spec)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client address change did not migrate the live device")
+	}
+	manager.mutex.Lock()
+	active := manager.device
+	manager.mutex.Unlock()
+	if active != device || device.closeCount.Load() != 0 {
+		t.Fatal("client migration replaced or closed the live device")
+	}
+}
+
 func TestVNetPreparationIsAsyncAndDiscardsCancelledDevice(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := &clientVNetManager{context: ctx, cancel: cancel, clientID: "managed-a", writer: control.NewWriter(&bytes.Buffer{})}
