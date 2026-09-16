@@ -13,7 +13,7 @@ Portway establishes an authenticated, encrypted connection between `portway` and
 
 - **Proxy mode:** reach client-side services through a public `portwayd` entry.
 - **Forward mode:** reach restricted server-side services through a local `portway` entry.
-- **VNet mode:** form a mutually reachable private network cluster across networks with the server and Managed clients.
+- **VNet mode:** form a mutually reachable private network cluster with automatic QUIC P2P between Managed clients.
 
 Proxy and Forward address explicit services and ports. VNet provides a
 centralized VPN-like private-network experience: Managed nodes in different
@@ -39,7 +39,8 @@ Portway
 ├── Forward: expose an approved server-side service on a portway local port
 │   └── TCP / UDP local listener
 └── VNet: connect managed nodes through stable private IPv4 addresses
-    └── TCP / UDP over 1-8 isolated packet channels (default: 4)
+    ├── automatic QUIC Datagram P2P for reachable client pairs
+    └── server Relay fallback over 1-8 isolated packet channels (default: 4)
 ```
 
 ### Proxy: publish a client service through a server entry
@@ -75,6 +76,10 @@ networks. The server owns address
 `172.20.0.1` by default and assigns stable addresses to configured clients;
 client-to-client traffic uses automatic QUIC P2P when reachable and otherwise remains centrally relayed. Portway creates only its owned
 logical `portway0` network and enforces each destination's TCP/UDP port allowlist.
+P2P requires no feature switch: traffic continues over Relay during probing,
+LAN candidates are tried before Internet candidates, and only new flows use a
+verified direct path. The direct data plane always uses QUIC Datagram regardless
+of whether the authenticated client-server transport uses TCP or QUIC.
 The server-owned `network_mode` defaults to native TUN delivery; `loopback` uses
 a userspace TCP/IP stack to reach same-port TCP/UDP services bound to `127.0.0.1`.
 On Linux use `portwayd vnetwork status|install|repair|uninstall`; Linux clients
@@ -109,7 +114,9 @@ The table helps choose a mode. For traffic diagrams and complete boundaries, see
 - Forward TCP and UDP from client-side listeners to server-side networks. A
   server-wide allowlist restricts every target by CIDR, protocol, and port.
 - Run Proxy and Forward entries together over one authenticated client session.
-- Connect Managed VNet nodes through centrally routed traffic and node-level TCP/UDP inbound policies.
+- Connect Managed VNet clients through automatic QUIC Datagram P2P, with
+  uninterrupted server Relay during probing and automatic fallback when direct
+  connectivity is unavailable; node-level TCP/UDP policies remain enforced.
 
 **Transport and security**
 
@@ -330,11 +337,13 @@ authentication:
 ```
 
 After startup, the server can reach `172.20.0.2:8080`, and the node can reach
-authorized `172.20.0.1:22`. Client-to-client traffic automatically uses direct QUIC
-when probing succeeds and otherwise remains relayed through `portwayd`; traffic involving
-the server is never upgraded to P2P. VNet needs TUN privileges on Linux or macOS and may request operating
-system authorization on first activation. On Windows amd64, run the VNet-enabled
-process as administrator; the release archive already includes Wintun. For complete configuration, `tun` and
+authorized `172.20.0.1:22`. Client-to-client traffic automatically uses direct
+QUIC when probing succeeds and otherwise remains relayed through `portwayd`;
+traffic involving the server is never upgraded to P2P. Permit `P+1/UDP` for P2P,
+where `P` is the configured transport port. VNet needs TUN privileges on Linux
+or macOS and may request operating system authorization on first activation. On
+Windows amd64, run the VNet-enabled process as administrator; the release archive
+already includes Wintun. For complete configuration, `tun` and
 `loopback` delivery, port policies, and management commands, see
 [VNet configuration and operations](assets/docs/vnetwork/README.md).
 

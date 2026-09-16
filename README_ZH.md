@@ -13,7 +13,7 @@ Portway 在 `portway` 与 `portwayd` 之间建立认证、加密的连接，为�
 
 - **Proxy 模式：** 从 `portwayd` 的公共入口访问客户端侧服务。
 - **Forward 模式：** 从 `portway` 的本地入口访问服务端侧受限服务。
-- **VNet 模式：** 跨不同网络将服务端与 Managed 客户端组成可互访的私有网络集群。
+- **VNet 模式：** 跨不同网络组成私有网络集群，并在 Managed 客户端之间自动建立 QUIC P2P。
 
 Proxy 和 Forward 面向明确的服务与端口；VNet 则提供类似中心式 VPN 的私网互联体验：
 不同网络中的受管节点以稳定地址彼此访问。客户端间流量先经服务端中继，在探测成功后
@@ -34,7 +34,8 @@ Portway
 ├── Forward：将服务端侧获准服务转发到 portway 本地端口
 │   └── TCP / UDP 本地 Listener
 └── VNet：通过稳定的私有 IPv4 地址连接 Managed 节点
-    └── TCP / UDP 使用 1-8 条隔离 Packet Channel（默认 4）
+    ├── 可达客户端之间自动使用 QUIC Datagram P2P
+    └── 通过 1-8 条隔离 Packet Channel 提供服务端 Relay 回退（默认 4）
 ```
 
 ### Proxy：把客户端服务发布到服务端入口
@@ -63,7 +64,11 @@ Portway
 `172.20.0.1`，并为配置的客户端分配稳定地址；客户端间可达时自动使用 QUIC P2P，
 不可达时继续由服务端集中中继。
 Portway 只创建具有所有权记录的逻辑网络 `portway0`，并执行每个目标节点的 TCP/UDP
-端口允许列表。服务端控制的 `network_mode` 默认使用原生 TUN 交付；`loopback` 使用
+端口允许列表。
+P2P 无需配置开关：探测期间业务持续使用 Relay，优先验证 LAN 候选，再尝试 Internet
+候选，并且只有新 Flow 使用已经验证的直连路径。无论客户端与服务端之间配置 TCP 还是
+QUIC Transport，P2P 数据面都固定使用 QUIC Datagram。
+服务端控制的 `network_mode` 默认使用原生 TUN 交付；`loopback` 使用
 用户态 TCP/IP 栈访问绑定在 `127.0.0.1` 相同端口的 TCP/UDP 服务。Linux 服务端使用
 `portwayd vnetwork status|install|repair|uninstall`；
 Linux 客户端地址由服务端下发，因此只暴露安全的 `portway vnetwork uninstall` 命令。
@@ -95,7 +100,8 @@ Windows amd64 发布包会单独内置官方签名的 `wintun.dll`。启用 VNet
 - 将客户端侧 TCP/UDP Listener 转发到服务端网络，并由服务端 Allowlist 按 CIDR、
   协议和端口限制所有目标。
 - 在同一个认证客户端会话中同时运行 Proxy 和 Forward 条目。
-- 通过服务端集中路由和节点级 TCP/UDP 入站端口策略连接 Managed VNet 节点。
+- 在 Managed VNet 客户端之间自动建立 QUIC Datagram P2P；探测期间 Relay 不间断，
+  直连不可用时自动保持或回退服务端中继，并继续执行节点级 TCP/UDP 入站端口策略。
 
 **传输与安全**
 
@@ -304,8 +310,9 @@ authentication:
 
 启动后，服务端可访问 `172.20.0.2:8080`，该节点可访问已授权的
 `172.20.0.1:22`；客户端间流量在探测成功后自动使用 QUIC 直连，否则继续经 `portwayd`
-中继；涉及服务端的流量不会升级到 P2P。VNet 需要 Linux 或
-macOS 的 TUN 权限，首次启用可能请求操作系统授权。Windows amd64 上需要以管理员身份
+中继；涉及服务端的流量不会升级到 P2P。P2P 需要允许 `P+1/UDP`，其中 `P` 是已配置的
+Transport 端口。VNet 需要 Linux 或 macOS 的 TUN 权限，首次启用可能请求操作系统授权。
+Windows amd64 上需要以管理员身份
 运行启用 VNet 的进程，发布包已内置 Wintun。完整配置、`tun`/`loopback` 交付方式、
 端口策略和安装维护命令请参阅 [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)。
 

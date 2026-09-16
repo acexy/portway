@@ -14,13 +14,39 @@ unrestricted network access: each node receives only the TCP/UDP ports explicitl
 allowed by its `ports` value. VNet currently provides neither arbitrary IP
 protocols, broadcast, nor Internet egress.
 
+## Automatic QUIC P2P
+
+P2P is automatic whenever VNet is enabled and has no separate configuration
+switch. The first flow between two clients remains on Relay while `portwayd`
+coordinates bounded connectivity checks. LAN host candidates are tried first,
+then Internet server-reflexive candidates. After both peers authenticate a QUIC
+path, only new flows use QUIC Datagram directly; established Relay flows are not
+migrated. A failed probe or direct path keeps or returns traffic to Relay without
+disabling VNet, Proxy, or Forward. Traffic involving the server never attempts P2P.
+
+P2P always uses an independent QUIC Datagram connection, regardless of whether
+the configured client-server transport is TCP or QUIC. Peer traffic remains
+subject to the destination node's TCP/UDP allowlist and authenticated virtual
+address. The server coordinates identity, policy, activation, and revocation but
+does not relay packets once a direct flow is active.
+
+Both `portwayd` and each participating `portway` exclusively bind UDP port `P+1`,
+where `P` is the configured transport port. Permit both the transport port and
+`P+1/UDP` through the firewall. A local bind conflict is fatal; NAT, CGNAT, or
+firewall traversal failure only keeps Relay active.
+
+```text
+Relay
+  └─ Probing
+       ├─ LAN QUIC Direct
+       ├─ Internet QUIC Direct
+       └─ Relay fallback
+```
+
+## Configuration
+
 Configure VNet only on the server. Each endpoint's `ports` value is the inbound
 TCP/UDP allowlist for that endpoint:
-
-P2P has no configuration switch. When VNet is enabled, both `portwayd` and each
-participating `portway` exclusively bind UDP port `P+1`, where `P` is the configured
-transport port. Permit both the transport port and `P+1/UDP` through the firewall.
-A local bind conflict is fatal; NAT or firewall traversal failure only keeps Relay active.
 
 ```yaml
 virtual_network:
@@ -70,7 +96,7 @@ is not a separate installer. Start a VNet-enabled `portway` or `portwayd` as
 administrator. Portway loads Wintun and creates its temporary `portway0` adapter
 only when VNet is actually activated, then removes the adapter when the owning
 process closes it. Windows does not support manual `vnetwork` commands. Windows
-arm64 and other Windows architectures are not supported in this release.
+arm64 and other Windows architectures are not supported.
 
 Linux server management commands are:
 

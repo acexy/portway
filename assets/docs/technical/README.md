@@ -19,7 +19,7 @@ Proxy visitors                                  Forward visitors
 Forward targets                              Proxy local services
 ```
 
-Portway separates five responsibilities:
+Portway separates seven responsibilities:
 
 - **Transport** establishes authenticated client-server connections over TCP or
   QUIC.
@@ -30,6 +30,8 @@ Portway separates five responsibilities:
   client registrations.
 - **Forward runtime** maps client-side TCP/UDP listeners to server-authorized
   target IP addresses and ports.
+- **VNet runtime** assigns private IPv4 addresses, enforces destination port
+  policy, and coordinates automatic QUIC P2P with server Relay fallback.
 - **Security controls** validate configuration, authenticate connections, and
   enforce source-address policy.
 
@@ -113,6 +115,24 @@ bounded write timeout closes only the congested association.
 
 Global, client, proxy, source-IP, pending, creation-rate, datagram-size, queue,
 and memory limits are validated against compiled hard boundaries.
+
+## VNet and automatic P2P
+
+VNet gives the server and configured Managed clients stable private IPv4
+addresses. Destination TCP/UDP allowlists remain the authorization boundary.
+Client-to-server traffic always uses the authenticated server Relay path.
+
+Client-to-client traffic begins on Relay while the server coordinates bounded
+peer probing. LAN candidates are preferred before Internet candidates. Once
+both peers authenticate the path, new flows use an independent QUIC Datagram
+connection that carries one complete IPv4 packet per datagram. Existing Relay
+flows are not migrated, and probe or direct-path failure falls back without
+disabling the VNet. This P2P data plane is independent of the TCP or QUIC
+transport selected for client-server communication.
+
+The server remains authoritative for peer identity, virtual addresses, port
+policy, activation, and revocation. A VNet-enabled server and client reserve
+UDP port `P+1`, where `P` is the configured transport port.
 
 ## Transport choices
 

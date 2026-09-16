@@ -9,8 +9,8 @@ not represent release-date commitments.
 - Add repeatable packet-loss, congestion, queue-overflow, and high-source-
   cardinality load scenarios.
 - Add long-running Association expiry and resource-trend verification.
-- Measure whether native QUIC Datagram support provides enough benefit to
-  justify an additional transport capability.
+- Measure whether centrally relayed UDP Proxy and Forward paths benefit from
+  QUIC Datagram; VNet P2P already uses QUIC Datagram for direct IPv4 packets.
 
 ## Performance
 

@@ -9,12 +9,34 @@ VNet 状态与 Proxy、Forward 相互独立。
 这里的“互访”受目标节点的端口策略约束，而非无边界网络访问：每个节点只接收其 `ports`
 明确允许的 TCP/UDP 端口流量。VNet 当前不提供任意 IP 协议、广播或互联网出口。
 
+## 自动 QUIC P2P
+
+启用 VNet 后自动使用 P2P，不提供独立配置开关。两个客户端之间的首个 Flow 在
+`portwayd` 协调有界连通性探测期间继续使用 Relay。系统优先尝试 LAN Host Candidate，
+再尝试 Internet ServerReflexive Candidate。双方完成 QUIC 路径认证后，只有新 Flow
+改用 QUIC Datagram 直连，已经使用 Relay 的 Flow 不迁移。探测或直连失败只会保持或
+回退 Relay，不会关闭 VNet、Proxy 或 Forward。涉及服务端的流量永远不尝试 P2P。
+
+无论客户端与服务端之间配置 TCP 还是 QUIC Transport，P2P 始终使用独立 QUIC Datagram
+Connection。Peer 流量仍受目标节点 TCP/UDP Allowlist 和认证虚拟地址约束。服务端负责
+协调身份、策略、激活和撤销；Direct Flow 激活后，业务包不再经过服务端。
+
+`portwayd` 和每个参与的 `portway` 都会独占绑定 UDP 端口 `P+1`，其中 `P` 是已配置的
+Transport 端口。防火墙需要同时允许 Transport 端口和 `P+1/UDP`。本地端口绑定冲突会
+终止进程；NAT、CGNAT 或防火墙穿透失败只会保持 Relay。
+
+```text
+Relay
+  └─ Probing
+       ├─ LAN QUIC Direct
+       ├─ Internet QUIC Direct
+       └─ Relay fallback
+```
+
+## 配置
+
 VNet 只在服务端配置。每个节点的 `ports` 是其他节点访问该节点时的 TCP/UDP 入站
 允许列表：
-
-P2P 不提供配置开关。启用 VNet 后，`portwayd` 和每个参与的 `portway` 都会独占绑定
-UDP 端口 `P+1`，其中 `P` 是已配置的 Transport 端口。防火墙需要同时允许 Transport
-端口和 `P+1/UDP`。本地端口绑定冲突会终止进程；NAT 或防火墙穿透失败只会保持 Relay。
 
 ```yaml
 virtual_network:
@@ -58,7 +80,7 @@ virtual_network:
 Windows amd64 发布包内置官方签名的 `wintun.dll`，无需单独安装。启用 VNet 的
 `portway` 或 `portwayd` 必须以管理员身份启动。Portway 仅在实际激活 VNet 时加载
 Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。Windows 不支持
-手工 `vnetwork` 命令。本版本不支持 Windows arm64 及其他 Windows 架构。
+手工 `vnetwork` 命令。Windows arm64 及其他 Windows 架构不受支持。
 
 Linux 服务端管理命令如下：
 
