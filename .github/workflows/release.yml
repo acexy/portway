@@ -72,7 +72,7 @@ jobs:
           windows_archive=target/portway-win-amd64.tar
           test -f "$windows_archive"
           mapfile -t contents < <(tar -tf "$windows_archive")
-          [[ "${contents[*]}" == "portway.exe portwayd.exe LICENSE NOTICE" ]]
+          [[ "${contents[*]}" == "portway.exe portwayd.exe LICENSE NOTICE wintun.dll WINTUN-LICENSE.txt" ]]
 
       - name: Create checksums
         working-directory: target
