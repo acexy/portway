@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"runtime"
 	"sync"
 	"time"
 
@@ -42,6 +43,8 @@ type clientVNetManager struct {
 	prepareCancel  context.CancelFunc
 	poolCancel     context.CancelFunc
 	prepareNetwork func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
+	failures       chan error
+	exitOnConflict bool
 }
 
 func newClientVNetManager(
@@ -58,6 +61,7 @@ func newClientVNetManager(
 		context: ctx, cancel: cancel, logger: logger,
 		clientID: clientID, sessionID: sessionID, writer: writer, transport: transportSession,
 		offers: make(map[uint8]protocol.OpenVNetChannel), prepareNetwork: vnet.PrepareNetworkContext,
+		failures: make(chan error, 1), exitOnConflict: runtime.GOOS == "windows",
 	}
 	if len(serverAddresses) != 0 {
 		manager.serverAddress = serverAddresses[0]
@@ -261,6 +265,20 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 	if err != nil {
 		if errors.Is(err, vnet.ErrForeignResource) || errors.Is(err, vnet.ErrStateMismatch) {
 			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "network_conflict")
+			if manager.exitOnConflict {
+				manager.logger.WarnWithFields(
+					"VNet network conflict requires operator action; client is exiting. Stop other Portway processes, run 'portway vnetwork uninstall' as administrator, resolve any address or route overlap with the assigned VNet CIDR, then restart the client",
+					err,
+					map[string]any{
+						"event":     "vnet_network_conflict",
+						"vnet_cidr": assignment.CIDR,
+					},
+				)
+				select {
+				case manager.failures <- transport.Permanent(fmt.Errorf("Windows VNet network conflict: %w", err)):
+				default:
+				}
+			}
 			return
 		}
 		manager.logger.WarnWithFields("VNet network installation is required", err, map[string]any{

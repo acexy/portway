@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,33 @@ import (
 	"github.com/acexy/portway/internal/transport"
 	"github.com/acexy/portway/internal/vnet"
 )
+
+func TestWindowsVNetNetworkConflictReportsFailureAndStopsClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var status bytes.Buffer
+	manager := &clientVNetManager{
+		context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
+		writer: control.NewWriter(&status), failures: make(chan error, 1), exitOnConflict: true,
+		prepareNetwork: func(context.Context, vnet.NetworkSpec) (vnet.Device, error) {
+			return nil, fmt.Errorf("%w: VNet CIDR overlaps an existing route", vnet.ErrForeignResource)
+		},
+	}
+	defer manager.close()
+	if err := manager.applyAssignment(lifecycleVNetAssignment()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-manager.failures:
+		if !transport.IsPermanent(err) || !errors.Is(err, vnet.ErrForeignResource) {
+			t.Fatalf("conflict error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("network conflict did not stop the Windows client")
+	}
+	if !bytes.Contains(status.Bytes(), []byte("network_conflict")) {
+		t.Fatalf("reported status = %q", status.String())
+	}
+}
 
 func lifecycleVNetAssignment() protocol.VNetAssignment {
 	return protocol.VNetAssignment{

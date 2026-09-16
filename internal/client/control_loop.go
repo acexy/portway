@@ -97,6 +97,8 @@ func (s *Service) runControlLoop(
 				writer,
 			)
 			return nil
+		case err := <-vnetFailures(vnetManager):
+			return err
 		case err := <-readErrors:
 			return err
 		case envelope, ok := <-messages:
@@ -400,6 +402,13 @@ func (s *Service) runControlLoop(
 			}
 		}
 	}
+}
+
+func vnetFailures(manager *clientVNetManager) <-chan error {
+	if manager == nil {
+		return nil
+	}
+	return manager.failures
 }
 
 func replaceManagedForwardRuntime(
