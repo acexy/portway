@@ -33,6 +33,8 @@ const (
 	peerDatagramHeaderSize    = 12
 	peerHandshakeTimeout      = 5 * time.Second
 	peerReflexiveProbeDelay   = 200 * time.Millisecond
+	peerProbeRetryInterval    = 200 * time.Millisecond
+	peerProbeAttempts         = 3
 	peerIdleTimeout           = 90 * time.Second
 	peerMaximumCandidates     = 16
 	peerMaximumTrackedFlows   = 65536
@@ -239,7 +241,7 @@ func (endpoint *PeerEndpoint) ApplyOffer(offer protocol.VNetPeerOffer) error {
 			reflexiveCandidates = append(reflexiveCandidates, candidate)
 		}
 	}
-	endpoint.sendProbes(state, hostCandidates)
+	endpoint.startProbeChecks(state, hostCandidates)
 	endpoint.waitGroup.Go(func() {
 		timer := time.NewTimer(peerReflexiveProbeDelay)
 		defer timer.Stop()
@@ -252,7 +254,7 @@ func (endpoint *PeerEndpoint) ApplyOffer(offer protocol.VNetPeerOffer) error {
 		connected := state.connection != nil || state.dialing
 		endpoint.mutex.Unlock()
 		if !connected {
-			endpoint.sendProbes(state, reflexiveCandidates)
+			endpoint.startProbeChecks(state, reflexiveCandidates)
 		}
 	})
 	endpoint.waitGroup.Go(func() {
@@ -271,6 +273,36 @@ func (endpoint *PeerEndpoint) ApplyOffer(offer protocol.VNetPeerOffer) error {
 		}
 	})
 	return nil
+}
+
+func (endpoint *PeerEndpoint) startProbeChecks(
+	state *peerOfferState,
+	candidates []protocol.VNetPeerCandidate,
+) {
+	if len(candidates) == 0 {
+		return
+	}
+	endpoint.waitGroup.Go(func() {
+		for attempt := 0; attempt < peerProbeAttempts; attempt++ {
+			endpoint.mutex.Lock()
+			connected := state.connection != nil
+			endpoint.mutex.Unlock()
+			if connected || endpoint.context.Err() != nil {
+				return
+			}
+			endpoint.sendProbes(state, candidates)
+			if attempt+1 == peerProbeAttempts {
+				return
+			}
+			timer := time.NewTimer(peerProbeRetryInterval)
+			select {
+			case <-endpoint.context.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+	})
 }
 
 func (endpoint *PeerEndpoint) sendProbes(state *peerOfferState, candidates []protocol.VNetPeerCandidate) {

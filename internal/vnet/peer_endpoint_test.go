@@ -105,15 +105,6 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 	ticket := base64.RawURLEncoding.EncodeToString(secret)
 	expires := time.Now().Add(30 * time.Second).UnixMilli()
 	generation := uint64(1)
-	if err := endpointB.ApplyOffer(protocol.VNetPeerOffer{
-		PeerGeneration: generation, PeerClientID: "client-a", PeerVirtualIP: "172.20.0.2",
-		PeerFingerprint: endpointA.Fingerprint(), PairTicket: ticket,
-		Role:       protocol.VNetPeerRoleServer,
-		Candidates: []protocol.VNetPeerCandidate{{Address: endpointA.connection.LocalAddr().String(), Type: "host"}},
-		InboundUDP: []protocol.VNetPeerPortRange{{Start: 9000, End: 9000}}, ExpiresAtUnixMS: expires,
-	}); err != nil {
-		t.Fatalf("apply endpoint B offer: %v", err)
-	}
 	if err := endpointA.ApplyOffer(protocol.VNetPeerOffer{
 		PeerGeneration: generation, PeerClientID: "client-b", PeerVirtualIP: "172.20.0.3",
 		PeerFingerprint: endpointB.Fingerprint(), PairTicket: ticket,
@@ -122,6 +113,15 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 		InboundUDP: []protocol.VNetPeerPortRange{{Start: 8000, End: 8000}}, ExpiresAtUnixMS: expires,
 	}); err != nil {
 		t.Fatalf("apply endpoint A offer: %v", err)
+	}
+	if err := endpointB.ApplyOffer(protocol.VNetPeerOffer{
+		PeerGeneration: generation, PeerClientID: "client-a", PeerVirtualIP: "172.20.0.2",
+		PeerFingerprint: endpointA.Fingerprint(), PairTicket: ticket,
+		Role:       protocol.VNetPeerRoleServer,
+		Candidates: []protocol.VNetPeerCandidate{{Address: endpointA.connection.LocalAddr().String(), Type: "host"}},
+		InboundUDP: []protocol.VNetPeerPortRange{{Start: 9000, End: 9000}}, ExpiresAtUnixMS: expires,
+	}); err != nil {
+		t.Fatalf("apply endpoint B offer: %v", err)
 	}
 	waitPeerReady := func(channel <-chan protocol.VNetPeerStatus) {
 		t.Helper()
