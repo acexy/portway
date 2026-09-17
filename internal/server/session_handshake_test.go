@@ -122,6 +122,87 @@ func TestHandleConnectionRejectsAuthenticatedClientIDMismatchBeforeRegistration(
 	}
 }
 
+func TestHandleConnectionFinishesSessionExpiredResponseBeforeClosingControlConnection(t *testing.T) {
+	clientConnection, serverConnection := net.Pipe()
+	defer clientConnection.Close()
+
+	snapshot, err := authentication.NewSnapshot([]authentication.Record{{
+		Context: authentication.Context{Mode: authentication.ModeShared},
+		Token:   "shared-token-with-at-least-32-random-bytes",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := authentication.NewStore(snapshot)
+	selector := authentication.Selector("shared-token-with-at-least-32-random-bytes")
+	record, exists := store.Resolve(selector[:])
+	if !exists {
+		t.Fatal("shared authentication record was not indexed")
+	}
+	stream := &closeTrackingStream{Conn: serverConnection}
+	service := &Service{
+		logger:              logging.New("test"),
+		clientRegistry:      session.NewRegistry(),
+		authenticationStore: store,
+	}
+	results := make(chan error, 1)
+	go func() {
+		results <- service.handleConnection(context.Background(), transport.Inbound{
+			Stream:         stream,
+			Role:           protocol.RoleControl,
+			Authentication: record.Context,
+			RemoteAddress:  "pipe",
+		})
+	}()
+
+	if _, err := protocol.ReadControl(clientConnection); err != nil {
+		t.Fatalf("read server identification: %v", err)
+	}
+	if err := protocol.WriteControl(clientConnection, protocol.MessageClientIdentification, validTestClientIdentification()); err != nil {
+		t.Fatalf("write client identification: %v", err)
+	}
+	if err := protocol.WriteControl(clientConnection, protocol.MessageClientHello, protocol.ClientHello{
+		ClientID:        "client-with-expired-session",
+		ResumeSessionID: "expired-session",
+		Capabilities:    []protocol.Capability{protocol.CapabilityJSONControl},
+	}); err != nil {
+		t.Fatalf("write client hello: %v", err)
+	}
+	envelope, err := protocol.ReadControl(clientConnection)
+	if err != nil {
+		t.Fatalf("read session error: %v", err)
+	}
+	var sessionError protocol.SessionError
+	if err := protocol.DecodePayload(envelope, &sessionError); err != nil {
+		t.Fatalf("decode session error: %v", err)
+	}
+	if envelope.Type != protocol.MessageSessionError || sessionError.Code != protocol.SessionErrorSessionExpired {
+		t.Fatalf("unexpected rejection: type=%s error=%+v", envelope.Type, sessionError)
+	}
+	if err := <-results; err != nil {
+		t.Fatalf("unexpected handler result: %v", err)
+	}
+	if stream.closeWriteCalls != 1 || stream.closeCalls != 0 {
+		t.Fatalf("rejection close behavior: CloseWrite=%d Close=%d", stream.closeWriteCalls, stream.closeCalls)
+	}
+}
+
+type closeTrackingStream struct {
+	net.Conn
+	closeCalls      int
+	closeWriteCalls int
+}
+
+func (stream *closeTrackingStream) Close() error {
+	stream.closeCalls++
+	return stream.Conn.Close()
+}
+
+func (stream *closeTrackingStream) CloseWrite() error {
+	stream.closeWriteCalls++
+	return nil
+}
+
 func TestManagedInitializationFailureRemovesNewSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
