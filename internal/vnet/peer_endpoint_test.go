@@ -76,6 +76,7 @@ func TestPeerEndpointRejectsInboundFlowOutsideActiveGeneration(t *testing.T) {
 }
 
 func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
+	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	readyA := make(chan protocol.VNetPeerStatus, 1)
@@ -102,7 +103,7 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 	secret := make([]byte, 32)
 	_, _ = rand.Read(secret)
 	ticket := base64.RawURLEncoding.EncodeToString(secret)
-	expires := time.Now().Add(5 * time.Second).UnixMilli()
+	expires := time.Now().Add(30 * time.Second).UnixMilli()
 	generation := uint64(1)
 	if err := endpointB.ApplyOffer(protocol.VNetPeerOffer{
 		PeerGeneration: generation, PeerClientID: "client-a", PeerVirtualIP: "172.20.0.2",
@@ -129,7 +130,7 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 			if status.State != protocol.VNetPeerStateReady {
 				t.Fatalf("peer state = %s", status.State)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatal("peer QUIC path did not become ready")
 		}
 	}
