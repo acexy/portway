@@ -14,7 +14,6 @@ not represent release-date commitments.
 
 ## Performance
 
-- Establish repeatable TCP, HTTP, HTTPS, UDP, and transport benchmarks.
 - Profile CPU, memory allocations, goroutines, and file descriptors under
   sustained load.
 - Reduce avoidable allocations and copies in verified hot paths.
@@ -35,9 +34,6 @@ not represent release-date commitments.
 
 ## Operational maturity
 
-- Add health, readiness, and metrics endpoints.
-- Define stable operational metrics and log fields.
-- Add repeatable load and soak test scenarios.
 - Improve release verification, upgrade guidance, and rollback procedures.
 
 ## Contributing
