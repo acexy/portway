@@ -30,70 +30,81 @@ func main() {
 }
 
 func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	application := cli.Application{
-		Name:        "portwayd",
-		Title:       "Portway Server",
-		Description: "Secure reverse tunneling server",
-		Version:     buildinfo.Current(),
-		Commands: []cli.Command{
-			{
-				Name:    "run",
-				Usage:   "run [FILE]",
-				Summary: "Start the Portway server",
-				Execute: runServerCommand,
-			},
-			{
-				Name:    "gen",
-				Summary: "Generate server resources",
-				Subcommands: []cli.Command{
-					{
-						Name:    "config",
-						Usage:   "config [full]",
-						Summary: "Generate server.yaml in the current directory",
-						Options: []cli.Option{{
-							Usage:       "full",
-							Description: "Generate the complete annotated configuration",
-						}},
-						Execute: runGenerateServerConfiguration,
-					},
-					{
-						Name:    "cert",
-						Usage:   "cert [options]",
-						Summary: "Generate an internal CA and server certificate",
-						Options: []cli.Option{
-							{
-								Usage:       "--output-dir DIR",
-								Description: "Certificate output directory (default: certs)",
-							},
-							{
-								Usage:       "--server-name NAME",
-								Description: "Server DNS SAN; may be repeated",
-							},
-							{
-								Usage:       "--ip ADDRESS",
-								Description: "Server IP SAN; may be repeated",
-							},
-						},
-						Execute: runGenerateCertificate,
-					},
+	commands := []cli.Command{
+		{
+			Name:    "run",
+			Usage:   "run [config]",
+			Summary: "Start the Portway server",
+			Execute: runServerCommand,
+		},
+		{
+			Name:    "gen",
+			Summary: "Generate server resources",
+			Subcommands: []cli.Command{
+				{
+					Name:    "config",
+					Usage:   "config [full]",
+					Summary: "Generate server.yaml in the current directory",
+					Options: []cli.Option{{
+						Usage:       "full",
+						Description: "Generate the complete annotated configuration",
+					}},
+					Execute: runGenerateServerConfiguration,
 				},
-			},
-			{
-				Name: "vnetwork", Summary: "Manage the Portway virtual network",
-				Subcommands: []cli.Command{
-					{Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus},
-					{Name: "install", Usage: "install [FILE]", Summary: "Install the configured portway0 network", Execute: runVNetworkInstall},
-					{Name: "repair", Usage: "repair [FILE]", Summary: "Repair the owned portway0 network", Execute: runVNetworkRepair},
-					{Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runServerVNetworkUninstall},
+				{
+					Name:    "cert",
+					Usage:   "cert [options]",
+					Summary: "Generate an internal CA and server certificate",
+					Options: []cli.Option{
+						{Usage: "--output-dir DIR", Description: "Certificate output directory (default: certs)"},
+						{Usage: "--server-name NAME", Description: "Server DNS SAN; may be repeated"},
+						{Usage: "--ip ADDRESS", Description: "Server IP SAN; may be repeated"},
+					},
+					Execute: runGenerateCertificate,
 				},
 			},
 		},
+	}
+	if vnet.ManualNetworkManagementSupported() {
+		commands = append(commands, cli.Command{
+			Name: "vnetwork", Summary: "Manage the Portway virtual network",
+			Subcommands: []cli.Command{
+				{Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus},
+				{Name: "install", Usage: "install [FILE]", Summary: "Install the configured portway0 network", Execute: runVNetworkInstall},
+				{Name: "repair", Usage: "repair [FILE]", Summary: "Repair the owned portway0 network", Execute: runVNetworkRepair},
+				{Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runServerVNetworkUninstall},
+			},
+		})
+	} else if vnet.NetworkStatusSupported() || vnet.NetworkUninstallSupported() {
+		subcommands := make([]cli.Command, 0, 2)
+		if vnet.NetworkStatusSupported() {
+			subcommands = append(subcommands, cli.Command{
+				Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus,
+			})
+		}
+		if vnet.NetworkUninstallSupported() {
+			subcommands = append(subcommands, cli.Command{
+				Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network",
+				Execute: runServerVNetworkUninstall,
+			})
+		}
+		commands = append(commands, cli.Command{
+			Name: "vnetwork", Summary: "Manage the Portway virtual network",
+			Subcommands: subcommands,
+		})
+	}
+	application := cli.Application{
+		Name:        "portwayd",
+		Title:       "Portway Server",
+		Description: "Lightweight, secure, and stable network connectivity through Proxy, Forward, and VNet modes.",
+		Version:     buildinfo.Current(),
+		Commands:    commands,
 	}
 	return application.Run(arguments, stdout, stderr)
 }
 
 func runVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.ManualNetworkManagementSupported() {
+	if !vnet.ManualNetworkManagementSupported() && !vnet.NetworkStatusSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
 	if len(arguments) != 0 {
@@ -121,22 +132,23 @@ func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer
 	if !vnet.ManualNetworkManagementSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
+	operation, successResult := vnetworkConfigureResult(repair)
 	path, valid := serverConfigurationPath(arguments)
 	if !valid {
-		_, _ = io.WriteString(stderr, "portwayd vnetwork install: at most one configuration file is allowed\n")
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: at most one configuration file is allowed\n", operation)
 		return 2
 	}
 	configuration, err := config.LoadServer(path, false)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork install: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: %v\n", operation, err)
 		return 1
 	}
 	if !configuration.VirtualNetwork.Enabled {
-		_, _ = io.WriteString(stderr, "portwayd vnetwork install: virtual_network is disabled\n")
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: virtual_network is disabled\n", operation)
 		return 1
 	}
 	spec := vnet.NetworkSpec{Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
-		LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP, MTU: 1280, OwnerUID: os.Getuid()}
+		LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP, MTU: 1280, OwnerUID: -1}
 	var device vnet.Device
 	if repair {
 		device, err = vnet.RepairNetwork(spec)
@@ -144,12 +156,22 @@ func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer
 		device, err = vnet.PrepareNetwork(spec)
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork install: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: %v\n", operation, err)
 		return 1
 	}
-	_ = device.Close()
-	_, _ = io.WriteString(stdout, "Installed\n")
+	if err := device.Close(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: close configured network: %v\n", operation, err)
+		return 1
+	}
+	_, _ = fmt.Fprintln(stdout, successResult)
 	return 0
+}
+
+func vnetworkConfigureResult(repair bool) (operation string, successResult string) {
+	if repair {
+		return "repair", "Repaired"
+	}
+	return "install", "Installed"
 }
 
 func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.Writer) int {
@@ -160,7 +182,7 @@ func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.
 		_, _ = io.WriteString(stderr, "portwayd vnetwork uninstall: no arguments are allowed\n")
 		return 2
 	}
-	result, err := vnet.UninstallNetwork()
+	result, err := vnet.UninstallNetworkAuthorized()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork uninstall: %s: %v\n", result, err)
 		return 1
@@ -222,6 +244,14 @@ func runServerCommand(
 	if err != nil {
 		log.Error("failed to load server configuration", err)
 		return 1
+	}
+	if configuration.VirtualNetwork.Enabled {
+		if exitCode, relaunched, err := vnet.ElevateCurrentProcess(); err != nil {
+			log.Error("failed to obtain Windows administrator authorization", err)
+			return 1
+		} else if relaunched {
+			return exitCode
+		}
 	}
 	if err := logging.EnableConsole(configuration.LogLevel); err != nil {
 		log.Error("failed to configure logging", err)

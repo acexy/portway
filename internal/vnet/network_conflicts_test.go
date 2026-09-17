@@ -9,9 +9,9 @@ import (
 func TestNetworkConflictBoundaries(t *testing.T) {
 	candidate := netip.MustParsePrefix("172.20.0.0/16")
 	for _, test := range []struct {
-		name string
-		address string
-		route string
+		name     string
+		address  string
+		route    string
 		conflict bool
 	}{
 		{"default route", "192.168.1.2/24", "0.0.0.0/0", false},

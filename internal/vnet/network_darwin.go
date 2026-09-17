@@ -329,10 +329,15 @@ func uninstallPlatformNetwork(ownershipManifest) error {
 	return errors.New("manual VNet management is unavailable on macOS")
 }
 
-func repairPlatformNetwork(spec NetworkSpec) (Device, error) { return preparePlatformNetwork(context.Background(), spec) }
-func platformRootGroup() string                              { return "wheel" }
-func manualNetworkManagementSupported() bool                 { return false }
-func runtimeHelperSupported() bool                           { return true }
+func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
+	return preparePlatformNetwork(context.Background(), spec)
+}
+func platformRootGroup() string              { return "wheel" }
+func manualNetworkManagementSupported() bool { return false }
+func networkUninstallSupported() bool         { return false }
+func runtimeHelperSupported() bool           { return true }
+func platformSupported() bool                { return true }
+func runtimeReprepareSupported() bool        { return false }
 
 func netipPrefixLength(cidr string) (int, error) {
 	_, network, err := net.ParseCIDR(cidr)
@@ -349,6 +354,8 @@ func cidrNetmask(bits int) string {
 }
 
 func platformIdentityMatches(ownershipManifest) bool { return false }
+
+func uninstallEphemeralNetwork() (string, bool, error) { return "", false, nil }
 
 func darwinNetworkRoutes() ([]netip.Prefix, error) {
 	data, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)

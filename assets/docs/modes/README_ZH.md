@@ -3,7 +3,7 @@
 Portway 提供三种面向不同网络边界的连接模式。Proxy 将 `portway` 可访问的服务
 发布出去；Forward 让用户从本地访问 `portwayd` 所在网络中经过授权的服务；VNet
 则将跨不同网络的服务端与显式配置的 Managed 节点组成一个受端口策略约束、可彼此访问的
-私有 IPv4 网络集群。
+私有 IPv4 网络集群，并在可达客户端之间自动建立 QUIC P2P。
 
 ## 模式与流量方向
 
@@ -119,7 +119,7 @@ Forward 本地入口在服务端批准后创建，客户端控制会话结束时
           |
           | 私有 IPv4 TCP / UDP
           v
-     portwayd 中心路由
+ portwayd 中继或 QUIC P2P
           |
           v
 另一个已授权的 VNet 节点
@@ -127,11 +127,18 @@ Forward 本地入口在服务端批准后创建，客户端控制会话结束时
 
 VNet 没有“公共入口”或客户端本地转发 Listener。服务端为自身和每个 Managed 客户端
 分配稳定私有 IPv4 地址，并根据目标节点的 TCP/UDP 端口允许列表决定是否递送流量；
-客户端之间始终经由 `portwayd` 中继。它使不同网络中的固定节点获得类似 VPN 的私网互访
-体验，适合管理、服务发现和内部服务访问；当前不承载任意 IP 协议、广播或通用互联网出口。
+客户端间流量先经 `portwayd` 中继，自动探测成功后仅将新 Flow 升级为 QUIC P2P；
+涉及服务端的流量始终保持中继。探测期间 Relay 持续可用，因此升级不会暂停或迁移
+既有流量。系统优先尝试 LAN 候选，再尝试 Internet 候选；Direct Path 故障后自动将
+受影响 Flow 切回 Relay，并且不重放交付状态不确定的数据包。无论客户端与服务端之间
+使用 TCP 还是 QUIC Transport，直连数据面都固定使用 QUIC Datagram。它使不同网络中的
+固定节点获得类似 VPN 的私网互访体验，适合管理、服务发现和内部服务访问；当前不承载
+任意 IP 协议、广播或通用互联网出口。
 
-VNet 只在服务端 `virtual_network` 节点配置，且只允许 Managed 客户端加入。它需要
-Linux 或 macOS 的 TUN 网络资源；`network_mode: tun` 将流量交给虚拟 IP 上的服务，
+VNet 只在服务端 `virtual_network` 节点配置，且只允许 Managed 客户端加入。
+P2P 没有独立开关。启用 VNet 的服务端与客户端会预留 `P+1/UDP`，其中 `P` 是 Transport
+端口；防火墙必须允许该端口。
+VNet 需要 Linux 或 macOS 的 TUN 网络资源；`network_mode: tun` 将流量交给虚拟 IP 上的服务，
 `loopback` 将已授权流量送往同端口的 `127.0.0.1` 服务。配置、运维命令和安全边界见
 [VNet 配置与运维](../vnetwork/README_ZH.md)。
 

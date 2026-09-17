@@ -4,7 +4,7 @@ Portway provides three modes for different network boundaries. Proxy publishes
 services reachable by `portway`; Forward provides local access to approved
 services reachable by `portwayd`; VNet places the server and explicitly
 configured Managed nodes across networks in a mutually reachable private IPv4
-cluster governed by port policy.
+cluster governed by port policy, with automatic QUIC P2P between reachable clients.
 
 ## Modes and traffic directions
 
@@ -128,7 +128,7 @@ Server or VNet client
           |
           | Private IPv4 TCP / UDP
           v
-  Central routing at portwayd
+ portwayd Relay or QUIC P2P
           |
           v
 Another authorized VNet node
@@ -137,12 +137,21 @@ Another authorized VNet node
 VNet has neither a public entry nor a client-local forwarding listener. The
 server assigns stable private IPv4 addresses to itself and each Managed client,
 then decides delivery using the destination node's TCP/UDP inbound allowlist.
-Client-to-client traffic is always relayed through `portwayd`. It gives fixed
+Client-to-client traffic starts through `portwayd`; successful automatic probing
+upgrades only new flows to QUIC P2P, while traffic involving the server remains
+relayed. Relay stays active during probing, so an upgrade does not pause or
+migrate existing traffic.
+LAN candidates are preferred before Internet candidates, and direct-path failure
+automatically returns affected flows to Relay without replaying uncertain packets.
+The direct data plane always uses QUIC Datagram, independently of the configured
+TCP or QUIC client-server transport. It gives fixed
 nodes in different networks a VPN-like private-access experience and suits
 management, service discovery, and internal service access. It currently does
 not carry arbitrary IP protocols, broadcast, or general Internet egress.
 
 Only the server configures `virtual_network`, and only Managed clients can join.
+P2P has no separate switch. A VNet-enabled server and client reserve `P+1/UDP`,
+where `P` is the transport port; this port must be permitted through the firewall.
 VNet uses TUN network resources on Linux or macOS. `network_mode: tun` delivers
 traffic to services on the virtual IP, while `loopback` delivers authorized
 traffic to the same port on `127.0.0.1`. See [VNet configuration and

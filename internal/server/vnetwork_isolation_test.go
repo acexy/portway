@@ -40,7 +40,7 @@ func TestVNetDestinationFailureDoesNotFailSource(t *testing.T) {
 		t.Fatalf("offline target failed source: %v", err)
 	}
 	spec := vnet.PoolSpec{ClientID: "target", SessionID: "session", VirtualIP: "172.20.0.3",
-		PoolGeneration: 1, ChannelCount: 1, MTU: 1280, WriteTimeout: 20*time.Millisecond}
+		PoolGeneration: 1, ChannelCount: 1, MTU: 1280, WriteTimeout: 20 * time.Millisecond}
 	offers, err := runtime.broker.Prepare(spec, time.Minute)
 	if err != nil {
 		t.Fatal(err)

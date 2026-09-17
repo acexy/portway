@@ -115,10 +115,10 @@ func TestPoolSendTimesOutBlockedTarget(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 	pool := &Pool{
-		spec:       PoolSpec{MTU: 1280, WriteTimeout: 20 * time.Millisecond},
-		channels:   []net.Conn{server},
-		writers: []*PacketWriter{NewPacketWriter(context.Background(), server, 1280, 20*time.Millisecond)},
-		done:       make(chan struct{}),
+		spec:     PoolSpec{MTU: 1280, WriteTimeout: 20 * time.Millisecond},
+		channels: []net.Conn{server},
+		writers:  []*PacketWriter{NewPacketWriter(context.Background(), server, 1280, 20*time.Millisecond)},
+		done:     make(chan struct{}),
 	}
 	if err := pool.Send([]byte{1, 2, 3}, 0); err == nil {
 		t.Fatal("expected blocked VNet target write to time out")
@@ -156,4 +156,43 @@ func TestPoolRemovalPreservesReplacementGeneration(t *testing.T) {
 	if _, ok := broker.Active(spec.ClientID); ok || broker.pending[spec.ClientID] != nil {
 		t.Fatal("matching generation was not removed")
 	}
+}
+
+func TestBlockedPoolDoesNotDelayIndependentPool(t *testing.T) {
+	blockedServer, blockedPeer := net.Pipe()
+	defer blockedPeer.Close()
+	blocked := &Pool{
+		spec:     PoolSpec{MTU: 1280, WriteTimeout: 50 * time.Millisecond},
+		channels: []net.Conn{blockedServer},
+		writers:  []*PacketWriter{NewPacketWriter(context.Background(), blockedServer, 1280, 50*time.Millisecond)},
+		done:     make(chan struct{}),
+	}
+	fastServer, fastPeer := net.Pipe()
+	defer fastPeer.Close()
+	fast := &Pool{
+		spec:     PoolSpec{MTU: 1280, WriteTimeout: time.Second},
+		channels: []net.Conn{fastServer},
+		writers:  []*PacketWriter{NewPacketWriter(context.Background(), fastServer, 1280, time.Second)},
+		done:     make(chan struct{}),
+	}
+	packet := []byte{1, 2, 3}
+	blockedResult := make(chan error, 1)
+	go func() { blockedResult <- blocked.Send(packet, 0) }()
+	fastResult := make(chan error, 1)
+	go func() { fastResult <- fast.Send(packet, 0) }()
+	if _, err := ReadPacket(fastPeer, 1280); err != nil {
+		t.Fatalf("read independent pool: %v", err)
+	}
+	select {
+	case err := <-fastResult:
+		if err != nil {
+			t.Fatalf("independent pool failed: %v", err)
+		}
+	case <-time.After(25 * time.Millisecond):
+		t.Fatal("blocked pool delayed independent pool")
+	}
+	if err := <-blockedResult; err == nil {
+		t.Fatal("blocked pool did not time out")
+	}
+	fast.Close()
 }

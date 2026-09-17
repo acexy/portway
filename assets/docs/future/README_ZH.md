@@ -7,7 +7,8 @@
 
 - 增加可复现的丢包、拥塞、队列溢出和高来源基数负载场景测试。
 - 增加长时间运行的关联过期和资源趋势验证。
-- 评估原生 QUIC Datagram 支持是否能带来足够的收益，以证明额外传输能力的必要性。
+- 评估中心中继的 UDP Proxy 和 Forward 路径是否适合 QUIC Datagram；VNet P2P 已使用
+  QUIC Datagram 直传完整 IPv4 包。
 
 ## 性能
 

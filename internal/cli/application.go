@@ -25,21 +25,29 @@ const (
 
 // Theme contains replaceable ANSI styles used by the CLI renderer.
 type Theme struct {
-	Accent  string
-	Command string
-	Muted   string
-	Error   string
-	Reset   string
+	Accent      string
+	Description string
+	Command     string
+	Run         string
+	Generate    string
+	Manage      string
+	Muted       string
+	Error       string
+	Reset       string
 }
 
 // DefaultTheme returns the shared Portway terminal theme.
 func DefaultTheme() Theme {
 	return Theme{
-		Accent:  "\x1b[1;36m",
-		Command: "\x1b[1;33m",
-		Muted:   "\x1b[2m",
-		Error:   "\x1b[1;31m",
-		Reset:   "\x1b[0m",
+		Accent:      "\x1b[1;36m",
+		Description: "\x1b[36m",
+		Command:     "\x1b[1;33m",
+		Run:         "\x1b[1;32m",
+		Generate:    "\x1b[1;35m",
+		Manage:      "\x1b[1;34m",
+		Muted:       "\x1b[2m",
+		Error:       "\x1b[1;31m",
+		Reset:       "\x1b[0m",
 	}
 }
 
@@ -122,7 +130,7 @@ func (application Application) WriteHelp(writer io.Writer) {
 		renderer.theme.Accent,
 		application.Title,
 		renderer.theme.Reset,
-		renderer.theme.Muted,
+		renderer.descriptionStyle(),
 		application.Description,
 		renderer.theme.Reset,
 	)
@@ -164,10 +172,11 @@ func (application Application) writeCommandHelp(
 	command Command,
 ) {
 	renderer := application.renderer(writer)
+	style := renderer.commandStyle(strings.Fields(path))
 	_, _ = fmt.Fprintf(
 		writer,
 		"%s%s %s%s\n%s%s%s\n\n",
-		renderer.theme.Accent,
+		style,
 		application.Name,
 		path,
 		renderer.theme.Reset,
@@ -287,7 +296,7 @@ func (application Application) writeCommandList(
 		writer,
 		"%s%s%-20s%s %s\n",
 		indent,
-		renderer.theme.Command,
+		renderer.commandStyle(path),
 		display,
 		renderer.theme.Reset,
 		command.Summary,
@@ -311,6 +320,32 @@ func (application Application) writeUnknownCommand(writer io.Writer, name string
 
 type renderer struct {
 	theme Theme
+}
+
+func (renderer renderer) descriptionStyle() string {
+	if renderer.theme.Description == "" {
+		return renderer.theme.Accent
+	}
+	return renderer.theme.Description
+}
+
+func (renderer renderer) commandStyle(path []string) string {
+	if len(path) == 0 {
+		return renderer.theme.Command
+	}
+	var style string
+	switch path[0] {
+	case "run":
+		style = renderer.theme.Run
+	case "gen":
+		style = renderer.theme.Generate
+	case "vnetwork":
+		style = renderer.theme.Manage
+	}
+	if style == "" {
+		return renderer.theme.Command
+	}
+	return style
 }
 
 func (application Application) renderer(writer io.Writer) renderer {

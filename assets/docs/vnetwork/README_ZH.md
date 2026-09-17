@@ -1,12 +1,39 @@
 # VNet
 
 VNet 使用稳定的私有 IPv4 地址连接跨不同网络的 `portwayd` 服务端与显式配置的 Managed
-客户端，支持 Linux 和 macOS 上的 IPv4 TCP、UDP。它让固定节点获得类似 VPN 的私网集群
-与互访体验：应用直接使用目标节点的私有地址和端口，客户端之间的数据包始终由服务端中继。
+客户端，支持 Linux、macOS 和 Windows amd64 上的 IPv4 TCP、UDP。它让固定节点获得类似 VPN 的私网集群
+与互访体验：应用直接使用目标节点的私有地址和端口。客户端间流量先经服务端中继，探测成功后
+自动让新 Flow 使用 QUIC Datagram 直连；涉及服务端的流量始终保持中继。
 VNet 状态与 Proxy、Forward 相互独立。
 
 这里的“互访”受目标节点的端口策略约束，而非无边界网络访问：每个节点只接收其 `ports`
 明确允许的 TCP/UDP 端口流量。VNet 当前不提供任意 IP 协议、广播或互联网出口。
+
+## 自动 QUIC P2P
+
+启用 VNet 后自动使用 P2P，不提供独立配置开关。两个客户端之间的首个 Flow 在
+`portwayd` 协调有界连通性探测期间继续使用 Relay。系统优先尝试 LAN Host Candidate，
+再尝试 Internet ServerReflexive Candidate。双方完成 QUIC 路径认证后，只有新 Flow
+改用 QUIC Datagram 直连，已经使用 Relay 的 Flow 不迁移。探测或直连失败只会保持或
+回退 Relay，不会关闭 VNet、Proxy 或 Forward。涉及服务端的流量永远不尝试 P2P。
+
+无论客户端与服务端之间配置 TCP 还是 QUIC Transport，P2P 始终使用独立 QUIC Datagram
+Connection。Peer 流量仍受目标节点 TCP/UDP Allowlist 和认证虚拟地址约束。服务端负责
+协调身份、策略、激活和撤销；Direct Flow 激活后，业务包不再经过服务端。
+
+`portwayd` 和每个参与的 `portway` 都会独占绑定 UDP 端口 `P+1`，其中 `P` 是已配置的
+Transport 端口。防火墙需要同时允许 Transport 端口和 `P+1/UDP`。本地端口绑定冲突会
+终止进程；NAT、CGNAT 或防火墙穿透失败只会保持 Relay。
+
+```text
+Relay
+  └─ Probing
+       ├─ LAN QUIC Direct
+       ├─ Internet QUIC Direct
+       └─ Relay fallback
+```
+
+## 配置
 
 VNet 只在服务端配置。每个节点的 `ports` 是其他节点访问该节点时的 TCP/UDP 入站
 允许列表：
@@ -50,6 +77,15 @@ virtual_network:
 短生命周期提权模式，接收其创建的 `utunN` FD 后继续以普通权限运行。macOS 不支持
 手工 `vnetwork` 命令；持有进程关闭 FD 后，接口和路由由系统自动清理。
 
+Windows amd64 发布包内置官方签名的 `wintun.dll`，无需单独安装。可能需要 Windows
+VNet 权限的命令会通过 UAC 申请管理员授权；用户确认后，命令在重新启动的提升权限进程中
+继续执行。客户端只能在认证后得知是否启用 VNet，因此 `portway run` 在启动前申请授权；
+`portwayd run` 仅在 `virtual_network.enabled` 为 true 时申请。Portway 仅在实际激活
+VNet 时加载 Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。
+Windows 不支持 install 或 repair，但提供只读的 `vnetwork status` 和 `vnetwork uninstall`，
+用于检查或安全移除正常进程生命周期之外残留的自有 Adapter。Windows arm64 及其他
+Windows 架构不受支持。
+
 Linux 服务端管理命令如下：
 
 ```text
@@ -59,6 +95,14 @@ portwayd vnetwork repair [server.yaml]
 portwayd vnetwork uninstall
 ```
 
+每个命令都会向原调用终端报告结果：`status` 输出网络字段，`install` 和 `repair` 成功时
+分别输出 `Installed` 和 `Repaired`，`uninstall` 输出稳定的删除结果。Windows UAC 操作会
+把结果回传到原终端，输出重定向时行为保持不变。
+
 Linux 客户端只能在认证后获得网络参数，因此没有 install、repair 命令，只提供
-`portway vnetwork uninstall`。卸载会拒绝外部资源、配置漂移或正被进程锁定的资源。
-macOS 调用这些命令时会明确报告 VNet 由 `run` 自动管理。
+`portway vnetwork uninstall`。卸载按名称删除唯一的 `portway0` 网络，但会拒绝删除正被
+Portway 进程锁定的网络。Windows amd64 的客户端和服务端都提供 `vnetwork status` 和
+`vnetwork uninstall`；status 只读且不申请 UAC，uninstall 在需要时申请 UAC 授权，并拒绝
+删除仍被 Portway 进程持有的网络。
+Windows 运行期地址变更会原地迁移现有 Adapter；启动前会替换残留的同名 Adapter。macOS
+的 VNet 由 `run` 自动管理，因此命令帮助中不显示 `vnetwork`。

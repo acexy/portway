@@ -24,6 +24,7 @@ func (s *Service) runControlLoop(
 	transportSession transport.ClientSession,
 	managementMode protocol.ManagementMode,
 	vnetNegotiated bool,
+	vnetPeerNegotiated bool,
 	forwardRuntimes ...*forwardManager,
 ) error {
 	var forwardRuntime *forwardManager
@@ -56,7 +57,7 @@ func (s *Service) runControlLoop(
 	if vnetNegotiated && managementMode == protocol.ManagementModeManaged {
 		vnetManager = newClientVNetManager(
 			sessionContext, sessionLogger.WithComponent("vnet"), s.runtimeIdentity(),
-			sessionID, writer, transportSession,
+			sessionID, writer, transportSession, s.configuration.Transport.ServerAddress,
 		)
 		defer vnetManager.close()
 	}
@@ -96,6 +97,8 @@ func (s *Service) runControlLoop(
 				writer,
 			)
 			return nil
+		case err := <-vnetFailures(vnetManager):
+			return err
 		case err := <-readErrors:
 			return err
 		case envelope, ok := <-messages:
@@ -156,6 +159,37 @@ func (s *Service) runControlLoop(
 				if err := vnetManager.deactivate(deactivation); err != nil {
 					return err
 				}
+			case protocol.MessageVNetPeerOffer:
+				if vnetManager == nil || !vnetPeerNegotiated {
+					return fmt.Errorf("%w: unexpected VNet peer offer", transport.ErrProtocol)
+				}
+				var offer protocol.VNetPeerOffer
+				if err := protocol.DecodePayload(envelope, &offer); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if err := vnetManager.peerOffer(offer); err != nil {
+					return fmt.Errorf("%w: %v", transport.ErrProtocol, err)
+				}
+			case protocol.MessageVNetPeerActivate:
+				if vnetManager == nil || !vnetPeerNegotiated {
+					return fmt.Errorf("%w: unexpected VNet peer activation", transport.ErrProtocol)
+				}
+				var activation protocol.VNetPeerActivate
+				if err := protocol.DecodePayload(envelope, &activation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				if err := vnetManager.peerActivate(activation); err != nil {
+					return fmt.Errorf("%w: %v", transport.ErrProtocol, err)
+				}
+			case protocol.MessageVNetPeerRevoke:
+				if vnetManager == nil || !vnetPeerNegotiated {
+					return fmt.Errorf("%w: unexpected VNet peer revocation", transport.ErrProtocol)
+				}
+				var revocation protocol.VNetPeerRevoke
+				if err := protocol.DecodePayload(envelope, &revocation); err != nil {
+					return classifyControlProtocolError(err)
+				}
+				vnetManager.peerRevoke(revocation)
 			case protocol.MessageForwardBindingRevoked:
 				if forwardRuntime == nil {
 					return fmt.Errorf("%w: unexpected Forward revocation", transport.ErrProtocol)
@@ -368,6 +402,13 @@ func (s *Service) runControlLoop(
 			}
 		}
 	}
+}
+
+func vnetFailures(manager *clientVNetManager) <-chan error {
+	if manager == nil {
+		return nil
+	}
+	return manager.failures
 }
 
 func replaceManagedForwardRuntime(

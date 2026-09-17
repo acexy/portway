@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"runtime"
 	"sync"
 	"time"
 
@@ -19,27 +20,31 @@ import (
 const clientVNetChannelWriteTimeout = 5 * time.Second
 
 type clientVNetManager struct {
-	context       context.Context
-	cancel        context.CancelFunc
-	logger        *logging.Logger
-	clientID      string
-	sessionID     string
-	writer        *control.Writer
-	transport     transport.ClientSession
-	mutex         sync.Mutex
-	assignment    protocol.VNetAssignment
-	device        vnet.Device
-	userspaceTCP  *vnet.UserspaceTCP
-	offers        map[uint8]protocol.OpenVNetChannel
-	activated     bool
-	channels      []transport.Stream
-	channelWrites []*vnet.PacketWriter
-	waitGroup     sync.WaitGroup
-	deviceWrite   sync.Mutex
-	prepareMutex sync.Mutex
-	prepareCancel context.CancelFunc
-	poolCancel context.CancelFunc
+	context        context.Context
+	cancel         context.CancelFunc
+	logger         *logging.Logger
+	clientID       string
+	sessionID      string
+	writer         *control.Writer
+	transport      transport.ClientSession
+	serverAddress  string
+	mutex          sync.Mutex
+	assignment     protocol.VNetAssignment
+	device         vnet.Device
+	userspaceTCP   *vnet.UserspaceTCP
+	peerEndpoint   *vnet.PeerEndpoint
+	offers         map[uint8]protocol.OpenVNetChannel
+	activated      bool
+	channels       []transport.Stream
+	channelWrites  []*vnet.PacketWriter
+	waitGroup      sync.WaitGroup
+	deviceWrite    sync.Mutex
+	prepareMutex   sync.Mutex
+	prepareCancel  context.CancelFunc
+	poolCancel     context.CancelFunc
 	prepareNetwork func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
+	failures       chan error
+	exitOnConflict bool
 }
 
 func newClientVNetManager(
@@ -49,18 +54,32 @@ func newClientVNetManager(
 	sessionID string,
 	writer *control.Writer,
 	transportSession transport.ClientSession,
+	serverAddresses ...string,
 ) *clientVNetManager {
 	ctx, cancel := context.WithCancel(parent)
-	return &clientVNetManager{
+	manager := &clientVNetManager{
 		context: ctx, cancel: cancel, logger: logger,
 		clientID: clientID, sessionID: sessionID, writer: writer, transport: transportSession,
 		offers: make(map[uint8]protocol.OpenVNetChannel), prepareNetwork: vnet.PrepareNetworkContext,
+		failures: make(chan error, 1), exitOnConflict: runtime.GOOS == "windows",
 	}
+	if len(serverAddresses) != 0 {
+		manager.serverAddress = serverAddresses[0]
+	}
+	return manager
 }
 
 func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssignment) error {
 	if err := validateVNetAssignment(assignment, manager.clientID); err != nil {
 		return fmt.Errorf("%w: %v", transport.ErrProtocol, err)
+	}
+	if assignment.PeerRegistrationTicket != "" {
+		if err := manager.preparePeerEndpoint(assignment); err != nil {
+			manager.logger.WarnWithFields("VNet P2P UDP port is unavailable; client is exiting", err, map[string]any{
+				"event": "vnet_p2p_bind_failed",
+			})
+			return transport.Permanent(err)
+		}
 	}
 	manager.mutex.Lock()
 	if manager.prepareCancel != nil {
@@ -76,6 +95,7 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 		previous.CIDR == assignment.CIDR && previous.ClientIP == assignment.ClientIP &&
 		previous.ServerIP == assignment.ServerIP && previous.MTU == assignment.MTU &&
 		previous.NetworkMode == assignment.NetworkMode
+	preservePeer := manager.peerEndpoint != nil && assignment.PeerRegistrationTicket != ""
 	channels := manager.channels
 	manager.channels = nil
 	manager.channelWrites = nil
@@ -83,11 +103,19 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 		manager.device = nil
 		manager.userspaceTCP = nil
 	}
+	var peerEndpoint *vnet.PeerEndpoint
+	if !preservePeer {
+		peerEndpoint = manager.peerEndpoint
+		manager.peerEndpoint = nil
+	}
 	manager.assignment = assignment
 	manager.offers = make(map[uint8]protocol.OpenVNetChannel)
 	manager.activated = false
 	manager.mutex.Unlock()
 	closeVNetChannels(channels)
+	if peerEndpoint != nil {
+		_ = peerEndpoint.Close()
+	}
 	if preserveDevice {
 		return manager.reportAssignmentStatus(assignment, protocol.VNetStateReady, "")
 	}
@@ -98,6 +126,25 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	manager.waitGroup.Go(func() {
 		manager.prepareMutex.Lock()
 		defer manager.prepareMutex.Unlock()
+		if device != nil && previous.State == protocol.VNetStateEnabled &&
+			assignment.State == protocol.VNetStateEnabled && previous.NetworkMode == assignment.NetworkMode &&
+			vnet.NetworkMigrationSupported(device) {
+			if userspaceTCP != nil {
+				_ = userspaceTCP.Close()
+				userspaceTCP = nil
+			}
+			migrationError := vnet.MigrateNetworkContext(
+				ctx,
+				device,
+				clientNetworkSpec(previous),
+				clientNetworkSpec(assignment),
+			)
+			if migrationError == nil {
+				manager.activatePreparedDevice(ctx, assignment, device, false)
+				return
+			}
+			manager.logger.Warn("failed to migrate VNet network; recreating the device", migrationError)
+		}
 		if userspaceTCP != nil {
 			_ = userspaceTCP.Close()
 		}
@@ -116,11 +163,99 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	return nil
 }
 
+func (manager *clientVNetManager) preparePeerEndpoint(assignment protocol.VNetAssignment) error {
+	manager.mutex.Lock()
+	existing := manager.peerEndpoint
+	previous := manager.assignment
+	var stale *vnet.PeerEndpoint
+	if existing != nil && (previous.ClientIP != assignment.ClientIP || previous.MTU != assignment.MTU) {
+		stale = existing
+		manager.peerEndpoint = nil
+		existing = nil
+	}
+	manager.mutex.Unlock()
+	if stale != nil {
+		_ = stale.Close()
+	}
+	if existing == nil {
+		bindAddress, err := vnet.PeerUDPAddress(manager.serverAddress, true)
+		if err != nil {
+			return err
+		}
+		endpoint, err := vnet.NewPeerEndpoint(
+			manager.context, bindAddress, manager.clientID, manager.sessionID,
+			assignment.ClientIP, assignment.MTU,
+			func(status protocol.VNetPeerStatus) error {
+				return manager.writer.Write(protocol.MessageVNetPeerStatus, status)
+			},
+			manager.deliverPeerPacket,
+		)
+		if err != nil {
+			return err
+		}
+		endpoint.SetFlowOpener(func(generation uint64, peerClientID string, flow vnet.Flow) error {
+			return manager.writer.Write(protocol.MessageVNetPeerFlowOpen, protocol.VNetPeerFlowOpen{
+				PeerGeneration: generation, PeerClientID: peerClientID, Protocol: flow.Protocol,
+				SourceIP: flow.SourceIP.String(), SourcePort: flow.SourcePort,
+				DestinationIP: flow.DestinationIP.String(), DestinationPort: flow.DestinationPort,
+				TCPFlags: flow.TCPFlags,
+			})
+		})
+		manager.mutex.Lock()
+		if manager.peerEndpoint == nil {
+			manager.peerEndpoint = endpoint
+			existing = endpoint
+		} else {
+			existing = manager.peerEndpoint
+		}
+		manager.mutex.Unlock()
+		if existing != endpoint {
+			_ = endpoint.Close()
+		}
+	}
+	serverAddress, err := vnet.PeerUDPAddress(manager.serverAddress, false)
+	if err != nil {
+		return err
+	}
+	if err := existing.Register(serverAddress, assignment.PeerRegistrationTicket); err != nil {
+		manager.logger.WarnWithFields("VNet P2P registration could not be sent; relay remains active", err, map[string]any{
+			"event": "vnet_p2p_registration_failed",
+		})
+	}
+	return nil
+}
+
+func (manager *clientVNetManager) peerOffer(offer protocol.VNetPeerOffer) error {
+	manager.mutex.Lock()
+	endpoint := manager.peerEndpoint
+	manager.mutex.Unlock()
+	if endpoint == nil {
+		return errors.New("VNet peer endpoint is unavailable")
+	}
+	return endpoint.ApplyOffer(offer)
+}
+
+func (manager *clientVNetManager) peerActivate(activation protocol.VNetPeerActivate) error {
+	manager.mutex.Lock()
+	endpoint := manager.peerEndpoint
+	manager.mutex.Unlock()
+	if endpoint == nil {
+		return errors.New("VNet peer endpoint is unavailable")
+	}
+	return endpoint.Activate(activation)
+}
+
+func (manager *clientVNetManager) peerRevoke(revocation protocol.VNetPeerRevoke) {
+	manager.mutex.Lock()
+	endpoint := manager.peerEndpoint
+	manager.mutex.Unlock()
+	if endpoint != nil {
+		endpoint.Revoke(revocation)
+	}
+}
+
 func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment protocol.VNetAssignment) {
-	preparedDevice, err := manager.prepareNetwork(ctx, vnet.NetworkSpec{
-		Role: vnet.NetworkRoleClient, CIDR: assignment.CIDR, LocalIP: assignment.ClientIP,
-		ServerIP: assignment.ServerIP, MTU: assignment.MTU, OwnerUID: -1,
-	})
+	preparedDevice, err := manager.prepareNetwork(ctx, clientNetworkSpec(assignment))
 	if ctx.Err() != nil {
 		if preparedDevice != nil {
 			_ = preparedDevice.Close()
@@ -130,6 +265,20 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 	if err != nil {
 		if errors.Is(err, vnet.ErrForeignResource) || errors.Is(err, vnet.ErrStateMismatch) {
 			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "network_conflict")
+			if manager.exitOnConflict {
+				manager.logger.WarnWithFields(
+					"VNet network conflict requires operator action; client is exiting. Stop other Portway processes, run 'portway vnetwork uninstall' as administrator, resolve any address or route overlap with the assigned VNet CIDR, then restart the client",
+					err,
+					map[string]any{
+						"event":     "vnet_network_conflict",
+						"vnet_cidr": assignment.CIDR,
+					},
+				)
+				select {
+				case manager.failures <- transport.Permanent(fmt.Errorf("Windows VNet network conflict: %w", err)):
+				default:
+				}
+			}
 			return
 		}
 		manager.logger.WarnWithFields("VNet network installation is required", err, map[string]any{
@@ -138,7 +287,22 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 		_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateInstallationRequired, "device_unavailable")
 		return
 	}
-	device := preparedDevice
+	manager.activatePreparedDevice(ctx, assignment, preparedDevice, true)
+}
+
+func clientNetworkSpec(assignment protocol.VNetAssignment) vnet.NetworkSpec {
+	return vnet.NetworkSpec{
+		Role: vnet.NetworkRoleClient, CIDR: assignment.CIDR, LocalIP: assignment.ClientIP,
+		ServerIP: assignment.ServerIP, MTU: assignment.MTU, OwnerUID: -1,
+	}
+}
+
+func (manager *clientVNetManager) activatePreparedDevice(
+	ctx context.Context,
+	assignment protocol.VNetAssignment,
+	device vnet.Device,
+	startReader bool,
+) {
 	var userspaceTCP *vnet.UserspaceTCP
 	if assignment.NetworkMode == string(config.VNetNetworkModeLoopback) {
 		prefix, _ := netip.ParsePrefix(assignment.CIDR)
@@ -164,7 +328,9 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 	}
 	manager.device = device
 	manager.userspaceTCP = userspaceTCP
-	manager.waitGroup.Go(func() { manager.readDevice(device, assignment) })
+	if startReader {
+		manager.waitGroup.Go(func() { manager.readDevice(device, assignment) })
+	}
 	manager.mutex.Unlock()
 	manager.logger.InfoWithFields("VNet network is ready", map[string]any{
 		"event":          "vnet_network_ready",
@@ -331,22 +497,58 @@ func (manager *clientVNetManager) readDevice(
 			return
 		}
 		packet := append([]byte(nil), buffer[:length]...)
-		flow, err := vnet.ParseIPv4(packet)
-		if err != nil || flow.SourceIP.String() != assignment.ClientIP {
-			continue
-		}
 		manager.mutex.Lock()
 		if manager.device != device {
 			manager.mutex.Unlock()
 			return
 		}
+		current := manager.assignment
 		userspaceTCP := manager.userspaceTCP
 		manager.mutex.Unlock()
+		flow, err := vnet.ParseIPv4(packet)
+		if err != nil || flow.SourceIP.String() != current.ClientIP {
+			continue
+		}
 		if userspaceTCP != nil && !userspaceTCP.ObserveHostPacket(packet) {
 			continue
 		}
+		manager.mutex.Lock()
+		peerEndpoint := manager.peerEndpoint
+		manager.mutex.Unlock()
+		if peerEndpoint != nil {
+			sent, sendError := peerEndpoint.Send(flow, packet, time.Now())
+			if sent {
+				if sendError != nil {
+					manager.logger.WarnWithFields("VNet direct path send failed; relay fallback activated", sendError, map[string]any{
+						"event": "vnet_p2p_send_failed",
+					})
+				}
+				continue
+			}
+			peerEndpoint.MarkRelay(flow, time.Now())
+		}
 		_ = manager.sendUserspaceTCPPacket(packet)
 	}
+}
+
+func (manager *clientVNetManager) deliverPeerPacket(packet []byte) error {
+	manager.mutex.Lock()
+	device := manager.device
+	userspaceTCP := manager.userspaceTCP
+	manager.mutex.Unlock()
+	if device == nil {
+		return errors.New("VNet device is unavailable")
+	}
+	if userspaceTCP != nil && userspaceTCP.Handle(packet) {
+		return nil
+	}
+	manager.deviceWrite.Lock()
+	written, err := device.WritePacket(packet)
+	manager.deviceWrite.Unlock()
+	if err == nil && written != len(packet) {
+		return errors.New("short VNet peer device write")
+	}
+	return err
 }
 
 func (manager *clientVNetManager) readChannel(
@@ -370,7 +572,11 @@ func (manager *clientVNetManager) readChannel(
 			return
 		}
 		userspaceTCP := manager.userspaceTCP
+		peerEndpoint := manager.peerEndpoint
 		manager.mutex.Unlock()
+		if peerEndpoint != nil {
+			peerEndpoint.MarkRelay(flow, time.Now())
+		}
 		if userspaceTCP != nil && userspaceTCP.Handle(packet) {
 			continue
 		}
@@ -478,12 +684,17 @@ func (manager *clientVNetManager) closeRuntime() {
 	manager.device = nil
 	userspaceTCP := manager.userspaceTCP
 	manager.userspaceTCP = nil
+	peerEndpoint := manager.peerEndpoint
+	manager.peerEndpoint = nil
 	manager.mutex.Unlock()
 	if userspaceTCP != nil {
 		_ = userspaceTCP.Close()
 	}
 	if device != nil {
 		device.Close()
+	}
+	if peerEndpoint != nil {
+		_ = peerEndpoint.Close()
 	}
 }
 

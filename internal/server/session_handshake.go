@@ -190,6 +190,7 @@ func (s *Service) handleAdmittedConnection(
 			inbound.Generation,
 			inbound.Authentication,
 			writer,
+			coll.SliceContains(negotiatedCapabilities, protocol.CapabilityVNetP2PQUIC),
 		)
 		defer s.vnetRuntime.detach(clientHello.ClientID, sessionID)
 	}

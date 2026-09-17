@@ -6,7 +6,10 @@ import "testing"
 
 func TestLinuxOwnershipRequiresInterfaceBinding(t *testing.T) {
 	manifest := ownershipManifest{PlatformInterface: LogicalInterfaceName, InstallationID: "installation"}
-	for _, test := range []struct { data string; valid bool }{
+	for _, test := range []struct {
+		data  string
+		valid bool
+	}{
 		{`[{"ifname":"portway0","ifalias":"portway:installation","linkinfo":{"info_kind":"tun","info_data":{"type":"tun"}}}]`, true},
 		{`[{"ifname":"portway0","ifalias":"portway:installation","linkinfo":{"info_kind":"tun","info_data":{"type":"tap"}}}]`, false},
 		{`[{"ifname":"portway0","linkinfo":{"info_kind":"tun","info_data":{"type":"tun"}}}]`, false},
@@ -41,13 +44,17 @@ func TestLinuxLegacyIdentityCanBeInstalledWithoutAcceptingForeignAlias(t *testin
 	}
 }
 
-func TestLinuxMigrationExcludesOnlyOwnedConnectedRoutes(t *testing.T) {
+func TestLinuxMigrationExcludesAllRoutesOnReplacedInterface(t *testing.T) {
 	data := []byte(`[{"dst":"172.20.0.0/16","dev":"portway0","protocol":"kernel"},{"dst":"172.21.0.0/16","dev":"other0","protocol":"kernel"}]`)
 	routes, err := parseLinuxNetworkRoutesExcluding(data, LogicalInterfaceName)
 	if err != nil || len(routes) != 1 || routes[0].String() != "172.21.0.0/16" {
 		t.Fatalf("migration routes = %v, error = %v", routes, err)
 	}
-	if _, err := parseLinuxNetworkRoutesExcluding([]byte(`[{"dst":"172.20.0.0/16","dev":"portway0","protocol":"static"}]`), LogicalInterfaceName); err == nil {
-		t.Fatal("manually attached route was silently taken over")
+	routes, err = parseLinuxNetworkRoutesExcluding(
+		[]byte(`[{"dst":"172.20.0.0/16","dev":"portway0","protocol":"static"}]`),
+		LogicalInterfaceName,
+	)
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("replaced interface routes = %v, error = %v", routes, err)
 	}
 }

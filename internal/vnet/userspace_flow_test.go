@@ -53,11 +53,11 @@ func TestUserspaceCapacityRejectsWithoutTUNFallback(t *testing.T) {
 
 // scriptedDatagramConn lets the test deliver an old read timeout after opposite traffic.
 type scriptedDatagramConn struct {
-	reads chan error
-	writes chan struct{}
+	reads     chan error
+	writes    chan struct{}
 	deadlines chan time.Time
-	closed chan struct{}
-	once sync.Once
+	closed    chan struct{}
+	once      sync.Once
 }
 
 func newScriptedDatagramConn() *scriptedDatagramConn {
@@ -93,9 +93,9 @@ func (connection *scriptedDatagramConn) SetReadDeadline(deadline time.Time) erro
 }
 
 func (connection *scriptedDatagramConn) SetDeadline(time.Time) error { return connection.Close() }
-func (*scriptedDatagramConn) SetWriteDeadline(time.Time) error { return nil }
-func (*scriptedDatagramConn) LocalAddr() net.Addr { return &net.UDPAddr{} }
-func (*scriptedDatagramConn) RemoteAddr() net.Addr { return &net.UDPAddr{} }
+func (*scriptedDatagramConn) SetWriteDeadline(time.Time) error       { return nil }
+func (*scriptedDatagramConn) LocalAddr() net.Addr                    { return &net.UDPAddr{} }
+func (*scriptedDatagramConn) RemoteAddr() net.Addr                   { return &net.UDPAddr{} }
 
 func TestUDPAssociationRechecksActivityAfterOldDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

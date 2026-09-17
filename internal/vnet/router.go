@@ -69,13 +69,13 @@ type flowState struct {
 
 // Router owns the bounded authorization state for VNet packet routing.
 type Router struct {
-	mutex       sync.Mutex
-	policy      routingPolicy
-	flows       map[flowKey]flowState
-	maxFlows    int
-	tcpIdle     time.Duration
-	udpIdle     time.Duration
-	nextCleanup time.Time
+	mutex               sync.Mutex
+	policy              routingPolicy
+	flows               map[flowKey]flowState
+	maxFlows            int
+	tcpIdle             time.Duration
+	udpIdle             time.Duration
+	nextCleanup         time.Time
 	nextCapacityCleanup time.Time
 }
 
@@ -145,6 +145,22 @@ func (router *Router) RouteClientPacket(
 	flow, err := ParseIPv4(packet)
 	if err != nil {
 		return Destination{}, err
+	}
+	router.mutex.Lock()
+	defer router.mutex.Unlock()
+	ownedIP, exists := router.policy.byClientID[clientID]
+	if !exists || ownedIP != flow.SourceIP {
+		return Destination{}, ErrSourceRejected
+	}
+	return router.routeLocked(flow, now)
+}
+
+// AuthorizePeerFlow validates and records the first packet metadata of a direct flow.
+// The resulting state allows the same flow to fall back through the center router.
+func (router *Router) AuthorizePeerFlow(clientID string, flow Flow, now time.Time) (Destination, error) {
+	if !flow.SourceIP.Is4() || !flow.DestinationIP.Is4() ||
+		(flow.Protocol != protocolTCP && flow.Protocol != protocolUDP) {
+		return Destination{}, ErrInvalidPacket
 	}
 	router.mutex.Lock()
 	defer router.mutex.Unlock()
