@@ -81,6 +81,11 @@ HTTPS terminates TLS at `portwayd` and uses HTTP over the authenticated tunnel t
 See the complete server template for listeners, certificates, timeouts, and capacity settings,
 and the [technical overview](../technical/README.md) for behavior.
 
+For controlled one-to-many delivery, Mirror Proxy copies the same public TCP or UDP input to
+several Governed or Managed clients while allowing only one configured Primary to reply. It is
+useful for observation, auditing, parallel processing, and shadow validation, but it is not a
+load balancer. See [TCP and UDP Proxy mirroring](../proxy-mirroring/README.md).
+
 ## Forward: reach the server-side network
 
 Forward is disabled by default. The server must enable it and constrain the allowed destination
@@ -128,7 +133,7 @@ forwards:
 After starting both sides, local applications reach the database at `127.0.0.1:15432`. Bind the
 entry point to loopback unless other hosts genuinely need access. Targets use explicit IP addresses,
 and every connection is authorized against current server policy. See
-[the three connectivity modes](../modes/README.md) for the complete boundary.
+[Forward: reach server-side networks](../forward/README.md) for the complete boundary.
 
 ## VNet: VPN-like private networking
 
@@ -211,6 +216,9 @@ only `root-ca.crt` to clients. See [Security](../security/README.md) for additio
 ## Next steps
 
 - Choose a configuration-control model: [Authentication and configuration control](../authentication/README.md)
-- Understand traffic direction and boundaries: [The three connectivity modes](../modes/README.md)
+- Publish client-side services: [Proxy](../proxy/README.md)
+- Reach server-side networks: [Forward](../forward/README.md)
+- Connect managed nodes: [VNet](../vnetwork/README.md)
+- Copy public TCP/UDP input safely: [TCP and UDP Proxy mirroring](../proxy-mirroring/README.md)
 - Configure monitoring and probes: [Operational endpoints](../operations/README.md)
 - Understand reload scope: [Server configuration reload](../reload/README.md)

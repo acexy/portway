@@ -79,6 +79,11 @@ HTTP/HTTPS Proxy 使用 `public.domain` 和 `public.schemes` 选择服务端入�
 HTTPS 在 `portwayd` 终止 TLS，并通过认证隧道以 HTTP 回源。Listener、证书、超时和
 容量配置见完整服务端模板；行为边界见[技术概览](../technical/README_ZH.md)。
 
+需要受控的一对多递送时，镜像 Proxy 可以把相同的公共 TCP/UDP 输入复制给多个
+Governed 或 Managed 客户端，同时只允许指定的 Primary 回复。它适合观测、审计、
+并行处理和影子验证，但不是负载均衡器。配置方法见
+[TCP 与 UDP Proxy 镜像](../proxy-mirroring/README_ZH.md)。
+
 ## Forward：访问服务端侧网络
 
 Forward 默认关闭。服务端必须明确启用，并限制允许访问的目标网段、协议和端口：
@@ -124,7 +129,7 @@ forwards:
 
 启动双方后，本地应用连接 `127.0.0.1:15432` 即可访问目标数据库。除非确实需要其他
 主机访问，应将本地入口绑定到回环地址。目标只接受明确的 IP，每次连接都会按服务端
-当前规则授权。详细边界见[三种连接模式](../modes/README_ZH.md)。
+当前规则授权。完整边界见[Forward：访问服务端侧网络](../forward/README_ZH.md)。
 
 ## VNet：类似 VPN 的私网互联
 
@@ -203,6 +208,9 @@ transport:
 ## 下一步
 
 - 选择配置控制方式：[多模式认证与配置控制](../authentication/README_ZH.md)
-- 了解流量方向和模式边界：[三种连接模式](../modes/README_ZH.md)
+- 发布客户端侧服务：[Proxy](../proxy/README_ZH.md)
+- 访问服务端侧网络：[Forward](../forward/README_ZH.md)
+- 连接受管节点：[VNet](../vnetwork/README_ZH.md)
+- 安全复制公共 TCP/UDP 输入：[TCP 与 UDP Proxy 镜像](../proxy-mirroring/README_ZH.md)
 - 配置监控与探针：[运维接口](../operations/README_ZH.md)
 - 了解热加载范围：[服务端配置热加载](../reload/README_ZH.md)

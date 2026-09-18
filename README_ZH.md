@@ -8,15 +8,17 @@
 轻量、安全的跨网络连接工具：发布私有服务、访问远端内网，或连接分散的受管节点。
 </p>
 
-Portway 在 `portway` 客户端与 `portwayd` 服务端之间建立认证、加密的连接。
-它适合没有固定公网地址、位于 NAT 后方或不希望直接开放端口的服务。
+Portway 是一个轻量的反向隧道与私网互联系统。它在 `portway` 客户端与 `portwayd`
+服务端之间建立认证、加密的连接，并通过这些连接发布服务、受控访问远端网络，或连接
+受管节点。它适合家庭网络、开发环境、私有云和边缘站点中位于 NAT 后方、没有固定
+公网地址，或不应直接开放端口的服务。
 
 ```text
 私有网络 / 边缘节点  <-- 认证加密连接 -->  公网或中心节点
        portway                              portwayd
 ```
 
-## 可以用它做什么
+## 连接模式
 
 ### 发布私有服务
 
@@ -27,8 +29,15 @@ Portway 在 `portway` 客户端与 `portwayd` 服务端之间建立认证、加�
 访问者 -> portwayd 公共端口或域名 -> portway -> 私有服务
 ```
 
-这就是 **Proxy** 模式，支持 TCP、UDP、HTTP 和 HTTPS。TCP/UDP Proxy 还可以将同一份
-输入镜像给多个客户端，用于观测、审计和影子验证。
+这就是 **Proxy** 模式，它有两种不同的工作模型：
+
+- **普通 Proxy** 将一个服务端 TCP/UDP 端口或 HTTP/HTTPS 域名映射到一个客户端服务。
+- **镜像 Proxy** 将相同的公共 TCP/UDP 输入复制给多个 Governed 或 Managed 客户端；
+  只有指定的 Primary 可以回复，其他成员可以观测或处理输入，但不会影响访问者响应。
+
+镜像 Proxy 适合生产流量观测、审计、协议分析、并行处理，以及迁移前的影子验证。
+它不是负载均衡器：不会在成员之间分配访问者，也不会聚合成员响应。完整行为与配置见
+[TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)。
 
 ### 安全访问远端内网
 
@@ -57,19 +66,22 @@ QUIC Datagram 直连，不可直连时继续通过服务端中继；与传统的
 
 | 你的需求 | 选择 | 入口在哪里 | 目标在哪里 |
 | --- | --- | --- | --- |
-| 对外提供客户端侧服务 | Proxy | `portwayd` | 客户端网络 |
-| 在本地使用服务端侧内网服务 | Forward | `portway` | 服务端网络 |
-| 获得类似 VPN 的受控私网互联 | VNet | 节点私有地址 | 服务端或受管客户端 |
+| 发布一个客户端侧服务 | 普通 Proxy | `portwayd` 端口或域名 | 一个客户端服务 |
+| 将公共输入复制给多个受控消费者 | 镜像 Proxy | `portwayd` TCP/UDP 端口 | 多个客户端服务；一个 Primary 回复 |
+| 在本地使用服务端侧私有服务 | Forward | `portway` 本地 Listener | 服务端侧网络 |
+| 通过私有地址连接受管节点 | VNet | 节点私有 IPv4 地址 | 服务端或受管客户端 |
 
 ## 为什么选择 Portway
 
-- **职责清晰：** Proxy、Forward 和 VNet 可以独立使用，也可以按需组合。
+- **流量模型明确：** 可按需求选择一对一发布、受控的一对多镜像、本地转发或策略约束的
+  私网互联，而不改变应用协议。
 - **安全默认：** 所有连接都需要 Token 认证并加密，不提供明文降级。
 - **协议完整：** 保留 TCP 字节流与半关闭、UDP 数据报边界和 HTTP 请求语义。
 - **连接灵活：** 客户端与服务端之间可选择 TCP 或 QUIC Transport。
 - **策略可控：** 支持 Shared、Governed、Managed 三种配置控制方式，以及来源 IP
   拒绝列表和服务端热加载。
-- **运行稳定：** 资源、队列和恢复窗口均有边界，配置以完整集合原子发布。
+- **适合长期运行：** 资源有界、会话可恢复、配置原子发布，热加载故障关闭，使异常保持
+  明确且局部化。
 
 ## 5 分钟体验
 
@@ -134,24 +146,32 @@ brew install acexy/tap/portwayd
 
 ## 文档
 
-**开始使用**
+**从这里开始**
 
 - [安装、命令与快速开始](assets/docs/getting-started/README_ZH.md)
-- [三种连接模式：Proxy、Forward 与 VNet](assets/docs/modes/README_ZH.md)
+- [选择连接模式](assets/docs/modes/README_ZH.md)
 - [完整客户端配置](config/zh/client.yaml)与[完整服务端配置](config/zh/server.yaml)
 
-**功能与安全**
+**连接能力**
+
+- [Proxy：发布客户端侧服务](assets/docs/proxy/README_ZH.md)
+- [Proxy 镜像：将 TCP/UDP 输入复制给多个客户端](assets/docs/proxy-mirroring/README_ZH.md)
+- [Forward：访问服务端侧网络](assets/docs/forward/README_ZH.md)
+- [VNet：连接受管节点](assets/docs/vnetwork/README_ZH.md)
+
+**访问控制与安全**
 
 - [多模式认证与配置控制](assets/docs/authentication/README_ZH.md)
-- [VNet 配置与运维](assets/docs/vnetwork/README_ZH.md)
-- [TCP 与 UDP Proxy 镜像](assets/docs/proxy-mirroring/README_ZH.md)
 - [安全性](assets/docs/security/README_ZH.md)
 
-**架构与运维**
+**运行维护**
 
-- [技术概览](assets/docs/technical/README_ZH.md)
 - [运维接口](assets/docs/operations/README_ZH.md)
 - [服务端配置热加载](assets/docs/reload/README_ZH.md)
+
+**项目参考**
+
+- [技术概览](assets/docs/technical/README_ZH.md)
 - [未来计划](assets/docs/future/README_ZH.md)
 
 ## 许可证

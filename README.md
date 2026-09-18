@@ -8,16 +8,18 @@
 A lightweight, secure way to publish private services, reach remote networks, and connect managed nodes.
 </p>
 
-Portway creates authenticated, encrypted connections between the `portway` client and the
-`portwayd` server. It is designed for services behind NAT, without a stable public address, or
-that should not expose ports directly.
+Portway is a lightweight reverse-tunneling and private-network system. It creates authenticated,
+encrypted connections between the `portway` client and the `portwayd` server, then uses those
+connections to publish services, provide controlled access to remote networks, or connect managed
+nodes. It is designed for homes, development environments, private clouds, and edge sites where
+services are behind NAT, lack a stable public address, or should not expose ports directly.
 
 ```text
 Private network / edge node  <-- authenticated tunnel -->  Public or central node
            portway                                           portwayd
 ```
 
-## What you can do
+## Connectivity modes
 
 ### Publish a private service
 
@@ -28,8 +30,17 @@ development machine, or edge node available through a reachable `portwayd` host.
 Visitor -> portwayd public port or domain -> portway -> private service
 ```
 
-This is **Proxy** mode. It supports TCP, UDP, HTTP, and HTTPS. TCP and UDP proxies can also
-mirror the same input to multiple clients for observation, auditing, and shadow validation.
+This is **Proxy** mode, with two distinct operating models:
+
+- **Standard Proxy** maps one server TCP/UDP port or HTTP/HTTPS domain to one client-side service.
+- **Mirror Proxy** copies the same public TCP or UDP input to multiple governed or managed clients.
+  Only the configured Primary can reply; the other members observe or process the input without
+  affecting the visitor response.
+
+Mirror Proxy is intended for production-traffic observation, auditing, protocol analysis, parallel
+processing, and shadow validation before a migration. It is deliberately not a load balancer:
+visitors are not distributed among members and member responses are not aggregated. See
+[TCP and UDP Proxy mirroring](assets/docs/proxy-mirroring/README.md).
 
 ### Reach a remote private network
 
@@ -59,20 +70,22 @@ controls inbound access with TCP and UDP port policies.
 
 | Your goal | Choose | Entry point | Target |
 | --- | --- | --- | --- |
-| Publish a client-side service | Proxy | `portwayd` | Client network |
-| Use a server-side private service locally | Forward | `portway` | Server network |
-| Get controlled, VPN-like private networking | VNet | Node private address | Server or managed client |
+| Publish one client-side service | Standard Proxy | `portwayd` port or domain | One client service |
+| Copy public input to several controlled consumers | Mirror Proxy | `portwayd` TCP/UDP port | Multiple client services; one Primary replies |
+| Use a server-side private service locally | Forward | Local `portway` listener | Server-side network |
+| Connect managed nodes by private address | VNet | Node private IPv4 address | Server or managed client |
 
 ## Why Portway
 
-- **Clear responsibilities:** use Proxy, Forward, and VNet independently or combine them.
+- **Purpose-built traffic models:** choose one-to-one publishing, controlled one-to-many mirroring,
+  local forwarding, or policy-governed private networking without changing application protocols.
 - **Secure by default:** every connection requires token authentication and encryption, with no plaintext downgrade.
 - **Protocol fidelity:** preserves TCP streams and half-close, UDP datagram boundaries, and HTTP semantics.
 - **Flexible transport:** use TCP or QUIC between the client and server.
 - **Controlled access:** supports Shared, Governed, and Managed configuration models, source-IP
   deny lists, and server hot reload.
-- **Bounded operation:** resources, queues, and recovery windows are bounded, and configurations
-  are published atomically as complete sets.
+- **Reliable long-running operation:** bounded resources, session recovery, atomic configuration
+  publication, and fail-closed reload behavior keep failures explicit and contained.
 
 ## Try it in five minutes
 
@@ -138,24 +151,32 @@ archives include the officially signed Wintun component required by VNet.
 
 ## Documentation
 
-**Get started**
+**Start here**
 
 - [Installation, commands, and quick start](assets/docs/getting-started/README.md)
-- [The three connectivity modes: Proxy, Forward, and VNet](assets/docs/modes/README.md)
+- [Choose a connectivity mode](assets/docs/modes/README.md)
 - [Complete client configuration](config/client.yaml) and [complete server configuration](config/server.yaml)
 
-**Features and security**
+**Connectivity guides**
+
+- [Proxy: publish client-side services](assets/docs/proxy/README.md)
+- [Proxy mirroring: copy TCP and UDP input to multiple clients](assets/docs/proxy-mirroring/README.md)
+- [Forward: reach server-side networks](assets/docs/forward/README.md)
+- [VNet: connect managed nodes](assets/docs/vnetwork/README.md)
+
+**Access control and security**
 
 - [Authentication and configuration control](assets/docs/authentication/README.md)
-- [VNet configuration and operations](assets/docs/vnetwork/README.md)
-- [TCP and UDP proxy mirroring](assets/docs/proxy-mirroring/README.md)
 - [Security](assets/docs/security/README.md)
 
-**Architecture and operations**
+**Operations**
 
-- [Technical overview](assets/docs/technical/README.md)
 - [Operational endpoints](assets/docs/operations/README.md)
 - [Server configuration reload](assets/docs/reload/README.md)
+
+**Project reference**
+
+- [Technical overview](assets/docs/technical/README.md)
 - [Future](assets/docs/future/README.md)
 
 ## License
