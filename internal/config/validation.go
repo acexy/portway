@@ -3,9 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -100,16 +98,6 @@ func validateServer(configuration ServerConfig) error {
 	}
 	if err := validateVirtualNetworkConfig(configuration.VirtualNetwork); err != nil {
 		return err
-	}
-	if configuration.VirtualNetwork.Enabled {
-		_, portText, err := net.SplitHostPort(configuration.Transport.ListenAddress)
-		if err != nil {
-			return errors.New("transport.listen_address must contain a port for VNet P2P")
-		}
-		port, err := strconv.ParseUint(portText, 10, 16)
-		if err != nil || port == 0 || port >= 65535 {
-			return errors.New("transport.listen_address port must be between 1 and 65534 when VNet is enabled")
-		}
 	}
 	if strings.TrimSpace(configuration.Security.HTTPClientIPHeader) !=
 		configuration.Security.HTTPClientIPHeader {

@@ -180,7 +180,7 @@ func (s *Service) serveControlMessages(
 				return false, err
 			}
 			if err := s.vnetRuntime.openPeerFlow(clientID, sessionID, flow); err != nil {
-				return false, fmt.Errorf("authorize VNet peer flow: %w", err)
+				s.vnetRuntime.failPeerPair(clientID, flow.PeerClientID, flow.PeerGeneration, "flow_rejected")
 			}
 		case protocol.MessageSyncConfiguration:
 			result, err := s.synchronizeConfiguration(configurationSession, envelope)

@@ -20,31 +20,32 @@ import (
 const clientVNetChannelWriteTimeout = 5 * time.Second
 
 type clientVNetManager struct {
-	context        context.Context
-	cancel         context.CancelFunc
-	logger         *logging.Logger
-	clientID       string
-	sessionID      string
-	writer         *control.Writer
-	transport      transport.ClientSession
-	serverAddress  string
-	mutex          sync.Mutex
-	assignment     protocol.VNetAssignment
-	device         vnet.Device
-	userspaceTCP   *vnet.UserspaceTCP
-	peerEndpoint   *vnet.PeerEndpoint
-	offers         map[uint8]protocol.OpenVNetChannel
-	activated      bool
-	channels       []transport.Stream
-	channelWrites  []*vnet.PacketWriter
-	waitGroup      sync.WaitGroup
-	deviceWrite    sync.Mutex
-	prepareMutex   sync.Mutex
-	prepareCancel  context.CancelFunc
-	poolCancel     context.CancelFunc
-	prepareNetwork func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
-	failures       chan error
-	exitOnConflict bool
+	context         context.Context
+	cancel          context.CancelFunc
+	logger          *logging.Logger
+	clientID        string
+	sessionID       string
+	writer          *control.Writer
+	transport       transport.ClientSession
+	serverAddress   string
+	mutex           sync.Mutex
+	assignment      protocol.VNetAssignment
+	device          vnet.Device
+	migratingDevice vnet.Device
+	userspaceTCP    *vnet.UserspaceTCP
+	peerEndpoint    *vnet.PeerEndpoint
+	offers          map[uint8]protocol.OpenVNetChannel
+	activated       bool
+	channels        []transport.Stream
+	channelWrites   []*vnet.PacketWriter
+	waitGroup       sync.WaitGroup
+	deviceWrite     sync.Mutex
+	prepareMutex    sync.Mutex
+	prepareCancel   context.CancelFunc
+	poolCancel      context.CancelFunc
+	prepareNetwork  func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
+	failures        chan error
+	exitOnConflict  bool
 }
 
 func newClientVNetManager(
@@ -75,10 +76,9 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	}
 	if assignment.PeerRegistrationTicket != "" {
 		if err := manager.preparePeerEndpoint(assignment); err != nil {
-			manager.logger.WarnWithFields("VNet P2P UDP port is unavailable; client is exiting", err, map[string]any{
+			manager.logger.WarnWithFields("VNet P2P is unavailable; relay remains active", err, map[string]any{
 				"event": "vnet_p2p_bind_failed",
 			})
-			return transport.Permanent(err)
 		}
 	}
 	manager.mutex.Lock()
@@ -102,6 +102,9 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	if !preserveDevice {
 		manager.device = nil
 		manager.userspaceTCP = nil
+		if device != nil && vnet.NetworkMigrationSupported(device) {
+			manager.migratingDevice = device
+		}
 	}
 	var peerEndpoint *vnet.PeerEndpoint
 	if !preservePeer {
@@ -230,9 +233,18 @@ func (manager *clientVNetManager) peerOffer(offer protocol.VNetPeerOffer) error 
 	endpoint := manager.peerEndpoint
 	manager.mutex.Unlock()
 	if endpoint == nil {
-		return errors.New("VNet peer endpoint is unavailable")
+		return manager.writer.Write(protocol.MessageVNetPeerStatus, protocol.VNetPeerStatus{
+			PeerGeneration: offer.PeerGeneration, PeerClientID: offer.PeerClientID,
+			State: protocol.VNetPeerStateFailed, Code: "peer_unavailable",
+		})
 	}
-	return endpoint.ApplyOffer(offer)
+	if err := endpoint.ApplyOffer(offer); err != nil {
+		return manager.writer.Write(protocol.MessageVNetPeerStatus, protocol.VNetPeerStatus{
+			PeerGeneration: offer.PeerGeneration, PeerClientID: offer.PeerClientID,
+			State: protocol.VNetPeerStateFailed, Code: "offer_rejected",
+		})
+	}
+	return nil
 }
 
 func (manager *clientVNetManager) peerActivate(activation protocol.VNetPeerActivate) error {
@@ -240,9 +252,15 @@ func (manager *clientVNetManager) peerActivate(activation protocol.VNetPeerActiv
 	endpoint := manager.peerEndpoint
 	manager.mutex.Unlock()
 	if endpoint == nil {
-		return errors.New("VNet peer endpoint is unavailable")
+		return nil
 	}
-	return endpoint.Activate(activation)
+	if err := endpoint.Activate(activation); err != nil {
+		return manager.writer.Write(protocol.MessageVNetPeerStatus, protocol.VNetPeerStatus{
+			PeerGeneration: activation.PeerGeneration, PeerClientID: activation.PeerClientID,
+			State: protocol.VNetPeerStateFailed, Code: "activation_unavailable",
+		})
+	}
+	return nil
 }
 
 func (manager *clientVNetManager) peerRevoke(revocation protocol.VNetPeerRevoke) {
@@ -327,6 +345,7 @@ func (manager *clientVNetManager) activatePreparedDevice(
 		return
 	}
 	manager.device = device
+	manager.migratingDevice = nil
 	manager.userspaceTCP = userspaceTCP
 	if startReader {
 		manager.waitGroup.Go(func() { manager.readDevice(device, assignment) })
@@ -499,7 +518,11 @@ func (manager *clientVNetManager) readDevice(
 		packet := append([]byte(nil), buffer[:length]...)
 		manager.mutex.Lock()
 		if manager.device != device {
+			migrating := manager.migratingDevice == device
 			manager.mutex.Unlock()
+			if migrating {
+				continue
+			}
 			return
 		}
 		current := manager.assignment
@@ -511,21 +534,6 @@ func (manager *clientVNetManager) readDevice(
 		}
 		if userspaceTCP != nil && !userspaceTCP.ObserveHostPacket(packet) {
 			continue
-		}
-		manager.mutex.Lock()
-		peerEndpoint := manager.peerEndpoint
-		manager.mutex.Unlock()
-		if peerEndpoint != nil {
-			sent, sendError := peerEndpoint.Send(flow, packet, time.Now())
-			if sent {
-				if sendError != nil {
-					manager.logger.WarnWithFields("VNet direct path send failed; relay fallback activated", sendError, map[string]any{
-						"event": "vnet_p2p_send_failed",
-					})
-				}
-				continue
-			}
-			peerEndpoint.MarkRelay(flow, time.Now())
 		}
 		_ = manager.sendUserspaceTCPPacket(packet)
 	}
@@ -597,9 +605,16 @@ func (manager *clientVNetManager) sendUserspaceTCPPacket(packet []byte) error {
 	}
 	manager.mutex.Lock()
 	assignment := manager.assignment
+	peerEndpoint := manager.peerEndpoint
 	// Published pool slices are immutable; replacement only swaps the slice headers.
 	channelWrites := manager.channelWrites
 	manager.mutex.Unlock()
+	if peerEndpoint != nil {
+		if sent, sendError := peerEndpoint.Send(flow, packet, time.Now()); sent {
+			return sendError
+		}
+		peerEndpoint.MarkRelay(flow, time.Now())
+	}
 	index, err := vnet.ChannelIndex(flow, assignment.PacketChannels)
 	if err != nil || int(index) >= len(channelWrites) {
 		return errors.New("VNet userspace stack pool is unavailable")
@@ -682,6 +697,8 @@ func (manager *clientVNetManager) closeRuntime() {
 	manager.mutex.Lock()
 	device := manager.device
 	manager.device = nil
+	migratingDevice := manager.migratingDevice
+	manager.migratingDevice = nil
 	userspaceTCP := manager.userspaceTCP
 	manager.userspaceTCP = nil
 	peerEndpoint := manager.peerEndpoint
@@ -692,6 +709,9 @@ func (manager *clientVNetManager) closeRuntime() {
 	}
 	if device != nil {
 		device.Close()
+	}
+	if migratingDevice != nil && migratingDevice != device {
+		_ = migratingDevice.Close()
 	}
 	if peerEndpoint != nil {
 		_ = peerEndpoint.Close()

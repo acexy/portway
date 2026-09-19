@@ -82,10 +82,11 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 	readyA := make(chan protocol.VNetPeerStatus, 1)
 	readyB := make(chan protocol.VNetPeerStatus, 1)
 	received := make(chan []byte, 1)
+	receivedReply := make(chan []byte, 1)
 	endpointA, err := NewPeerEndpoint(
 		ctx, "127.0.0.1:0", "client-a", "session-a", "172.20.0.2", 1280,
 		func(status protocol.VNetPeerStatus) error { readyA <- status; return nil },
-		func([]byte) error { return nil },
+		func(packet []byte) error { receivedReply <- packet; return nil },
 	)
 	if err != nil {
 		t.Fatalf("create endpoint A: %v", err)
@@ -156,5 +157,15 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("direct packet was not received")
+	}
+	reply := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 3}, 9000, [4]byte{172, 20, 0, 2}, 8000)
+	replyFlow, _ := ParseIPv4(reply)
+	if sent, err := endpointB.Send(replyFlow, reply, time.Now()); err != nil || !sent {
+		t.Fatalf("reverse flow did not retain direct path: sent=%t err=%v", sent, err)
+	}
+	select {
+	case <-receivedReply:
+	case <-time.After(3 * time.Second):
+		t.Fatal("direct reply was not received")
 	}
 }

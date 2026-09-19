@@ -18,6 +18,7 @@ const (
 	vnetPeerOfferLifetime = 15 * time.Second
 	vnetPeerRetryDelay    = 10 * time.Second
 	vnetMaximumPeerPairs  = 4096
+	vnetMaximumNodePeers  = 64
 )
 
 type serverVNetPeerPair struct {
@@ -29,10 +30,9 @@ type serverVNetPeerPair struct {
 	active     bool
 }
 
-func (runtime *serverVNetRuntime) configurePeerCoordinator(address string, fatal func(error)) {
+func (runtime *serverVNetRuntime) configurePeerCoordinator(address string) {
 	runtime.mutex.Lock()
 	runtime.peerListenAddress = address
-	runtime.peerFatal = fatal
 	runtime.mutex.Unlock()
 }
 
@@ -93,10 +93,18 @@ func (runtime *serverVNetRuntime) readPeerRegistrations(connection *net.UDPConn)
 			runtime.mutex.Unlock()
 			continue
 		}
+		runtime.mutex.Unlock()
 		candidates := normalizePeerCandidates(signal.HostCandidates)
 		candidates = append(candidates, protocol.VNetPeerCandidate{
 			Address: address.String(), Type: "server_reflexive",
 		})
+		runtime.mutex.Lock()
+		session, exists = runtime.sessions[signal.ClientID]
+		if !exists || session.sessionID != signal.SessionID ||
+			vnet.VerifyPeerSignal(data, session.peerRegistrationSecret) != nil {
+			runtime.mutex.Unlock()
+			continue
+		}
 		session.peerFingerprint = signal.Fingerprint
 		session.peerCandidates = candidates
 		session.peerAddress = address.String()
@@ -106,14 +114,14 @@ func (runtime *serverVNetRuntime) readPeerRegistrations(connection *net.UDPConn)
 }
 
 func normalizePeerCandidates(values []string) []protocol.VNetPeerCandidate {
-	if len(values) > 16 {
-		values = values[:16]
+	if len(values) > 15 {
+		values = values[:15]
 	}
 	result := make([]protocol.VNetPeerCandidate, 0, len(values))
 	seen := make(map[string]struct{})
 	for _, value := range values {
-		address, err := net.ResolveUDPAddr("udp4", value)
-		if err != nil || address.IP == nil || address.IP.IsUnspecified() || address.IP.IsLoopback() || address.IP.IsMulticast() {
+		address, err := netip.ParseAddrPort(value)
+		if err != nil || !address.Addr().Is4() || address.Port() == 0 || address.Addr().IsUnspecified() || address.Addr().IsLoopback() || address.Addr().IsMulticast() {
 			continue
 		}
 		normalized := address.String()
@@ -137,6 +145,21 @@ func (runtime *serverVNetRuntime) offerPeer(sourceID string, targetID string) {
 	if runtime.peerPairs[key] == nil && len(runtime.peerPairs) >= vnetMaximumPeerPairs {
 		runtime.mutex.Unlock()
 		return
+	}
+	if runtime.peerPairs[key] == nil {
+		sourceCount, targetCount := 0, 0
+		for _, existing := range runtime.peerPairs {
+			if existing.firstID == sourceID || existing.secondID == sourceID {
+				sourceCount++
+			}
+			if existing.firstID == targetID || existing.secondID == targetID {
+				targetCount++
+			}
+		}
+		if sourceCount >= vnetMaximumNodePeers || targetCount >= vnetMaximumNodePeers {
+			runtime.mutex.Unlock()
+			return
+		}
 	}
 	source, sourceExists := runtime.sessions[sourceID]
 	target, targetExists := runtime.sessions[targetID]
@@ -203,7 +226,7 @@ func (runtime *serverVNetRuntime) peerStatus(clientID string, sessionID string, 
 	pair := runtime.peerPairs[key]
 	if !exists || session.sessionID != sessionID || pair == nil || pair.generation != status.PeerGeneration {
 		runtime.mutex.Unlock()
-		return errors.New("VNet peer status does not match current pair")
+		return nil
 	}
 	switch status.State {
 	case protocol.VNetPeerStateFailed, protocol.VNetPeerStateClosed:
@@ -214,6 +237,10 @@ func (runtime *serverVNetRuntime) peerStatus(clientID string, sessionID string, 
 	default:
 		runtime.mutex.Unlock()
 		return errors.New("invalid VNet peer status")
+	}
+	if !pair.retryAfter.IsZero() {
+		runtime.mutex.Unlock()
+		return nil
 	}
 	pair.ready[clientID] = true
 	ready := pair.ready[pair.firstID] && pair.ready[pair.secondID]
@@ -244,15 +271,21 @@ func (runtime *serverVNetRuntime) openPeerFlow(
 	runtime.mutex.RLock()
 	session, exists := runtime.sessions[clientID]
 	pair := runtime.peerPairs[key]
-	runtime.mutex.RUnlock()
 	if !exists || session.sessionID != sessionID || pair == nil || !pair.active ||
 		pair.generation != request.PeerGeneration {
-		return errors.New("VNet peer flow does not match an active pair")
+		runtime.mutex.RUnlock()
+		return nil
 	}
+	defer runtime.mutex.RUnlock()
 	sourceIP, sourceError := netip.ParseAddr(request.SourceIP)
 	destinationIP, destinationError := netip.ParseAddr(request.DestinationIP)
 	if sourceError != nil || destinationError != nil {
 		return vnet.ErrInvalidPacket
+	}
+	configuration := runtime.configuration
+	target, configured := config.VNetNode(configuration, request.PeerClientID)
+	if !configured || target.IP != request.DestinationIP {
+		return vnet.ErrTargetUnavailable
 	}
 	destination, err := runtime.router.AuthorizePeerFlow(clientID, vnet.Flow{
 		Protocol: request.Protocol, SourceIP: sourceIP, SourcePort: request.SourcePort,

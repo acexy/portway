@@ -151,7 +151,7 @@ type VNetPeerRevoke struct {
 	Reason         string `json:"reason"`
 }
 
-// VNetPeerFlowOpen registers the first packet metadata of one direct flow.
+// VNetPeerFlowOpen registers or renews the original first-packet metadata of a direct flow.
 type VNetPeerFlowOpen struct {
 	PeerGeneration  uint64 `json:"peer_generation"`
 	PeerClientID    string `json:"peer_client_id"`

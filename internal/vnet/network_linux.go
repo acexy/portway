@@ -29,10 +29,7 @@ func ensureLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
 	_, interfaceError := net.InterfaceByName(LogicalInterfaceName)
 	if errors.Is(manifestError, os.ErrNotExist) {
 		if interfaceError == nil {
-			if err := replaceLinuxNetwork(ctx, spec, false); err != nil {
-				return err
-			}
-			return nil
+			return unverifiedLinuxNetworkError()
 		}
 		return installLinuxNetwork(ctx, spec)
 	}
@@ -47,7 +44,7 @@ func ensureLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
 		}
 		defer unlockNetworkFile(lock)
 		if interfaceError == nil {
-			return replaceLinuxNetwork(ctx, spec, true)
+			return unverifiedLinuxNetworkError()
 		}
 		if err := privilegedCommandContext(ctx, "rm", "-f", manifestPath()).Run(); err != nil {
 			return err
@@ -93,26 +90,14 @@ func ensureLinuxNetwork(ctx context.Context, spec NetworkSpec) error {
 		return privilegedCommandContext(ctx, "ip", "link", "set", "dev", LogicalInterfaceName,
 			"alias", "portway:"+manifest.InstallationID).Run()
 	}
-	return replaceLinuxNetwork(ctx, spec, true)
+	return unverifiedLinuxNetworkError()
 }
 
-func replaceLinuxNetwork(ctx context.Context, spec NetworkSpec, removeManifest bool) error {
-	routes, err := linuxNetworkRoutesExcluding(ctx, LogicalInterfaceName)
-	if err != nil {
-		return err
-	}
-	if err := checkNetworkConflictsExcluding(spec, routes, LogicalInterfaceName); err != nil {
-		return err
-	}
-	if err := privilegedCommandContext(ctx, "ip", "link", "delete", "dev", LogicalInterfaceName).Run(); err != nil {
-		return fmt.Errorf("remove previous VNet interface: %w", err)
-	}
-	if removeManifest {
-		if err := privilegedCommandContext(ctx, "rm", "-f", manifestPath()).Run(); err != nil {
-			return fmt.Errorf("remove previous VNet ownership manifest: %w", err)
-		}
-	}
-	return installLinuxNetwork(ctx, spec)
+func unverifiedLinuxNetworkError() error {
+	// Name-scoped deletion remains an explicit uninstall operation. Automatic
+	// preparation only migrates a matching installation and never deletes a
+	// device whose type, ownership or current configuration cannot be verified.
+	return fmt.Errorf("%w: existing %s requires explicit network management", ErrForeignResource, LogicalInterfaceName)
 }
 
 func installLinuxNetwork(ctx context.Context, spec NetworkSpec) error {

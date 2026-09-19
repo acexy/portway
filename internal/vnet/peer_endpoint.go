@@ -38,6 +38,7 @@ const (
 	peerIdleTimeout           = 90 * time.Second
 	peerMaximumCandidates     = 16
 	peerMaximumTrackedFlows   = 65536
+	peerFlowRenewInterval     = 20 * time.Second
 	peerTCPFlowIdle           = 5 * time.Minute
 	peerUDPFlowIdle           = time.Minute
 	peerApplicationErrorClose = quicgo.ApplicationErrorCode(0x50)
@@ -60,17 +61,22 @@ func PeerUDPAddress(address string, wildcard bool) (string, error) {
 }
 
 type peerOfferState struct {
-	offer      protocol.VNetPeerOffer
-	secret     []byte
-	connection *quicgo.Conn
-	active     bool
-	dialing    bool
+	offer               protocol.VNetPeerOffer
+	secret              []byte
+	connection          *quicgo.Conn
+	active              bool
+	dialing             bool
+	failedCandidates    map[string]bool
+	probeAttempts       map[string]int
+	validatedCandidates []net.Addr
 }
 
 type peerFlowRoute struct {
 	direct     bool
 	generation uint64
 	expiresAt  time.Time
+	opener     Flow
+	renewAt    time.Time
 }
 
 // PeerEndpoint owns one client's dedicated UDP socket and direct QUIC paths.
@@ -90,12 +96,13 @@ type PeerEndpoint struct {
 	receive     func([]byte) error
 	openFlow    func(uint64, string, Flow) error
 
-	mutex      sync.Mutex
-	offers     map[uint64]*peerOfferState
-	activeByIP map[netip.Addr]*peerOfferState
-	flows      map[[13]byte]peerFlowRoute
-	waitGroup  sync.WaitGroup
-	closeOnce  sync.Once
+	mutex       sync.Mutex
+	offers      map[uint64]*peerOfferState
+	activeByIP  map[netip.Addr]*peerOfferState
+	flows       map[[13]byte]peerFlowRoute
+	waitGroup   sync.WaitGroup
+	closeOnce   sync.Once
+	nextCleanup time.Time
 }
 
 // SetFlowOpener registers the control-plane fallback authorization callback.
@@ -105,7 +112,7 @@ func (endpoint *PeerEndpoint) SetFlowOpener(opener func(uint64, string, Flow) er
 	endpoint.mutex.Unlock()
 }
 
-// NewPeerEndpoint binds the mandatory P+1 UDP socket.
+// NewPeerEndpoint binds the dedicated P+1 UDP socket.
 func NewPeerEndpoint(
 	parent context.Context,
 	bindAddress string,
@@ -146,6 +153,7 @@ func NewPeerEndpoint(
 	listener, err := endpoint.transport.Listen(endpoint.baseServerTLS(), endpoint.quicConfig())
 	if err != nil {
 		endpoint.transport.Close()
+		connection.Close()
 		cancel()
 		return nil, fmt.Errorf("listen for VNet peer QUIC: %w", err)
 	}
@@ -224,7 +232,7 @@ func (endpoint *PeerEndpoint) ApplyOffer(offer protocol.VNetPeerOffer) error {
 		offer.ExpiresAtUnixMS <= time.Now().UnixMilli() || len(offer.Candidates) > peerMaximumCandidates {
 		return errors.New("invalid VNet peer offer")
 	}
-	state := &peerOfferState{offer: offer, secret: secret}
+	state := &peerOfferState{offer: offer, secret: secret, failedCandidates: make(map[string]bool), probeAttempts: make(map[string]int)}
 	endpoint.mutex.Lock()
 	if previous := endpoint.offers[offer.PeerGeneration]; previous != nil {
 		endpoint.mutex.Unlock()
@@ -285,7 +293,8 @@ func (endpoint *PeerEndpoint) startProbeChecks(
 	endpoint.waitGroup.Go(func() {
 		for attempt := 0; attempt < peerProbeAttempts; attempt++ {
 			endpoint.mutex.Lock()
-			connected := state.connection != nil
+			connected := state.connection != nil || endpoint.offers[state.offer.PeerGeneration] != state ||
+				time.Now().UnixMilli() >= state.offer.ExpiresAtUnixMS
 			endpoint.mutex.Unlock()
 			if connected || endpoint.context.Err() != nil {
 				return
@@ -307,6 +316,15 @@ func (endpoint *PeerEndpoint) startProbeChecks(
 
 func (endpoint *PeerEndpoint) sendProbes(state *peerOfferState, candidates []protocol.VNetPeerCandidate) {
 	for _, candidate := range candidates {
+		endpoint.mutex.Lock()
+		if endpoint.offers[state.offer.PeerGeneration] != state || state.connection != nil ||
+			time.Now().UnixMilli() >= state.offer.ExpiresAtUnixMS ||
+			state.probeAttempts[candidate.Address] >= peerProbeAttempts {
+			endpoint.mutex.Unlock()
+			continue
+		}
+		state.probeAttempts[candidate.Address]++
+		endpoint.mutex.Unlock()
 		address, resolveError := net.ResolveUDPAddr("udp4", candidate.Address)
 		if resolveError != nil {
 			continue
@@ -339,7 +357,11 @@ func (endpoint *PeerEndpoint) Activate(activation protocol.VNetPeerActivate) err
 func (endpoint *PeerEndpoint) Revoke(revocation protocol.VNetPeerRevoke) {
 	endpoint.mutex.Lock()
 	state := endpoint.offers[revocation.PeerGeneration]
+	var connection *quicgo.Conn
 	if state != nil && state.offer.PeerClientID == revocation.PeerClientID {
+		connection = state.connection
+		state.active = false
+		endpoint.relayFlowsLocked(revocation.PeerGeneration)
 		delete(endpoint.offers, revocation.PeerGeneration)
 		peerIP, _ := netip.ParseAddr(state.offer.PeerVirtualIP)
 		if endpoint.activeByIP[peerIP] == state {
@@ -347,8 +369,8 @@ func (endpoint *PeerEndpoint) Revoke(revocation protocol.VNetPeerRevoke) {
 		}
 	}
 	endpoint.mutex.Unlock()
-	if state != nil && state.connection != nil {
-		_ = state.connection.CloseWithError(peerApplicationErrorClose, "peer path revoked")
+	if connection != nil {
+		_ = connection.CloseWithError(peerApplicationErrorClose, "peer path revoked")
 	}
 }
 
@@ -360,7 +382,10 @@ func (endpoint *PeerEndpoint) MarkRelay(flow Flow, now time.Time) {
 	}
 	endpoint.mutex.Lock()
 	endpoint.expireFlowsLocked(now)
-	if _, exists := endpoint.flows[key]; !exists && len(endpoint.flows) < peerMaximumTrackedFlows {
+	if route, exists := endpoint.flowLocked(key, now); exists {
+		route.expiresAt = peerFlowExpiry(flow, now)
+		endpoint.flows[key] = route
+	} else if len(endpoint.flows) < peerMaximumTrackedFlows {
 		endpoint.flows[key] = peerFlowRoute{expiresAt: peerFlowExpiry(flow, now)}
 	}
 	endpoint.mutex.Unlock()
@@ -374,7 +399,7 @@ func (endpoint *PeerEndpoint) Send(flow Flow, packet []byte, now time.Time) (boo
 	}
 	endpoint.mutex.Lock()
 	endpoint.expireFlowsLocked(now)
-	route, exists := endpoint.flows[key]
+	route, exists := endpoint.flowLocked(key, now)
 	state := endpoint.activeByIP[flow.DestinationIP]
 	if exists && !route.direct {
 		route.expiresAt = peerFlowExpiry(flow, now)
@@ -391,17 +416,16 @@ func (endpoint *PeerEndpoint) Send(flow Flow, packet []byte, now time.Time) (boo
 			endpoint.mutex.Unlock()
 			return false, nil
 		}
-		route = peerFlowRoute{direct: true, generation: state.offer.PeerGeneration}
-		if endpoint.openFlow != nil {
-			if err := endpoint.openFlow(state.offer.PeerGeneration, state.offer.PeerClientID, flow); err != nil {
-				endpoint.mutex.Unlock()
-				return false, err
-			}
-		}
+		route = peerFlowRoute{direct: true, generation: state.offer.PeerGeneration, opener: flow}
 	}
 	if !route.direct || route.generation != state.offer.PeerGeneration {
 		endpoint.mutex.Unlock()
 		return false, nil
+	}
+	if err := endpoint.renewFlowLocked(state, &route, now); err != nil {
+		endpoint.mutex.Unlock()
+		endpoint.failPath(state, "flow_registration_failed")
+		return false, err
 	}
 	route.expiresAt = peerFlowExpiry(flow, now)
 	endpoint.flows[key] = route
@@ -457,7 +481,27 @@ func (endpoint *PeerEndpoint) readSignals() {
 
 func (endpoint *PeerEndpoint) startDial(state *peerOfferState, address net.Addr) {
 	endpoint.mutex.Lock()
-	if state.dialing || state.connection != nil || time.Now().UnixMilli() >= state.offer.ExpiresAtUnixMS {
+	if endpoint.offers[state.offer.PeerGeneration] != state || state.connection != nil ||
+		state.failedCandidates[address.String()] || len(state.failedCandidates) >= peerMaximumCandidates ||
+		time.Now().UnixMilli() >= state.offer.ExpiresAtUnixMS {
+		endpoint.mutex.Unlock()
+		return
+	}
+	found := false
+	for _, candidate := range state.validatedCandidates {
+		if candidate.String() == address.String() {
+			found = true
+			break
+		}
+	}
+	if !found {
+		if len(state.validatedCandidates) >= peerMaximumCandidates {
+			endpoint.mutex.Unlock()
+			return
+		}
+		state.validatedCandidates = append(state.validatedCandidates, address)
+	}
+	if state.dialing {
 		endpoint.mutex.Unlock()
 		return
 	}
@@ -470,7 +514,22 @@ func (endpoint *PeerEndpoint) startDial(state *peerOfferState, address net.Addr)
 		if err != nil {
 			endpoint.mutex.Lock()
 			state.dialing = false
+			state.failedCandidates[address.String()] = true
+			current := endpoint.offers[state.offer.PeerGeneration] == state
+			var next net.Addr
+			for _, candidate := range state.validatedCandidates {
+				if !state.failedCandidates[candidate.String()] {
+					next = candidate
+					break
+				}
+			}
 			endpoint.mutex.Unlock()
+			if current && endpoint.context.Err() == nil {
+				if next != nil {
+					endpoint.startDial(state, next)
+				}
+				endpoint.startProbeChecks(state, state.offer.Candidates)
+			}
 			return
 		}
 		endpoint.publishConnection(state, connection)
@@ -498,7 +557,8 @@ func (endpoint *PeerEndpoint) acceptConnections() {
 
 func (endpoint *PeerEndpoint) publishConnection(state *peerOfferState, connection *quicgo.Conn) {
 	endpoint.mutex.Lock()
-	if endpoint.offers[state.offer.PeerGeneration] != state || state.connection != nil {
+	if endpoint.offers[state.offer.PeerGeneration] != state || state.connection != nil ||
+		time.Now().UnixMilli() >= state.offer.ExpiresAtUnixMS {
 		endpoint.mutex.Unlock()
 		_ = connection.CloseWithError(peerApplicationErrorClose, "duplicate peer connection")
 		return
@@ -557,7 +617,7 @@ func (endpoint *PeerEndpoint) authorizeInbound(state *peerOfferState, flow Flow,
 		return false
 	}
 	endpoint.expireFlowsLocked(now)
-	route, exists := endpoint.flows[key]
+	route, exists := endpoint.flowLocked(key, now)
 	if !exists {
 		if len(endpoint.flows) >= peerMaximumTrackedFlows ||
 			(flow.Protocol == protocolTCP && !flow.IsTCPStart()) ||
@@ -567,6 +627,9 @@ func (endpoint *PeerEndpoint) authorizeInbound(state *peerOfferState, flow Flow,
 		route = peerFlowRoute{direct: true, generation: state.offer.PeerGeneration}
 	}
 	if !route.direct || route.generation != state.offer.PeerGeneration {
+		return false
+	}
+	if endpoint.renewFlowLocked(state, &route, now) != nil {
 		return false
 	}
 	route.expiresAt = peerFlowExpiry(flow, now)
@@ -588,19 +651,23 @@ func (endpoint *PeerEndpoint) failPath(state *peerOfferState, code string) {
 		delete(endpoint.activeByIP, peerIP)
 	}
 	state.active = false
-	for key, route := range endpoint.flows {
-		if route.direct && route.generation == state.offer.PeerGeneration {
-			route.direct = false
-			route.generation = 0
-			endpoint.flows[key] = route
-		}
-	}
+	endpoint.relayFlowsLocked(state.offer.PeerGeneration)
 	endpoint.mutex.Unlock()
 	if endpoint.status != nil && endpoint.context.Err() == nil {
 		_ = endpoint.status(protocol.VNetPeerStatus{
 			PeerGeneration: state.offer.PeerGeneration, PeerClientID: state.offer.PeerClientID,
 			State: protocol.VNetPeerStateFailed, Code: code,
 		})
+	}
+}
+
+func (endpoint *PeerEndpoint) relayFlowsLocked(generation uint64) {
+	for key, route := range endpoint.flows {
+		if route.direct && route.generation == generation {
+			route.direct = false
+			route.generation = 0
+			endpoint.flows[key] = route
+		}
 	}
 }
 
@@ -661,6 +728,7 @@ func (endpoint *PeerEndpoint) Close() error {
 		}
 		endpoint.mutex.Unlock()
 		_ = endpoint.transport.Close()
+		_ = endpoint.connection.Close()
 	})
 	endpoint.waitGroup.Wait()
 	return nil
@@ -754,7 +822,40 @@ func peerFlowExpiry(flow Flow, now time.Time) time.Time {
 	return now.Add(peerTCPFlowIdle)
 }
 
+func (endpoint *PeerEndpoint) flowLocked(key [13]byte, now time.Time) (peerFlowRoute, bool) {
+	route, exists := endpoint.flows[key]
+	if exists && !now.Before(route.expiresAt) {
+		delete(endpoint.flows, key)
+		return peerFlowRoute{}, false
+	}
+	return route, exists
+}
+
+func (endpoint *PeerEndpoint) renewFlowLocked(state *peerOfferState, route *peerFlowRoute, now time.Time) error {
+	if route.opener.SourceIP != endpoint.virtualIP || now.Before(route.renewAt) || endpoint.openFlow == nil {
+		return nil
+	}
+	// Control I/O must not hold the endpoint lock: a concurrently received
+	// revocation must be able to disable this path before the write completes.
+	opener := endpoint.openFlow
+	endpoint.mutex.Unlock()
+	err := opener(state.offer.PeerGeneration, state.offer.PeerClientID, route.opener)
+	endpoint.mutex.Lock()
+	if err != nil {
+		return err
+	}
+	if endpoint.offers[state.offer.PeerGeneration] != state || !state.active {
+		return net.ErrClosed
+	}
+	route.renewAt = now.Add(peerFlowRenewInterval)
+	return nil
+}
+
 func (endpoint *PeerEndpoint) expireFlowsLocked(now time.Time) {
+	if now.Before(endpoint.nextCleanup) {
+		return
+	}
+	endpoint.nextCleanup = now.Add(time.Second)
 	for key, route := range endpoint.flows {
 		if !now.Before(route.expiresAt) {
 			delete(endpoint.flows, key)
