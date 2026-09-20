@@ -386,15 +386,20 @@ func (s *Service) Run(ctx context.Context) error {
 
 		sessions.Go(func() {
 			defer releaseAdmission()
-			if err := s.handleAdmittedConnection(
+			err := s.handleAdmittedConnection(
 				sessionContext,
 				inbound,
 				releaseAdmission,
-			); err != nil &&
+			)
+			if err != nil &&
 				!errors.Is(err, io.EOF) &&
 				!errors.Is(err, net.ErrClosed) &&
 				sessionContext.Err() == nil {
-				s.logger.Warn("client connection ended", err)
+				s.logger.WarnWithFields(
+					"client connection ended",
+					err,
+					clientConnectionLogFields(inbound, err),
+				)
 			}
 		})
 	}
