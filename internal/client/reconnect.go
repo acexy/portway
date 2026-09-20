@@ -12,6 +12,7 @@ import (
 )
 
 func (s *Service) Run(ctx context.Context) error {
+	defer s.closeVNetManager()
 	defer s.vnetPeerRuntime.close()
 	identification, err := currentClientIdentification()
 	if err != nil {

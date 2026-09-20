@@ -225,3 +225,9 @@ Peer 协调使用各控制 Session 独立的有界队列。如果安全通知从
 MTU 变化同样复用 Socket。关闭 VNet、删除节点、撤销 P2P 能力或退出客户端时才释放
 该绑定；绑定端口改变或 Socket 本身故障时需要重新绑定。保留 Socket 不代表保留旧
 控制会话的访问授权。
+
+普通控制 Session 重连也会在 Linux、macOS 和 Windows 上保留未变化且由进程持有的
+VNet Device 与系统网络。客户端关闭旧 Packet Channel 和 Session 权限，收到新
+Assignment 后把新 Channel 绑定到现有 Device。只有关闭 VNet、删除节点、不兼容的网络
+参数变化、Device 故障或客户端进程退出时才重建设备。因此 macOS 不会仅因普通重连而
+为重建同一临时网络再次请求管理员授权。

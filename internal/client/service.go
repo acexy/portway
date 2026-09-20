@@ -74,6 +74,8 @@ type Service struct {
 	runtimeForwards []config.ForwardConfig
 	managedMutex    sync.RWMutex
 	managedStatus   protocol.ManagedConfigStatus
+	vnetMutex       sync.Mutex
+	vnetManager     *clientVNetManager
 	vnetPeerRuntime clientVNetPeerRuntime
 }
 

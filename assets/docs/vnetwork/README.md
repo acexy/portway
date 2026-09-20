@@ -267,3 +267,12 @@ Virtual-IP or MTU changes also reuse the socket. Disabling VNet, removing the
 node, revoking P2P capability, or stopping the client releases the binding;
 a changed bind port or a failed socket requires a new binding. Retaining the
 socket does not retain authorization from the old control session.
+
+Ordinary control-session reconnection also keeps an unchanged process-owned
+VNet device and system network on Linux, macOS, and Windows. The client closes
+the old Packet Channels and session authority, then binds new channels to the
+existing device after receiving the new Assignment. The device is recreated
+only when VNet is disabled, the node is removed, incompatible network settings
+change, the device fails, or the client process exits. Consequently, a macOS
+reconnect does not request administrator authorization again merely to recreate
+the same temporary network.

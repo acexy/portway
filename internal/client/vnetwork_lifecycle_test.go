@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
@@ -127,6 +128,55 @@ func lifecycleVNetAssignment() protocol.VNetAssignment {
 		NetworkMode: "tun", CIDR: "172.20.0.0/16", ClientIP: "172.20.0.2", ServerIP: "172.20.0.1",
 		MTU: 1280, PacketChannels: 1, TransportGeneration: 1,
 		PoolGeneration: 1, ConfigGeneration: 1, State: protocol.VNetStateEnabled,
+	}
+}
+
+func TestVNetDeviceSurvivesControlSessionRebind(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(logging.New("test"), config.ClientConfig{})
+	manager := service.attachVNetManager(
+		ctx, logging.New("test"), "managed-a", "session-a",
+		control.NewWriter(&bytes.Buffer{}), nil, "127.0.0.1:3344",
+	)
+	device := &countingVNetDevice{}
+	assignment := lifecycleVNetAssignment()
+	manager.mutex.Lock()
+	manager.assignment = assignment
+	manager.device = device
+	manager.mutex.Unlock()
+
+	manager.detachSession()
+	if device.closeCount.Load() != 0 {
+		t.Fatal("control-session detach closed the process-owned VNet device")
+	}
+
+	secondStatus := &bytes.Buffer{}
+	rebound := service.attachVNetManager(
+		ctx, logging.New("test"), "managed-a", "session-b",
+		control.NewWriter(secondStatus), nil, "127.0.0.1:3344",
+	)
+	if rebound != manager {
+		t.Fatal("control-session rebind replaced the VNet manager")
+	}
+	prepared := atomic.Int32{}
+	manager.prepareNetwork = func(context.Context, vnet.NetworkSpec) (vnet.Device, error) {
+		prepared.Add(1)
+		return nil, errors.New("unexpected VNet device preparation")
+	}
+	if err := manager.applyAssignment(assignment); err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Load() != 0 || device.closeCount.Load() != 0 {
+		t.Fatal("unchanged assignment recreated the VNet device after reconnect")
+	}
+	if !bytes.Contains(secondStatus.Bytes(), []byte(`"state":"ready"`)) {
+		t.Fatalf("rebound session status = %q", secondStatus.String())
+	}
+
+	service.closeVNetManager()
+	if device.closeCount.Load() != 1 {
+		t.Fatal("client shutdown did not close the process-owned VNet device")
 	}
 }
 
