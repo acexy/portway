@@ -200,3 +200,28 @@ Windows 运行期地址变更会原地迁移现有 Adapter；启动前会替换�
 完整部署指导见带注释的[服务端配置](../../../config/zh/server.yaml)、
 [Managed 客户端记录](../../../config/zh/managed/managed-client.yaml)和
 [安全性](../security/README_ZH.md)。
+
+## 可靠性与容量
+
+VNet 提供单服务端部署内的 Channel 和直连路径恢复，不提供服务端状态复制或无缝
+故障接管。服务端重启后，应用需要允许重新连接。TCP Flow 授权在连续五分钟无包活动
+后到期；空闲长连接应使用短于该期限的应用心跳或 TCP keepalive。未知 TCP ACK 不能
+重建已过期授权。Loopback TCP 到期会关闭两端代理连接并释放名额。UDP Flow 授权在
+双向空闲一分钟后到期。
+
+每个节点对双向共用 1024 条 Flow 上限，新 Flow 每秒补充 128 个令牌、允许 256 次
+突发；已有 Flow 和回复不消耗新建速率令牌。这些限制叠加现有节点及全局预算；容量
+或速率拒绝只丢弃新流量，不重建 Packet Channel。它们是资源保护，不是吞吐保证。
+
+Peer 协调使用各控制 Session 独立的有界队列。如果安全通知从入队起五秒内无法
+送达，或队列满，受影响的控制连接会关闭，以撤销旧直连授权。其他 Session 继续
+运行，该节点的应用可能需要重连。失败 Peer Pair 在退避结束后释放配额。周期性的
+`vnet_statistics` 日志报告 Flow 占用、容量及速率拒绝、Peer 状态和 loopback 连接
+占用、直连故障回退、客户端 Pool 故障、写超时及最近一次 Pool 重建耗时，不包含业务
+包内容或凭证。
+
+普通控制会话重连会保留 P2P UDP Socket 及其 QUIC Transport，继续占用原本地端口。
+旧直连连接会关闭，随后使用新的会话凭证、Peer 状态和注册信息重新探测。虚拟 IP 或
+MTU 变化同样复用 Socket。关闭 VNet、删除节点、撤销 P2P 能力或退出客户端时才释放
+该绑定；绑定端口改变或 Socket 本身故障时需要重新绑定。保留 Socket 不代表保留旧
+控制会话的访问授权。

@@ -126,3 +126,76 @@ func TestUDPAssociationRechecksActivityAfterOldDeadline(t *testing.T) {
 		t.Fatal("association did not cancel")
 	}
 }
+
+func TestUserspaceExpiryCancelsOnlyCurrentOwner(t *testing.T) {
+	runtime, err := NewUserspaceTCP(context.Background(), netip.MustParseAddr("172.20.0.3"), 16, 1150, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	flow, _ := ParseIPv4(packet)
+	key := makeFlowKey(flow)
+	runtime.mutex.Lock()
+	runtime.flows[key] = time.Now().Add(time.Minute)
+	runtime.mutex.Unlock()
+	ctx, owner := runtime.ownFlow(key)
+	if owner == nil {
+		t.Fatal("flow owner missing")
+	}
+	runtime.expireFlowsAt(time.Now().Add(2 * time.Minute))
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expired flow did not cancel proxy")
+	}
+	runtime.mutex.Lock()
+	runtime.flows[key] = time.Now().Add(time.Minute)
+	runtime.mutex.Unlock()
+	replacementContext, replacement := runtime.ownFlow(key)
+	runtime.releaseFlow(key, owner)
+	select {
+	case <-replacementContext.Done():
+		t.Fatal("old completion cancelled replacement")
+	default:
+	}
+	runtime.releaseFlow(key, replacement)
+	if len(runtime.flowCancels) != 0 || len(runtime.flows) != 0 {
+		t.Fatal("completed flow retained ownership")
+	}
+}
+
+func TestUserspaceOutputRefreshesFlowAndExpiredACKCannotRevive(t *testing.T) {
+	runtime, err := NewUserspaceTCP(context.Background(), netip.MustParseAddr("172.20.0.3"), 16, 1150, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	packet[33] = 0x10
+	flow, _ := ParseIPv4(packet)
+	key := makeFlowKey(flow)
+	before := time.Now()
+	runtime.mutex.Lock()
+	runtime.flows[key] = before.Add(time.Second)
+	runtime.mutex.Unlock()
+	runtime.observeOutput(packet)
+	runtime.mutex.Lock()
+	expires := runtime.flows[key]
+	runtime.flows[key] = before.Add(-time.Second)
+	runtime.mutex.Unlock()
+	if expires.Before(before.Add(userspaceTCPFlowIdle)) {
+		t.Fatal("outgoing activity did not refresh flow")
+	}
+	incoming := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	incoming[33] = 0x10
+	if !runtime.Handle(incoming) {
+		t.Fatal("expired ACK fell back to TUN")
+	}
+	runtime.mutex.Lock()
+	_, exists := runtime.flows[key]
+	runtime.mutex.Unlock()
+	if exists {
+		t.Fatal("expired ACK recreated flow")
+	}
+}

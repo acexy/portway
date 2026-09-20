@@ -99,3 +99,50 @@ func (writer *fixedBufferWriter) Write(value []byte) (int, error) {
 	writer.offset += written
 	return written, nil
 }
+
+// This isolates router lock contention; it is not an end-to-end throughput claim.
+func BenchmarkVNetRouterParallelEstablished(b *testing.B) {
+	router, err := NewRouter(testVNetConfiguration(), 65536)
+	if err != nil {
+		b.Fatal(err)
+	}
+	now := time.Now()
+	packets := make([][]byte, 64)
+	for index := range packets {
+		packets[index] = testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, uint16(10000+index), [4]byte{172, 20, 0, 3}, 8080)
+		if _, err := router.RouteClientPacket("client-a", packets[index], now); err != nil {
+			b.Fatal(err)
+		}
+		packets[index][33] = 0x10
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(iterations *testing.PB) {
+		index := 0
+		for iterations.Next() {
+			if _, err := router.RouteClientPacket("client-a", packets[index%len(packets)], now); err != nil {
+				b.Error(err)
+				return
+			}
+			index++
+		}
+	})
+}
+
+func BenchmarkVNetFlowAdmissionChurn(b *testing.B) {
+	var admission flowAdmission
+	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 10000, [4]byte{172, 20, 0, 3}, 8080)
+	flow, err := ParseIPv4(packet)
+	if err != nil {
+		b.Fatal(err)
+	}
+	now := time.Now()
+	b.ReportAllocs()
+	for b.Loop() {
+		now = now.Add(10 * time.Millisecond)
+		if err := admission.admit(flow, now, 65536); err != nil {
+			b.Fatal(err)
+		}
+		admission.release(flow.SourceIP, flow.DestinationIP)
+	}
+}

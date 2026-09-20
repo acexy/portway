@@ -9,13 +9,14 @@ import (
 	"github.com/acexy/portway/internal/config"
 )
 
-func TestRouterNodeQuotaAndRevocationRelease(t *testing.T) {
+func TestRouterPairQuotaAndRevocationRelease(t *testing.T) {
 	router, err := NewRouter(testVNetConfiguration(), routerMaximumNodeFlows*2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Unix(100, 0)
-	for index := 0; index < routerMaximumNodeFlows; index++ {
+	for index := 0; index < maximumPairFlows; index++ {
+		now = now.Add(10 * time.Millisecond)
 		packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, uint16(10000+index), [4]byte{172, 20, 0, 3}, 8080)
 		if _, err := router.RouteClientPacket("client-a", packet, now); err != nil {
 			t.Fatal(err)

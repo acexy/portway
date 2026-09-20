@@ -91,11 +91,12 @@ func TestUserspaceTCPForwardsRemoteFlowToLoopback(t *testing.T) {
 	if _, err := io.ReadFull(remote, response); err != nil {
 		t.Fatal(err)
 	}
-	_ = remote.Close()
+	defer remote.Close()
 	if string(response) != "vnet" {
 		t.Fatalf("unexpected userspace TCP response %q", response)
 	}
-	cancel()
+	// Expiry must close the real backend without cancelling the entire runtime.
+	runtime.expireFlowsAt(time.Now().Add(userspaceTCPFlowIdle + time.Second))
 	select {
 	case err := <-backendResult:
 		if err != nil {
@@ -103,6 +104,12 @@ func TestUserspaceTCPForwardsRemoteFlowToLoopback(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("loopback backend did not close")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Statistics().TCPConnections != 0 {
+		t.Fatal("shutdown retained proxy capacity")
 	}
 }
 

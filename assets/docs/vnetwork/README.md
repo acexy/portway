@@ -233,3 +233,37 @@ command help because VNet is managed automatically during `run`.
 See the annotated [server configuration](../../../config/server.yaml),
 [Managed client record](../../../config/managed/managed-client.yaml), and
 [Security](../security/README.md) for complete deployment guidance.
+
+## Reliability and capacity
+
+VNet recovers channels and direct paths within a single-server deployment; it
+has no replicated server state or seamless server failover. Applications must
+allow reconnection after a server restart. TCP flow authorization expires after
+five minutes without packet activity; use application or TCP keepalives below
+that interval for idle long-lived connections. Unknown TCP ACKs cannot recreate
+expired authorization. Loopback TCP expiry closes both proxy connections and
+releases their capacity. UDP flow authorization expires after one idle minute.
+
+Each node pair shares a limit of 1024 flows and a new-flow budget of 128 per
+second with a burst of 256. Existing flows and replies do not consume new-flow
+rate tokens. These limits supplement the existing node and global budgets;
+capacity or rate rejection drops new traffic without rebuilding packet channels.
+They are resource safeguards, not throughput guarantees.
+
+Peer coordination uses separate bounded queues per control session. If a
+security notice cannot be delivered within five seconds of enqueueing, or its
+queue fills, the affected control connection closes to revoke stale direct-path
+authority. Other sessions continue; applications on that node may reconnect.
+Failed peer pairs release their quota after the retry delay. Periodic
+`vnet_statistics` logs report flow occupancy, capacity/rate rejections, peer
+state, loopback connection usage, direct-path failure fallbacks, client pool
+failures, write timeouts, and the latest pool recovery duration without packet
+contents or credentials.
+
+Ordinary control-session reconnection keeps the P2P UDP socket and its QUIC
+transport bound to the same local port. It closes old direct connections and
+replaces session credentials, peer state, and registration before probing again.
+Virtual-IP or MTU changes also reuse the socket. Disabling VNet, removing the
+node, revoking P2P capability, or stopping the client releases the binding;
+a changed bind port or a failed socket requires a new binding. Retaining the
+socket does not retain authorization from the old control session.

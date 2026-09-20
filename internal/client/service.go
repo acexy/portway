@@ -74,6 +74,7 @@ type Service struct {
 	runtimeForwards []config.ForwardConfig
 	managedMutex    sync.RWMutex
 	managedStatus   protocol.ManagedConfigStatus
+	vnetPeerRuntime clientVNetPeerRuntime
 }
 
 // NewService creates a client service.

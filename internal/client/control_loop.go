@@ -53,12 +53,16 @@ func (s *Service) runControlLoop(
 		transportSession,
 	)
 	defer linkManager.close()
+	if !vnetNegotiated || !vnetPeerNegotiated || managementMode != protocol.ManagementModeManaged {
+		s.vnetPeerRuntime.close()
+	}
 	var vnetManager *clientVNetManager
 	if vnetNegotiated && managementMode == protocol.ManagementModeManaged {
 		vnetManager = newClientVNetManager(
 			sessionContext, sessionLogger.WithComponent("vnet"), s.runtimeIdentity(),
 			sessionID, writer, transportSession, s.configuration.Transport.ServerAddress,
 		)
+		vnetManager.peerRuntime = &s.vnetPeerRuntime
 		defer vnetManager.close()
 	}
 

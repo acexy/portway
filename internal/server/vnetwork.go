@@ -36,6 +36,7 @@ type serverVNetSession struct {
 	generation             transport.Generation
 	authentication         authentication.Context
 	writer                 *control.Writer
+	peerNotifier           *vnetPeerNotifier
 	poolGeneration         uint64
 	configGeneration       uint64
 	channelsOffered        bool
@@ -95,6 +96,7 @@ func newServerVNetRuntime(
 		runtime.waitGroup.Go(func() { runtime.readDevice(device) })
 	}
 	runtime.waitGroup.Go(runtime.reconcileDevice)
+	runtime.waitGroup.Go(runtime.maintainPeers)
 	return runtime
 }
 
@@ -145,9 +147,13 @@ func (runtime *serverVNetRuntime) attach(
 ) {
 	peerNegotiated := len(peerNegotiatedValues) != 0 && peerNegotiatedValues[0]
 	runtime.mutex.Lock()
+	if previous, exists := runtime.sessions[clientID]; exists && previous.peerNotifier != nil {
+		previous.peerNotifier.abort()
+	}
 	runtime.sessions[clientID] = serverVNetSession{
 		sessionID: sessionID, generation: generation,
 		authentication: authenticationContext, writer: writer, peerNegotiated: peerNegotiated,
+		peerNotifier: runtime.newPeerNotifier(writer),
 	}
 	runtime.mutex.Unlock()
 }
@@ -829,6 +835,9 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	session, exists := runtime.sessions[clientID]
 	if exists && session.sessionID == sessionID {
 		delete(runtime.sessions, clientID)
+		if session.peerNotifier != nil {
+			session.peerNotifier.abort()
+		}
 		if runtime.router != nil {
 			runtime.router.RemoveClient(clientID)
 		}
@@ -840,6 +849,13 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 
 func (runtime *serverVNetRuntime) Close() {
 	runtime.cancel()
+	runtime.mutex.Lock()
+	for _, session := range runtime.sessions {
+		if session.peerNotifier != nil {
+			session.peerNotifier.abort()
+		}
+	}
+	runtime.mutex.Unlock()
 	runtime.stopPeerCoordinator()
 	runtime.broker.Close()
 	runtime.mutex.Lock()

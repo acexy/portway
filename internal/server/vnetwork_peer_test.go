@@ -18,14 +18,25 @@ import (
 )
 
 type pausedPeerNotice struct {
-	started chan struct{}
-	resume  chan struct{}
-	once    sync.Once
+	started  chan struct{}
+	resume   chan struct{}
+	once     sync.Once
+	mutex    sync.Mutex
+	deadline time.Time
 }
 
 func (notice *pausedPeerNotice) Write(data []byte) (int, error) {
 	notice.once.Do(func() { close(notice.started) })
-	<-notice.resume
+	notice.mutex.Lock()
+	deadline := notice.deadline
+	notice.mutex.Unlock()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-notice.resume:
+	case <-timer.C:
+		return 0, context.DeadlineExceeded
+	}
 	return len(data), nil
 }
 
@@ -112,3 +123,11 @@ func TestLatePeerMessagesDoNotFailControlSession(t *testing.T) {
 		t.Fatalf("late ready resurrected failed pair: %v", err)
 	}
 }
+
+func (notice *pausedPeerNotice) SetWriteDeadline(deadline time.Time) error {
+	notice.mutex.Lock()
+	notice.deadline = deadline
+	notice.mutex.Unlock()
+	return nil
+}
+func (notice *pausedPeerNotice) Close() error { return nil }
