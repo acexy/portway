@@ -90,5 +90,5 @@ func (runtime *serverVNetRuntime) reportVNetStatistics() {
 		local := userspace.Statistics()
 		fields["userspace_flows"], fields["tcp_connections"], fields["udp_associations"] = local.Flows, local.TCPConnections, local.UDPAssociations
 	}
-	runtime.logger.InfoWithFields("VNet resource statistics", fields)
+	runtime.logger.DebugWithFields("VNet resource statistics", fields)
 }

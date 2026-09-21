@@ -966,7 +966,7 @@ func (manager *clientVNetManager) reportStatistics() {
 				local := userspace.Statistics()
 				fields["userspace_flows"], fields["tcp_connections"], fields["udp_associations"] = local.Flows, local.TCPConnections, local.UDPAssociations
 			}
-			manager.logger.InfoWithFields("VNet resource statistics", fields)
+			manager.logger.DebugWithFields("VNet resource statistics", fields)
 		}
 	}
 }
