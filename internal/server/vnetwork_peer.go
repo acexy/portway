@@ -18,6 +18,7 @@ const (
 	vnetPeerOfferLifetime = 15 * time.Second
 	vnetPeerRetryDelay    = 10 * time.Second
 	vnetMaximumPeerPairs  = 4096
+	vnetMaximumNodePeers  = 64
 )
 
 type serverVNetPeerPair struct {
@@ -25,14 +26,14 @@ type serverVNetPeerPair struct {
 	firstID    string
 	secondID   string
 	ready      map[string]bool
+	expiresAt  time.Time
 	retryAfter time.Time
 	active     bool
 }
 
-func (runtime *serverVNetRuntime) configurePeerCoordinator(address string, fatal func(error)) {
+func (runtime *serverVNetRuntime) configurePeerCoordinator(address string) {
 	runtime.mutex.Lock()
 	runtime.peerListenAddress = address
-	runtime.peerFatal = fatal
 	runtime.mutex.Unlock()
 }
 
@@ -93,10 +94,18 @@ func (runtime *serverVNetRuntime) readPeerRegistrations(connection *net.UDPConn)
 			runtime.mutex.Unlock()
 			continue
 		}
+		runtime.mutex.Unlock()
 		candidates := normalizePeerCandidates(signal.HostCandidates)
 		candidates = append(candidates, protocol.VNetPeerCandidate{
 			Address: address.String(), Type: "server_reflexive",
 		})
+		runtime.mutex.Lock()
+		session, exists = runtime.sessions[signal.ClientID]
+		if !exists || session.sessionID != signal.SessionID ||
+			vnet.VerifyPeerSignal(data, session.peerRegistrationSecret) != nil {
+			runtime.mutex.Unlock()
+			continue
+		}
 		session.peerFingerprint = signal.Fingerprint
 		session.peerCandidates = candidates
 		session.peerAddress = address.String()
@@ -106,14 +115,14 @@ func (runtime *serverVNetRuntime) readPeerRegistrations(connection *net.UDPConn)
 }
 
 func normalizePeerCandidates(values []string) []protocol.VNetPeerCandidate {
-	if len(values) > 16 {
-		values = values[:16]
+	if len(values) > 15 {
+		values = values[:15]
 	}
 	result := make([]protocol.VNetPeerCandidate, 0, len(values))
 	seen := make(map[string]struct{})
 	for _, value := range values {
-		address, err := net.ResolveUDPAddr("udp4", value)
-		if err != nil || address.IP == nil || address.IP.IsUnspecified() || address.IP.IsLoopback() || address.IP.IsMulticast() {
+		address, err := netip.ParseAddrPort(value)
+		if err != nil || !address.Addr().Is4() || address.Port() == 0 || address.Addr().IsUnspecified() || address.Addr().IsLoopback() || address.Addr().IsMulticast() {
 			continue
 		}
 		normalized := address.String()
@@ -138,6 +147,21 @@ func (runtime *serverVNetRuntime) offerPeer(sourceID string, targetID string) {
 		runtime.mutex.Unlock()
 		return
 	}
+	if runtime.peerPairs[key] == nil {
+		sourceCount, targetCount := 0, 0
+		for _, existing := range runtime.peerPairs {
+			if existing.firstID == sourceID || existing.secondID == sourceID {
+				sourceCount++
+			}
+			if existing.firstID == targetID || existing.secondID == targetID {
+				targetCount++
+			}
+		}
+		if sourceCount >= vnetMaximumNodePeers || targetCount >= vnetMaximumNodePeers {
+			runtime.mutex.Unlock()
+			return
+		}
+	}
 	source, sourceExists := runtime.sessions[sourceID]
 	target, targetExists := runtime.sessions[targetID]
 	configuration := runtime.configuration
@@ -154,12 +178,11 @@ func (runtime *serverVNetRuntime) offerPeer(sourceID string, targetID string) {
 	generation := runtime.peerSequence.Add(1)
 	pair := &serverVNetPeerPair{
 		generation: generation, firstID: firstID, secondID: secondID,
-		ready: make(map[string]bool),
+		ready: make(map[string]bool), expiresAt: time.Now().Add(vnetPeerOfferLifetime),
 	}
 	runtime.peerPairs[key] = pair
-	runtime.mutex.Unlock()
 
-	expires := time.Now().Add(vnetPeerOfferLifetime).UnixMilli()
+	expires := pair.expiresAt.UnixMilli()
 	secretText := base64.RawURLEncoding.EncodeToString(secret)
 	sourceNode, _ := config.VNetNode(configuration, sourceID)
 	targetNode, _ := config.VNetNode(configuration, targetID)
@@ -177,8 +200,10 @@ func (runtime *serverVNetRuntime) offerPeer(sourceID string, targetID string) {
 		InboundTCP: peerPortRanges(targetNode.Ports.TCP.PortRanges),
 		InboundUDP: peerPortRanges(targetNode.Ports.UDP.PortRanges), ExpiresAtUnixMS: expires,
 	}
-	if source.writer.Write(protocol.MessageVNetPeerOffer, sourceOffer) != nil ||
-		target.writer.Write(protocol.MessageVNetPeerOffer, targetOffer) != nil {
+	sourceQueued := source.peerNotifier.enqueue(protocol.MessageVNetPeerOffer, sourceOffer)
+	targetQueued := target.peerNotifier.enqueue(protocol.MessageVNetPeerOffer, targetOffer)
+	runtime.mutex.Unlock()
+	if !sourceQueued || !targetQueued {
 		runtime.failPeerPair(sourceID, targetID, generation, "offer_failed")
 	}
 }
@@ -203,7 +228,7 @@ func (runtime *serverVNetRuntime) peerStatus(clientID string, sessionID string, 
 	pair := runtime.peerPairs[key]
 	if !exists || session.sessionID != sessionID || pair == nil || pair.generation != status.PeerGeneration {
 		runtime.mutex.Unlock()
-		return errors.New("VNet peer status does not match current pair")
+		return nil
 	}
 	switch status.State {
 	case protocol.VNetPeerStateFailed, protocol.VNetPeerStateClosed:
@@ -215,6 +240,15 @@ func (runtime *serverVNetRuntime) peerStatus(clientID string, sessionID string, 
 		runtime.mutex.Unlock()
 		return errors.New("invalid VNet peer status")
 	}
+	if !pair.retryAfter.IsZero() {
+		runtime.mutex.Unlock()
+		return nil
+	}
+	if !pair.expiresAt.IsZero() && !time.Now().Before(pair.expiresAt) && !pair.active {
+		runtime.failPeerPairLocked(pair, "offer_expired", time.Now())
+		runtime.mutex.Unlock()
+		return nil
+	}
 	pair.ready[clientID] = true
 	ready := pair.ready[pair.firstID] && pair.ready[pair.secondID]
 	activate := ready && !pair.active
@@ -223,15 +257,20 @@ func (runtime *serverVNetRuntime) peerStatus(clientID string, sessionID string, 
 	}
 	first := runtime.sessions[pair.firstID]
 	second := runtime.sessions[pair.secondID]
-	runtime.mutex.Unlock()
 	if activate {
-		_ = first.writer.Write(protocol.MessageVNetPeerActivate, protocol.VNetPeerActivate{
+		firstQueued := first.peerNotifier.enqueue(protocol.MessageVNetPeerActivate, protocol.VNetPeerActivate{
 			PeerGeneration: pair.generation, PeerClientID: pair.secondID,
 		})
-		_ = second.writer.Write(protocol.MessageVNetPeerActivate, protocol.VNetPeerActivate{
+		secondQueued := second.peerNotifier.enqueue(protocol.MessageVNetPeerActivate, protocol.VNetPeerActivate{
 			PeerGeneration: pair.generation, PeerClientID: pair.firstID,
 		})
+		runtime.mutex.Unlock()
+		if !firstQueued || !secondQueued {
+			runtime.failPeerPair(pair.firstID, pair.secondID, pair.generation, "activation_failed")
+		}
+		return nil
 	}
+	runtime.mutex.Unlock()
 	return nil
 }
 
@@ -244,15 +283,21 @@ func (runtime *serverVNetRuntime) openPeerFlow(
 	runtime.mutex.RLock()
 	session, exists := runtime.sessions[clientID]
 	pair := runtime.peerPairs[key]
-	runtime.mutex.RUnlock()
 	if !exists || session.sessionID != sessionID || pair == nil || !pair.active ||
 		pair.generation != request.PeerGeneration {
-		return errors.New("VNet peer flow does not match an active pair")
+		runtime.mutex.RUnlock()
+		return nil
 	}
+	defer runtime.mutex.RUnlock()
 	sourceIP, sourceError := netip.ParseAddr(request.SourceIP)
 	destinationIP, destinationError := netip.ParseAddr(request.DestinationIP)
 	if sourceError != nil || destinationError != nil {
 		return vnet.ErrInvalidPacket
+	}
+	configuration := runtime.configuration
+	target, configured := config.VNetNode(configuration, request.PeerClientID)
+	if !configured || target.IP != request.DestinationIP {
+		return vnet.ErrTargetUnavailable
 	}
 	destination, err := runtime.router.AuthorizePeerFlow(clientID, vnet.Flow{
 		Protocol: request.Protocol, SourceIP: sourceIP, SourcePort: request.SourcePort,
@@ -271,64 +316,86 @@ func (runtime *serverVNetRuntime) openPeerFlow(
 func (runtime *serverVNetRuntime) failPeerPair(firstID, secondID string, generation uint64, reason string) {
 	key, _, _ := peerPairKey(firstID, secondID)
 	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
 	pair := runtime.peerPairs[key]
-	if pair == nil || pair.generation != generation {
-		runtime.mutex.Unlock()
+	if pair == nil || pair.generation != generation || !pair.retryAfter.IsZero() {
 		return
 	}
+	runtime.failPeerPairLocked(pair, reason, time.Now())
+}
+
+func (runtime *serverVNetRuntime) failPeerPairLocked(pair *serverVNetPeerPair, reason string, now time.Time) {
 	pair.ready = make(map[string]bool)
 	pair.active = false
-	pair.retryAfter = time.Now().Add(vnetPeerRetryDelay)
-	first, firstExists := runtime.sessions[firstID]
-	second, secondExists := runtime.sessions[secondID]
-	runtime.mutex.Unlock()
-	if firstExists {
-		_ = first.writer.Write(protocol.MessageVNetPeerRevoke, protocol.VNetPeerRevoke{
-			PeerGeneration: generation, PeerClientID: secondID, Reason: reason,
-		})
-	}
-	if secondExists {
-		_ = second.writer.Write(protocol.MessageVNetPeerRevoke, protocol.VNetPeerRevoke{
-			PeerGeneration: generation, PeerClientID: firstID, Reason: reason,
-		})
+	pair.retryAfter = now.Add(vnetPeerRetryDelay)
+	runtime.notifyPeerRevocationLocked(pair, reason)
+}
+
+func (runtime *serverVNetRuntime) notifyPeerRevocationLocked(pair *serverVNetPeerPair, reason string) {
+	for _, ids := range [][2]string{{pair.firstID, pair.secondID}, {pair.secondID, pair.firstID}} {
+		if session, exists := runtime.sessions[ids[0]]; exists {
+			session.peerNotifier.enqueue(protocol.MessageVNetPeerRevoke, protocol.VNetPeerRevoke{
+				PeerGeneration: pair.generation, PeerClientID: ids[1], Reason: reason,
+			})
+		}
 	}
 }
 
 func (runtime *serverVNetRuntime) revokeClientPeers(clientID string, reason string) {
-	runtime.mutex.RLock()
-	pairs := make([]*serverVNetPeerPair, 0)
-	for _, pair := range runtime.peerPairs {
-		if pair.firstID == clientID || pair.secondID == clientID {
-			pairs = append(pairs, pair)
-		}
-	}
-	runtime.mutex.RUnlock()
-	for _, pair := range pairs {
-		runtime.failPeerPair(pair.firstID, pair.secondID, pair.generation, reason)
-		runtime.removePeerPair(pair)
-	}
+	runtime.revokePeers(clientID, reason)
 }
 
 func (runtime *serverVNetRuntime) revokeAllPeers(reason string) {
-	runtime.mutex.RLock()
-	pairs := make([]*serverVNetPeerPair, 0, len(runtime.peerPairs))
-	for _, pair := range runtime.peerPairs {
-		pairs = append(pairs, pair)
+	runtime.revokePeers("", reason)
+}
+
+func (runtime *serverVNetRuntime) revokePeers(clientID, reason string) {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	pairs := make([]*serverVNetPeerPair, 0)
+	for key, pair := range runtime.peerPairs {
+		if clientID == "" || pair.firstID == clientID || pair.secondID == clientID {
+			pair.active = false
+			delete(runtime.peerPairs, key)
+			pairs = append(pairs, pair)
+		}
 	}
-	runtime.mutex.RUnlock()
+	// The complete authority barrier precedes every outbound notice.
 	for _, pair := range pairs {
-		runtime.failPeerPair(pair.firstID, pair.secondID, pair.generation, reason)
-		runtime.removePeerPair(pair)
+		runtime.notifyPeerRevocationLocked(pair, reason)
 	}
 }
 
-func (runtime *serverVNetRuntime) removePeerPair(pair *serverVNetPeerPair) {
-	key, _, _ := peerPairKey(pair.firstID, pair.secondID)
+func (runtime *serverVNetRuntime) expirePeerPairs(now time.Time) {
 	runtime.mutex.Lock()
-	if runtime.peerPairs[key] == pair {
-		delete(runtime.peerPairs, key)
+	defer runtime.mutex.Unlock()
+	for key, pair := range runtime.peerPairs {
+		if !pair.retryAfter.IsZero() {
+			if !now.Before(pair.retryAfter) {
+				delete(runtime.peerPairs, key)
+			}
+		} else if !pair.active && !pair.expiresAt.IsZero() && !now.Before(pair.expiresAt) {
+			runtime.failPeerPairLocked(pair, "offer_expired", now)
+		}
 	}
-	runtime.mutex.Unlock()
+}
+
+func (runtime *serverVNetRuntime) maintainPeers() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	nextReport := time.Now().Add(30 * time.Second)
+	for {
+		select {
+		case <-runtime.context.Done():
+			return
+		case now := <-ticker.C:
+			runtime.expirePeerPairs(now)
+			if !now.Before(nextReport) {
+				runtime.reportVNetStatistics()
+				nextReport = now.Add(30 * time.Second)
+			}
+		}
+	}
 }
 
 func peerPairKey(left string, right string) (string, string, string) {

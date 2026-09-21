@@ -30,10 +30,10 @@ const (
 	userspaceTCPMaximumHandshakes   = 256
 	userspaceTCPMaximumConnections  = 1024
 	userspaceTCPMaximumFlows        = 65536
-	userspaceTCPFlowIdle            = 5 * time.Minute
+	userspaceTCPFlowIdle            = tcpFlowIdle
 	userspaceTCPDialTimeout         = 5 * time.Second
 	userspaceUDPMaximumAssociations = 4096
-	userspaceUDPAssociationIdle     = time.Minute
+	userspaceUDPAssociationIdle     = udpFlowIdle
 	userspaceUDPMaximumPayload      = 65507
 )
 
@@ -48,10 +48,12 @@ type UserspaceTCP struct {
 	mutex        sync.Mutex
 	flows        map[flowKey]time.Time
 	hostFlows    map[flowKey]time.Time
+	flowCancels  map[flowKey]*userspaceFlowOwner
 	connections  chan struct{}
 	associations chan struct{}
 	waitGroup    sync.WaitGroup
 	closeOnce    sync.Once
+	closing      bool
 }
 
 // NewUserspaceTCP creates one bounded IPv4 TCP/UDP stack for a VNet endpoint.
@@ -73,6 +75,9 @@ func NewUserspaceTCP(
 	linkEndpoint := channel.New(userspaceTCPPacketQueue, uint32(mtu), "")
 	if err := networkStack.CreateNIC(userspaceTCPNICID, linkEndpoint); err != nil {
 		cancel()
+		linkEndpoint.Close()
+		networkStack.Close()
+		networkStack.Wait()
 		return nil, fmt.Errorf("create VNet userspace TCP/IP NIC: %s", err)
 	}
 	address := localIP.As4()
@@ -84,6 +89,8 @@ func NewUserspaceTCP(
 	}, stack.AddressProperties{}); err != nil {
 		cancel()
 		linkEndpoint.Close()
+		networkStack.Close()
+		networkStack.Wait()
 		return nil, fmt.Errorf("assign VNet userspace TCP/IP address: %s", err)
 	}
 	networkStack.SetRouteTable([]tcpip.Route{{
@@ -94,6 +101,7 @@ func NewUserspaceTCP(
 		context: ctx, cancel: cancel, stack: networkStack, link: linkEndpoint,
 		localIP: localIP, output: output, flows: make(map[flowKey]time.Time),
 		hostFlows:    make(map[flowKey]time.Time),
+		flowCancels:  make(map[flowKey]*userspaceFlowOwner),
 		connections:  make(chan struct{}, userspaceTCPMaximumConnections),
 		associations: make(chan struct{}, userspaceUDPMaximumAssociations),
 	}
@@ -118,8 +126,11 @@ func (runtime *UserspaceTCP) ObserveHostPacket(packet []byte) bool {
 	now := time.Now()
 	runtime.mutex.Lock()
 	defer runtime.mutex.Unlock()
-	if expires, exists := runtime.flows[key]; exists && now.Before(expires) {
-		return false
+	if expires, exists := runtime.flows[key]; exists {
+		if now.Before(expires) {
+			return false
+		}
+		runtime.removeFlowLocked(key)
 	}
 	expires, exists := runtime.hostFlows[key]
 	if !exists || !now.Before(expires) {
@@ -158,14 +169,18 @@ func (runtime *UserspaceTCP) Handle(packet []byte) bool {
 		}
 		delete(runtime.hostFlows, key)
 	}
-	_, owned := runtime.flows[key]
+	expires, owned := runtime.flows[key]
+	if owned && !now.Before(expires) {
+		runtime.removeFlowLocked(key)
+		owned = false
+	}
 	if !owned && (flow.Protocol == protocolUDP || flow.IsTCPStart()) &&
 		len(runtime.flows)+len(runtime.hostFlows) < userspaceTCPMaximumFlows {
 		owned = true
 	}
 	if owned {
 		if flow.IsTCPReset() {
-			delete(runtime.flows, key)
+			runtime.removeFlowLocked(key)
 		} else {
 			runtime.flows[key] = now.Add(userspaceFlowIdle(flow.Protocol))
 		}
@@ -183,6 +198,15 @@ func (runtime *UserspaceTCP) Handle(packet []byte) bool {
 }
 
 func (runtime *UserspaceTCP) forwardUDP(request *udp.ForwarderRequest) bool {
+	if !runtime.beginForward() {
+		return false
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			runtime.waitGroup.Done()
+		}
+	}()
 	select {
 	case runtime.associations <- struct{}{}:
 	case <-runtime.context.Done():
@@ -206,12 +230,14 @@ func (runtime *UserspaceTCP) forwardUDP(request *udp.ForwarderRequest) bool {
 		<-runtime.associations
 		return true
 	}
-	runtime.waitGroup.Go(func() {
+	handedOff = true
+	go func() {
+		defer runtime.waitGroup.Done()
 		defer func() { <-runtime.associations }()
 		defer remote.Close()
 		defer local.Close()
 		forwardUDPAssociation(runtime.context, remote, local)
-	})
+	}()
 	return true
 }
 
@@ -258,6 +284,11 @@ func forwardUDPAssociation(ctx context.Context, remote, local net.Conn) {
 }
 
 func (runtime *UserspaceTCP) forward(request *tcp.ForwarderRequest) {
+	if !runtime.beginForward() {
+		request.Complete(true)
+		return
+	}
+	defer runtime.waitGroup.Done()
 	select {
 	case runtime.connections <- struct{}{}:
 	case <-runtime.context.Done():
@@ -268,10 +299,18 @@ func (runtime *UserspaceTCP) forward(request *tcp.ForwarderRequest) {
 		return
 	}
 	defer func() { <-runtime.connections }()
-	port := request.ID().LocalPort
+	id := request.ID()
+	key := makeFlowKey(Flow{Protocol: protocolTCP, SourceIP: netip.AddrFrom4(id.RemoteAddress.As4()), SourcePort: id.RemotePort, DestinationIP: runtime.localIP, DestinationPort: id.LocalPort})
+	ctx, owner := runtime.ownFlow(key)
+	if owner == nil {
+		request.Complete(true)
+		return
+	}
+	defer runtime.releaseFlow(key, owner)
+	port := id.LocalPort
 	dialer := net.Dialer{Timeout: userspaceTCPDialTimeout}
 	local, err := dialer.DialContext(
-		runtime.context,
+		ctx,
 		"tcp4",
 		net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))),
 	)
@@ -288,7 +327,7 @@ func (runtime *UserspaceTCP) forward(request *tcp.ForwarderRequest) {
 	}
 	request.Complete(false)
 	remote := gonet.NewTCPConn(queue, endpoint)
-	_, _ = proxytcp.Forward(runtime.context, remote, local)
+	_, _ = proxytcp.Forward(ctx, remote, local)
 }
 
 func (runtime *UserspaceTCP) writePackets() {
@@ -301,30 +340,85 @@ func (runtime *UserspaceTCP) writePackets() {
 		data := append([]byte(nil), view.AsSlice()...)
 		view.Release()
 		packet.DecRef()
+		runtime.observeOutput(data)
 		_ = runtime.output(data)
 	}
 }
 
+type userspaceFlowOwner struct{ cancel context.CancelFunc }
+
+func (runtime *UserspaceTCP) ownFlow(key flowKey) (context.Context, *userspaceFlowOwner) {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	expires, exists := runtime.flows[key]
+	if !exists || !time.Now().Before(expires) || runtime.flowCancels[key] != nil || runtime.context.Err() != nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(runtime.context)
+	owner := &userspaceFlowOwner{cancel: cancel}
+	runtime.flowCancels[key] = owner
+	return ctx, owner
+}
+
+func (runtime *UserspaceTCP) removeFlowLocked(key flowKey) {
+	delete(runtime.flows, key)
+	if owner := runtime.flowCancels[key]; owner != nil {
+		delete(runtime.flowCancels, key)
+		owner.cancel()
+	}
+}
+
+func (runtime *UserspaceTCP) releaseFlow(key flowKey, owner *userspaceFlowOwner) {
+	runtime.mutex.Lock()
+	if runtime.flowCancels[key] == owner {
+		runtime.removeFlowLocked(key)
+	}
+	runtime.mutex.Unlock()
+	owner.cancel()
+}
+
+func (runtime *UserspaceTCP) observeOutput(packet []byte) {
+	flow, err := ParseIPv4(packet)
+	if err != nil {
+		return
+	}
+	key := makeFlowKey(flow)
+	now := time.Now()
+	runtime.mutex.Lock()
+	if expires, exists := runtime.flows[key]; exists {
+		if flow.IsTCPReset() || !now.Before(expires) {
+			runtime.removeFlowLocked(key)
+		} else {
+			runtime.flows[key] = now.Add(userspaceFlowIdle(flow.Protocol))
+		}
+	}
+	runtime.mutex.Unlock()
+}
+
+func (runtime *UserspaceTCP) expireFlowsAt(now time.Time) {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	for key, expiresAt := range runtime.flows {
+		if !now.Before(expiresAt) {
+			runtime.removeFlowLocked(key)
+		}
+	}
+	for key, expiresAt := range runtime.hostFlows {
+		if !now.Before(expiresAt) {
+			delete(runtime.hostFlows, key)
+		}
+	}
+}
+
 func (runtime *UserspaceTCP) expireFlows() {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-runtime.context.Done():
 			return
 		case now := <-ticker.C:
-			runtime.mutex.Lock()
-			for key, expiresAt := range runtime.flows {
-				if !now.Before(expiresAt) {
-					delete(runtime.flows, key)
-				}
-			}
-			for key, expiresAt := range runtime.hostFlows {
-				if !now.Before(expiresAt) {
-					delete(runtime.hostFlows, key)
-				}
-			}
-			runtime.mutex.Unlock()
+			runtime.expireFlowsAt(now)
 		}
 	}
 }
@@ -332,6 +426,13 @@ func (runtime *UserspaceTCP) expireFlows() {
 // Close terminates the userspace stack and every forwarded connection.
 func (runtime *UserspaceTCP) Close() error {
 	runtime.closeOnce.Do(func() {
+		runtime.mutex.Lock()
+		runtime.closing = true
+		for key := range runtime.flows {
+			runtime.removeFlowLocked(key)
+		}
+		clear(runtime.hostFlows)
+		runtime.mutex.Unlock()
 		runtime.cancel()
 		runtime.link.Close()
 		runtime.stack.Close()
@@ -339,4 +440,15 @@ func (runtime *UserspaceTCP) Close() error {
 		runtime.waitGroup.Wait()
 	})
 	return nil
+}
+
+// Serialize admission with shutdown before any callback allocates resources.
+func (runtime *UserspaceTCP) beginForward() bool {
+	runtime.mutex.Lock()
+	defer runtime.mutex.Unlock()
+	if runtime.closing || runtime.context.Err() != nil {
+		return false
+	}
+	runtime.waitGroup.Add(1)
+	return true
 }

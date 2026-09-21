@@ -36,6 +36,7 @@ type serverVNetSession struct {
 	generation             transport.Generation
 	authentication         authentication.Context
 	writer                 *control.Writer
+	peerNotifier           *vnetPeerNotifier
 	poolGeneration         uint64
 	configGeneration       uint64
 	channelsOffered        bool
@@ -67,7 +68,6 @@ type serverVNetRuntime struct {
 	waitGroup         sync.WaitGroup
 	peerConnection    *net.UDPConn
 	peerListenAddress string
-	peerFatal         func(error)
 	peerPairs         map[string]*serverVNetPeerPair
 	peerSequence      atomic.Uint64
 }
@@ -96,6 +96,7 @@ func newServerVNetRuntime(
 		runtime.waitGroup.Go(func() { runtime.readDevice(device) })
 	}
 	runtime.waitGroup.Go(runtime.reconcileDevice)
+	runtime.waitGroup.Go(runtime.maintainPeers)
 	return runtime
 }
 
@@ -146,9 +147,13 @@ func (runtime *serverVNetRuntime) attach(
 ) {
 	peerNegotiated := len(peerNegotiatedValues) != 0 && peerNegotiatedValues[0]
 	runtime.mutex.Lock()
+	if previous, exists := runtime.sessions[clientID]; exists && previous.peerNotifier != nil {
+		previous.peerNotifier.abort()
+	}
 	runtime.sessions[clientID] = serverVNetSession{
 		sessionID: sessionID, generation: generation,
 		authentication: authenticationContext, writer: writer, peerNegotiated: peerNegotiated,
+		peerNotifier: runtime.newPeerNotifier(writer),
 	}
 	runtime.mutex.Unlock()
 }
@@ -378,6 +383,8 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 				runtime.router.RemoveClient(node.ClientID)
 			}
 		}
+		// Publish the relay policy before any potentially blocking peer notices.
+		_ = runtime.router.ApplyPolicy(configuration)
 	}
 	sessions := make([]serverVNetSession, 0, len(runtime.sessions))
 	clientIDs := make([]string, 0, len(runtime.sessions))
@@ -391,10 +398,7 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	}
 	if !previous.Enabled && configuration.Enabled {
 		if err := runtime.startPeerCoordinator(runtime.peerListenAddress); err != nil {
-			runtime.logger.Warn("VNet P2P UDP port is unavailable; server is exiting", err)
-			if runtime.peerFatal != nil {
-				runtime.peerFatal(fmt.Errorf("start VNet P2P coordinator: %w", err))
-			}
+			runtime.logger.Warn("VNet P2P UDP port is unavailable; relay remains active", err)
 		}
 	}
 	runtime.revokeAllPeers("configuration_changed")
@@ -403,9 +407,6 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	}
 	if userspaceTCP != nil && (!configuration.Enabled || networkChanged) {
 		_ = userspaceTCP.Close()
-	}
-	if runtime.router != nil {
-		_ = runtime.router.ApplyPolicy(configuration)
 	}
 	for index, session := range sessions {
 		runtime.updateSessionConfiguration(clientIDs[index], session, previous, configuration, generation, networkChanged)
@@ -834,6 +835,9 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	session, exists := runtime.sessions[clientID]
 	if exists && session.sessionID == sessionID {
 		delete(runtime.sessions, clientID)
+		if session.peerNotifier != nil {
+			session.peerNotifier.abort()
+		}
 		if runtime.router != nil {
 			runtime.router.RemoveClient(clientID)
 		}
@@ -845,6 +849,13 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 
 func (runtime *serverVNetRuntime) Close() {
 	runtime.cancel()
+	runtime.mutex.Lock()
+	for _, session := range runtime.sessions {
+		if session.peerNotifier != nil {
+			session.peerNotifier.abort()
+		}
+	}
+	runtime.mutex.Unlock()
 	runtime.stopPeerCoordinator()
 	runtime.broker.Close()
 	runtime.mutex.Lock()

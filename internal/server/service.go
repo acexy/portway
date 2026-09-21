@@ -150,17 +150,10 @@ func (s *Service) Run(ctx context.Context) error {
 		configuration.VirtualNetwork,
 		vnetDevice,
 	)
-	s.vnetRuntime.configurePeerCoordinator(configuration.Transport.ListenAddress, func(err error) {
-		select {
-		case listenerErrors <- err:
-		default:
-		}
-		_ = transportServer.Close()
-	})
+	s.vnetRuntime.configurePeerCoordinator(configuration.Transport.ListenAddress)
 	if configuration.VirtualNetwork.Enabled {
 		if err := s.vnetRuntime.startPeerCoordinator(configuration.Transport.ListenAddress); err != nil {
-			s.logger.WithComponent("vnet").Warn("VNet P2P UDP port is unavailable; server is exiting", err)
-			return fmt.Errorf("start VNet P2P coordinator: %w", err)
+			s.logger.WithComponent("vnet").Warn("VNet P2P UDP port is unavailable; relay remains active", err)
 		}
 	}
 	defer s.vnetRuntime.Close()
@@ -393,15 +386,20 @@ func (s *Service) Run(ctx context.Context) error {
 
 		sessions.Go(func() {
 			defer releaseAdmission()
-			if err := s.handleAdmittedConnection(
+			err := s.handleAdmittedConnection(
 				sessionContext,
 				inbound,
 				releaseAdmission,
-			); err != nil &&
+			)
+			if err != nil &&
 				!errors.Is(err, io.EOF) &&
 				!errors.Is(err, net.ErrClosed) &&
 				sessionContext.Err() == nil {
-				s.logger.Warn("client connection ended", err)
+				s.logger.WarnWithFields(
+					"client connection ended",
+					err,
+					clientConnectionLogFields(inbound, err),
+				)
 			}
 		})
 	}

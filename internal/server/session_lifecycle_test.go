@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -10,9 +11,37 @@ import (
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/protocol"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 	"github.com/acexy/portway/internal/session"
+	"github.com/acexy/portway/internal/transport"
 )
+
+func TestClientConnectionLogFieldsIncludeBoundDataIdentity(t *testing.T) {
+	cause := errors.New("stream canceled")
+	err := withClientConnectionContext(cause, map[string]any{
+		"client_id":  "managed-a",
+		"session_id": "session-a",
+		"link_id":    "link-a",
+	})
+	fields := clientConnectionLogFields(transport.Inbound{
+		Role: protocol.RoleData, RemoteAddress: "127.0.0.1:9000",
+	}, err)
+	if !errors.Is(err, cause) {
+		t.Fatal("connection context did not preserve the original error")
+	}
+	for name, expected := range map[string]any{
+		"connection_role": "data",
+		"remote_address":  "127.0.0.1:9000",
+		"client_id":       "managed-a",
+		"session_id":      "session-a",
+		"link_id":         "link-a",
+	} {
+		if fields[name] != expected {
+			t.Fatalf("field %s = %v, want %v", name, fields[name], expected)
+		}
+	}
+}
 
 func TestSuspendClientPreservesProxyActivationAfterHeartbeatRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

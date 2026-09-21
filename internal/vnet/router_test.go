@@ -9,6 +9,39 @@ import (
 	"github.com/acexy/portway/internal/config"
 )
 
+func TestRouterPairQuotaAndRevocationRelease(t *testing.T) {
+	router, err := NewRouter(testVNetConfiguration(), routerMaximumNodeFlows*2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0)
+	for index := 0; index < maximumPairFlows; index++ {
+		now = now.Add(10 * time.Millisecond)
+		packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, uint16(10000+index), [4]byte{172, 20, 0, 3}, 8080)
+		if _, err := router.RouteClientPacket("client-a", packet, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	if _, err := router.RouteClientPacket("client-a", packet, now); !errors.Is(err, ErrFlowCapacity) {
+		t.Fatalf("node exceeded its quota: %v", err)
+	}
+	router.RemoveClient("client-a")
+	if len(router.nodeFlows) != 0 || len(router.flows) != 0 {
+		t.Fatal("session revocation leaked flow quota")
+	}
+	if _, err := router.RouteClientPacket("client-a", packet, now); err != nil {
+		t.Fatal(err)
+	}
+	packet[33] = 0x04
+	if _, err := router.RouteClientPacket("client-a", packet, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(router.nodeFlows) != 0 {
+		t.Fatal("RST leaked flow quota")
+	}
+}
+
 func TestRouterAuthorizesRequestAndReply(t *testing.T) {
 	router := testRouter(t)
 	now := time.Unix(1, 0)

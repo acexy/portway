@@ -11,6 +11,7 @@ import (
 )
 
 const routerCleanupBatchSize = 256
+const routerMaximumNodeFlows = 4096
 
 var (
 	// ErrSourceRejected indicates that a packet source does not own its virtual address.
@@ -21,6 +22,8 @@ var (
 	ErrFlowRejected = errors.New("VNet flow rejected")
 	// ErrFlowCapacity indicates that the bounded flow table is full.
 	ErrFlowCapacity = errors.New("VNet flow capacity reached")
+	// ErrFlowRate indicates that a node pair exhausted its new-flow budget.
+	ErrFlowRate = errors.New("VNet new flow rate reached")
 )
 
 // DestinationKind identifies the owner of one routed packet.
@@ -70,8 +73,13 @@ type flowState struct {
 // Router owns the bounded authorization state for VNet packet routing.
 type Router struct {
 	mutex               sync.Mutex
+	admission           flowAdmission
+	capacityRejected    uint64
+	rateRejected        uint64
+	policyRejected      uint64
 	policy              routingPolicy
 	flows               map[flowKey]flowState
+	nodeFlows           map[netip.Addr]int
 	maxFlows            int
 	tcpIdle             time.Duration
 	udpIdle             time.Duration
@@ -89,11 +97,12 @@ func NewRouter(configuration config.VirtualNetworkConfig, maxFlows int) (*Router
 		return nil, errors.New("VNet maximum flow count must be positive")
 	}
 	return &Router{
-		policy:   policy,
-		flows:    make(map[flowKey]flowState),
-		maxFlows: maxFlows,
-		tcpIdle:  5 * time.Minute,
-		udpIdle:  time.Minute,
+		policy:    policy,
+		flows:     make(map[flowKey]flowState),
+		nodeFlows: make(map[netip.Addr]int),
+		maxFlows:  maxFlows,
+		tcpIdle:   tcpFlowIdle,
+		udpIdle:   udpFlowIdle,
 	}, nil
 }
 
@@ -113,7 +122,7 @@ func (router *Router) ApplyPolicy(configuration config.VirtualNetworkConfig) err
 		if !firstExists || !secondExists ||
 			first.clientID != previous.byIP[firstIP].clientID || second.clientID != previous.byIP[secondIP].clientID ||
 			!policy.serviceAllowed(state.serviceIP, state.protocol, state.servicePort) {
-			delete(router.flows, key)
+			router.removeFlowLocked(key)
 		}
 	}
 	router.mutex.Unlock()
@@ -131,7 +140,7 @@ func (router *Router) RemoveClient(clientID string) {
 	address := clientIP.As4()
 	for key := range router.flows {
 		if key.firstIP == address || key.secondIP == address {
-			delete(router.flows, key)
+			router.removeFlowLocked(key)
 		}
 	}
 }
@@ -150,6 +159,7 @@ func (router *Router) RouteClientPacket(
 	defer router.mutex.Unlock()
 	ownedIP, exists := router.policy.byClientID[clientID]
 	if !exists || ownedIP != flow.SourceIP {
+		router.policyRejected++
 		return Destination{}, ErrSourceRejected
 	}
 	return router.routeLocked(flow, now)
@@ -166,6 +176,7 @@ func (router *Router) AuthorizePeerFlow(clientID string, flow Flow, now time.Tim
 	defer router.mutex.Unlock()
 	ownedIP, exists := router.policy.byClientID[clientID]
 	if !exists || ownedIP != flow.SourceIP {
+		router.policyRejected++
 		return Destination{}, ErrSourceRejected
 	}
 	return router.routeLocked(flow, now)
@@ -180,6 +191,7 @@ func (router *Router) RouteServerPacket(packet []byte, now time.Time) (Destinati
 	router.mutex.Lock()
 	defer router.mutex.Unlock()
 	if flow.SourceIP != router.policy.serverIP {
+		router.policyRejected++
 		return Destination{}, ErrSourceRejected
 	}
 	return router.routeLocked(flow, now)
@@ -188,6 +200,7 @@ func (router *Router) RouteServerPacket(packet []byte, now time.Time) (Destinati
 func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error) {
 	target, exists := router.policy.byIP[flow.DestinationIP]
 	if !exists {
+		router.policyRejected++
 		return Destination{}, ErrTargetUnavailable
 	}
 	if router.nextCleanup.IsZero() || !now.Before(router.nextCleanup) {
@@ -198,30 +211,52 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 	state, active := router.flows[key]
 	if active && (!now.Before(state.expiresAt) ||
 		!router.policy.serviceAllowed(state.serviceIP, state.protocol, state.servicePort)) {
-		delete(router.flows, key)
+		router.removeFlowLocked(key)
 		active = false
 	}
 	if !active {
 		if flow.Protocol == protocolTCP && !flow.IsTCPStart() {
+			router.policyRejected++
 			return Destination{}, ErrFlowRejected
 		}
 		if !target.allows(flow.Protocol, flow.DestinationPort) {
+			router.policyRejected++
 			return Destination{}, ErrFlowRejected
 		}
-		if len(router.flows) >= router.maxFlows {
+		atCapacity := func() bool {
+			return len(router.flows) >= router.maxFlows ||
+				router.nodeFlows[flow.SourceIP] >= routerMaximumNodeFlows ||
+				router.nodeFlows[flow.DestinationIP] >= routerMaximumNodeFlows ||
+				router.admission.pairs[makeNodePair(flow.SourceIP, flow.DestinationIP)].count >= maximumPairFlows
+		}
+		if atCapacity() {
 			if !now.Before(router.nextCapacityCleanup) {
 				router.removeExpiredLocked(now, router.maxFlows)
 				router.nextCapacityCleanup = now.Add(time.Second)
 			}
-			if len(router.flows) >= router.maxFlows {
+			if atCapacity() {
+				router.capacityRejected++
 				return Destination{}, ErrFlowCapacity
 			}
+		}
+		if err := router.admission.admit(flow, now, router.maxFlows); err != nil {
+			if errors.Is(err, ErrFlowRate) {
+				router.rateRejected++
+			} else {
+				router.capacityRejected++
+			}
+			return Destination{}, err
 		}
 		state = flowState{
 			serviceIP:   flow.DestinationIP,
 			servicePort: flow.DestinationPort,
 			protocol:    flow.Protocol,
 		}
+		router.nodeFlows[flow.SourceIP]++
+		if flow.DestinationIP != flow.SourceIP {
+			router.nodeFlows[flow.DestinationIP]++
+		}
+		router.flows[key] = state
 	}
 	if flow.Protocol == protocolTCP {
 		state.expiresAt = now.Add(router.tcpIdle)
@@ -229,7 +264,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 		state.expiresAt = now.Add(router.udpIdle)
 	}
 	if flow.IsTCPReset() {
-		delete(router.flows, key)
+		router.removeFlowLocked(key)
 	} else {
 		router.flows[key] = state
 	}
@@ -251,11 +286,30 @@ func (router *Router) removeExpiredLocked(now time.Time, limit int) {
 	inspected := 0
 	for key, state := range router.flows {
 		if !now.Before(state.expiresAt) {
-			delete(router.flows, key)
+			router.removeFlowLocked(key)
 		}
 		inspected++
 		if inspected >= limit {
 			return
+		}
+	}
+}
+
+func (router *Router) removeFlowLocked(key flowKey) {
+	if _, exists := router.flows[key]; !exists {
+		return
+	}
+	delete(router.flows, key)
+	first, second := netip.AddrFrom4(key.firstIP), netip.AddrFrom4(key.secondIP)
+	router.admission.release(first, second)
+	for index, address := range []netip.Addr{first, second} {
+		if index == 1 && address == first {
+			continue
+		}
+		if router.nodeFlows[address] <= 1 {
+			delete(router.nodeFlows, address)
+		} else {
+			router.nodeFlows[address]--
 		}
 	}
 }

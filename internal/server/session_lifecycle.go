@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -11,6 +12,51 @@ import (
 	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
 )
+
+type clientConnectionContextError struct {
+	cause  error
+	fields map[string]any
+}
+
+func (connectionError *clientConnectionContextError) Error() string {
+	return connectionError.cause.Error()
+}
+
+func (connectionError *clientConnectionContextError) Unwrap() error {
+	return connectionError.cause
+}
+
+func withClientConnectionContext(err error, fields map[string]any) error {
+	if err == nil {
+		return nil
+	}
+	return &clientConnectionContextError{cause: err, fields: fields}
+}
+
+func clientConnectionLogFields(inbound transport.Inbound, err error) map[string]any {
+	fields := map[string]any{
+		"connection_role": connectionRoleName(inbound.Role),
+		"remote_address": inbound.RemoteAddress,
+	}
+	var connectionError *clientConnectionContextError
+	if errors.As(err, &connectionError) {
+		for name, value := range connectionError.fields {
+			fields[name] = value
+		}
+	}
+	return fields
+}
+
+func connectionRoleName(role protocol.Role) string {
+	switch role {
+	case protocol.RoleControl:
+		return "control"
+	case protocol.RoleData:
+		return "data"
+	default:
+		return "unknown"
+	}
+}
 
 func (s *Service) monitorClients(ctx context.Context) {
 	ticker := time.NewTicker(clientMonitorInterval)
@@ -90,7 +136,16 @@ func (s *Service) handleDataConnection(
 		if binding.ClientID != inbound.Authentication.ClientID {
 			return transport.ErrAuthentication
 		}
-		return s.vnetRuntime.bind(ctx, inbound, binding, releaseAdmission)
+		return withClientConnectionContext(
+			s.vnetRuntime.bind(ctx, inbound, binding, releaseAdmission),
+			map[string]any{
+				"client_id":       binding.ClientID,
+				"session_id":      binding.SessionID,
+				"pool_generation": binding.PoolGeneration,
+				"channel_index":   binding.ChannelIndex,
+				"channel_count":   binding.ChannelCount,
+			},
+		)
 	}
 	if envelope.Type != protocol.MessageBindLink {
 		return fmt.Errorf(
@@ -108,12 +163,21 @@ func (s *Service) handleDataConnection(
 		binding.ClientID != inbound.Authentication.ClientID {
 		return transport.ErrAuthentication
 	}
-	return s.linkBroker.BindWithActivation(
-		ctx,
-		connection,
-		binding,
-		inbound.Authentication,
-		releaseAdmission,
+	return withClientConnectionContext(
+		s.linkBroker.BindWithActivation(
+			ctx,
+			connection,
+			binding,
+			inbound.Authentication,
+			releaseAdmission,
+		),
+		map[string]any{
+			"client_id":  binding.ClientID,
+			"session_id": binding.SessionID,
+			"link_id":    binding.LinkID,
+			"proxy_type": binding.ProxyType,
+			"direction":  binding.Direction,
+		},
 	)
 }
 

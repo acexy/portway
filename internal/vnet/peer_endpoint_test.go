@@ -76,15 +76,17 @@ func TestPeerEndpointRejectsInboundFlowOutsideActiveGeneration(t *testing.T) {
 }
 
 func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
+	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	readyA := make(chan protocol.VNetPeerStatus, 1)
 	readyB := make(chan protocol.VNetPeerStatus, 1)
 	received := make(chan []byte, 1)
+	receivedReply := make(chan []byte, 1)
 	endpointA, err := NewPeerEndpoint(
 		ctx, "127.0.0.1:0", "client-a", "session-a", "172.20.0.2", 1280,
 		func(status protocol.VNetPeerStatus) error { readyA <- status; return nil },
-		func([]byte) error { return nil },
+		func(packet []byte) error { receivedReply <- packet; return nil },
 	)
 	if err != nil {
 		t.Fatalf("create endpoint A: %v", err)
@@ -102,17 +104,8 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 	secret := make([]byte, 32)
 	_, _ = rand.Read(secret)
 	ticket := base64.RawURLEncoding.EncodeToString(secret)
-	expires := time.Now().Add(5 * time.Second).UnixMilli()
+	expires := time.Now().Add(30 * time.Second).UnixMilli()
 	generation := uint64(1)
-	if err := endpointB.ApplyOffer(protocol.VNetPeerOffer{
-		PeerGeneration: generation, PeerClientID: "client-a", PeerVirtualIP: "172.20.0.2",
-		PeerFingerprint: endpointA.Fingerprint(), PairTicket: ticket,
-		Role:       protocol.VNetPeerRoleServer,
-		Candidates: []protocol.VNetPeerCandidate{{Address: endpointA.connection.LocalAddr().String(), Type: "host"}},
-		InboundUDP: []protocol.VNetPeerPortRange{{Start: 9000, End: 9000}}, ExpiresAtUnixMS: expires,
-	}); err != nil {
-		t.Fatalf("apply endpoint B offer: %v", err)
-	}
 	if err := endpointA.ApplyOffer(protocol.VNetPeerOffer{
 		PeerGeneration: generation, PeerClientID: "client-b", PeerVirtualIP: "172.20.0.3",
 		PeerFingerprint: endpointB.Fingerprint(), PairTicket: ticket,
@@ -122,6 +115,15 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("apply endpoint A offer: %v", err)
 	}
+	if err := endpointB.ApplyOffer(protocol.VNetPeerOffer{
+		PeerGeneration: generation, PeerClientID: "client-a", PeerVirtualIP: "172.20.0.2",
+		PeerFingerprint: endpointA.Fingerprint(), PairTicket: ticket,
+		Role:       protocol.VNetPeerRoleServer,
+		Candidates: []protocol.VNetPeerCandidate{{Address: endpointA.connection.LocalAddr().String(), Type: "host"}},
+		InboundUDP: []protocol.VNetPeerPortRange{{Start: 9000, End: 9000}}, ExpiresAtUnixMS: expires,
+	}); err != nil {
+		t.Fatalf("apply endpoint B offer: %v", err)
+	}
 	waitPeerReady := func(channel <-chan protocol.VNetPeerStatus) {
 		t.Helper()
 		select {
@@ -129,7 +131,7 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 			if status.State != protocol.VNetPeerStateReady {
 				t.Fatalf("peer state = %s", status.State)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatal("peer QUIC path did not become ready")
 		}
 	}
@@ -155,5 +157,15 @@ func TestPeerEndpointQUICDatagramRoundTrip(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("direct packet was not received")
+	}
+	reply := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 3}, 9000, [4]byte{172, 20, 0, 2}, 8000)
+	replyFlow, _ := ParseIPv4(reply)
+	if sent, err := endpointB.Send(replyFlow, reply, time.Now()); err != nil || !sent {
+		t.Fatalf("reverse flow did not retain direct path: sent=%t err=%v", sent, err)
+	}
+	select {
+	case <-receivedReply:
+	case <-time.After(3 * time.Second):
+		t.Fatal("direct reply was not received")
 	}
 }

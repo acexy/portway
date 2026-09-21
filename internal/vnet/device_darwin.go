@@ -82,14 +82,17 @@ func (device *darwinDevice) Name() string {
 
 func (device *darwinDevice) ReadPacket(packet []byte) (int, error) {
 	framed := make([]byte, len(packet)+4)
-	read, err := device.file.Read(framed)
-	if err != nil {
-		return 0, err
+	for {
+		read, err := device.file.Read(framed)
+		if err != nil {
+			return 0, err
+		}
+		// Unsupported address families are packet drops, not device failures.
+		if read < 4 || binary.BigEndian.Uint32(framed[:4]) != darwinIPv4Family {
+			continue
+		}
+		return copy(packet, framed[4:read]), nil
 	}
-	if read < 4 || binary.BigEndian.Uint32(framed[:4]) != darwinIPv4Family {
-		return 0, fmt.Errorf("%w: invalid macOS utun address family", ErrInvalidPacket)
-	}
-	return copy(packet, framed[4:read]), nil
 }
 
 func (device *darwinDevice) WritePacket(packet []byte) (int, error) {

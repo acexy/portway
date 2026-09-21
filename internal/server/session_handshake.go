@@ -28,7 +28,12 @@ func (s *Service) handleAdmittedConnection(
 	releaseAdmission func(),
 ) error {
 	connection := inbound.Stream
-	defer connection.Close()
+	closeConnection := true
+	defer func() {
+		if closeConnection {
+			_ = connection.Close()
+		}
+	}()
 
 	stopContextClose := context.AfterFunc(ctx, func() {
 		connection.Close()
@@ -149,6 +154,12 @@ func (s *Service) handleAdmittedConnection(
 				"error_code": sessionError.Code,
 			},
 		)
+		// Finish only the response direction so a QUIC connection close cannot
+		// overtake the SessionError before the client reads it.
+		if err := connection.CloseWrite(); err != nil {
+			return fmt.Errorf("finish client registration rejection response: %w", err)
+		}
+		closeConnection = false
 		return nil
 	}
 	// The Session Registry now owns a bounded Initializing record, so this

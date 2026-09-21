@@ -53,13 +53,17 @@ func (s *Service) runControlLoop(
 		transportSession,
 	)
 	defer linkManager.close()
+	if !vnetNegotiated || !vnetPeerNegotiated || managementMode != protocol.ManagementModeManaged {
+		s.closeVNetManager()
+		s.vnetPeerRuntime.close()
+	}
 	var vnetManager *clientVNetManager
 	if vnetNegotiated && managementMode == protocol.ManagementModeManaged {
-		vnetManager = newClientVNetManager(
-			sessionContext, sessionLogger.WithComponent("vnet"), s.runtimeIdentity(),
+		vnetManager = s.attachVNetManager(
+			ctx, s.logger.WithComponent("vnet"), s.runtimeIdentity(),
 			sessionID, writer, transportSession, s.configuration.Transport.ServerAddress,
 		)
-		defer vnetManager.close()
+		defer vnetManager.detachSession()
 	}
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)

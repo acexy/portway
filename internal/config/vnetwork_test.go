@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestVNetAcceptsTransportWithoutDerivablePeerPort(t *testing.T) {
+	configuration := DefaultServer()
+	configuration.Transport.ListenAddress = "127.0.0.1:65535"
+	configuration.VirtualNetwork.Enabled = true
+	configuration.VirtualNetwork.ServerPorts.TCP.PortRanges = []PortRange{{Start: 22, End: 22}}
+	if err := validateServer(configuration); err != nil {
+		t.Fatalf("P2P port derivation prevented relay configuration: %v", err)
+	}
+}
+
 func TestValidateVirtualNetworkConfig(t *testing.T) {
 	configuration := VirtualNetworkConfig{
 		Enabled:        true,

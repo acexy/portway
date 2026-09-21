@@ -27,7 +27,7 @@ Portway separates seven responsibilities:
   heartbeats, recovery, and data-link requests.
 - **Data plane** carries independent logical streams in either direction.
 - **Proxy runtime** maps public TCP/UDP ports or HTTP domains to authenticated
-  client registrations.
+  client registrations, including controlled TCP/UDP mirroring to multiple clients.
 - **Forward runtime** maps client-side TCP/UDP listeners to server-authorized
   target IP addresses and ports.
 - **VNet runtime** assigns private IPv4 addresses, enforces destination port
@@ -77,6 +77,18 @@ relays the byte stream in both directions.
 
 Portway preserves TCP stream semantics, including half-close behavior. Public
 listeners and active links have explicit owners and cancellation paths.
+
+## TCP and UDP Proxy mirroring
+
+A Mirror Proxy fans one public TCP stream or sequence of UDP datagrams out to
+multiple authorized clients. Each member has an independent data link, queue,
+and failure path, so a slow or unavailable observer does not block the other
+members. Only the configured Primary can send data back to the visitor;
+non-Primary responses are drained and discarded.
+
+Mirroring does not replay earlier input, elect a replacement Primary, balance
+visitors, or aggregate responses. See [TCP and UDP Proxy mirroring](../proxy-mirroring/README.md)
+for membership, recovery, reload, and stream-boundary behavior.
 
 ## HTTP and HTTPS proxy
 
