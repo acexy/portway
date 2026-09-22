@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
@@ -69,7 +68,7 @@ func newClientVNetManager(
 	ctx, cancel := context.WithCancel(parent)
 	sessionContext, sessionCancel := context.WithCancel(ctx)
 	manager := &clientVNetManager{
-		context: ctx, cancel: cancel, logger: logger,
+		context: ctx, cancel: cancel, logger: logger.WithComponent("vnet"),
 		clientID: clientID, sessionID: sessionID, writer: writer, transport: transportSession,
 		sessionContext: sessionContext, sessionCancel: sessionCancel,
 		offers: make(map[uint8]protocol.OpenVNetChannel), prepareNetwork: vnet.PrepareNetworkContext,
@@ -443,7 +442,7 @@ func (manager *clientVNetManager) activatePreparedDevice(
 	startReader bool,
 ) {
 	var userspaceTCP *vnet.UserspaceTCP
-	if assignment.NetworkMode == string(config.VNetNetworkModeLoopback) {
+	if assignment.NetworkMode == protocol.VNetNetworkModeLoopback {
 		prefix, _ := netip.ParsePrefix(assignment.CIDR)
 		var userspaceError error
 		userspaceTCP, userspaceError = vnet.NewUserspaceTCP(
@@ -895,8 +894,8 @@ func closeVNetChannels(channels []transport.Stream) {
 }
 
 func validateVNetAssignment(assignment protocol.VNetAssignment, clientID string) error {
-	if assignment.NetworkMode != string(config.VNetNetworkModeTUN) &&
-		assignment.NetworkMode != string(config.VNetNetworkModeLoopback) {
+	if assignment.NetworkMode != protocol.VNetNetworkModeTUN &&
+		assignment.NetworkMode != protocol.VNetNetworkModeLoopback {
 		return errors.New("invalid VNet network mode")
 	}
 	prefix, err := netip.ParsePrefix(assignment.CIDR)
@@ -910,7 +909,7 @@ func validateVNetAssignment(assignment protocol.VNetAssignment, clientID string)
 		return errors.New("invalid VNet address assignment")
 	}
 	if clientID == "" || assignment.MTU < 576 || assignment.PacketChannels < 1 ||
-		assignment.PacketChannels > 8 || assignment.PoolGeneration == 0 || assignment.ConfigGeneration == 0 {
+		assignment.PacketChannels > protocol.VNetMaximumPacketChannels || assignment.PoolGeneration == 0 || assignment.ConfigGeneration == 0 {
 		return errors.New("invalid VNet assignment limits")
 	}
 	if assignment.TransportGeneration == 0 {

@@ -46,7 +46,7 @@ func (binding *httpProxyBinding) resolveTarget() (link.Target, error) {
 	}
 	return link.Target{
 		ClientID: binding.clientID, SessionID: binding.sessionID,
-		ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeHTTP,
+		BindingName: binding.declaration.Name, TrafficType: link.TrafficTypeHTTP,
 		BindingID: binding.bindingID, Writer: state.writer,
 		Authentication: state.authentication,
 		MaxActiveLinks: state.maxActiveLinks,

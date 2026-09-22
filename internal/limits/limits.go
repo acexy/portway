@@ -2,8 +2,8 @@
 package limits
 
 const (
-	// HardMaxProxiesPerClient bounds every client proxy set in all modes.
-	HardMaxProxiesPerClient = 128
+	// HardMaxBindingsPerClient bounds each client-owned Proxy or Forward set.
+	HardMaxBindingsPerClient = 128
 	// HardMaxActiveLinksPerClient bounds active links owned by one client.
 	HardMaxActiveLinksPerClient = 512
 )

@@ -21,12 +21,21 @@ import (
 // ErrCapacityReached reports that the bounded Link broker cannot accept another Link.
 var ErrCapacityReached = errors.New("link capacity reached")
 
+// TrafficType identifies direction-independent Link payload semantics.
+type TrafficType string
+
+const (
+	TrafficTypeTCP  TrafficType = "tcp"
+	TrafficTypeHTTP TrafficType = "http"
+	TrafficTypeUDP  TrafficType = "udp"
+)
+
 // Target identifies the authenticated owner and proxy binding of one link.
 type Target struct {
 	ClientID        string
 	SessionID       string
-	ProxyName       string
-	ProxyType       protocol.ProxyType
+	BindingName     string
+	TrafficType     TrafficType
 	BindingID       string
 	Writer          *control.Writer
 	MaxDatagramSize int
@@ -96,9 +105,9 @@ type Broker struct {
 	pending           map[string]*brokerPendingLink
 	active            map[string]*brokerActiveLink
 	pendingClients    map[string]int
-	pendingProxies    map[string]int
+	pendingBindings   map[string]int
 	activeClients     map[string]int
-	activeProxies     map[string]int
+	activeBindings    map[string]int
 	pendingDirections map[string]int
 	activeDirections  map[string]int
 	closed            bool
@@ -111,9 +120,9 @@ func NewBroker(ctx context.Context) *Broker {
 		pending:           make(map[string]*brokerPendingLink),
 		active:            make(map[string]*brokerActiveLink),
 		pendingClients:    make(map[string]int),
-		pendingProxies:    make(map[string]int),
+		pendingBindings:   make(map[string]int),
 		activeClients:     make(map[string]int),
-		activeProxies:     make(map[string]int),
+		activeBindings:    make(map[string]int),
 		pendingDirections: make(map[string]int),
 		activeDirections:  make(map[string]int),
 	}
@@ -235,8 +244,8 @@ func (broker *Broker) createPending(
 
 	return protocol.OpenLink{
 		LinkID:          linkID,
-		ProxyName:       target.ProxyName,
-		ProxyType:       target.ProxyType,
+		ProxyName:       target.BindingName,
+		ProxyType:       protocol.ProxyType(target.TrafficType),
 		BindingID:       target.BindingID,
 		Ticket:          ticket,
 		ExpiresAtUnixMS: expiresAt.UnixMilli(),
@@ -293,7 +302,7 @@ func (broker *Broker) BindWithActivation(
 	if pending == nil ||
 		pending.target.ClientID != binding.ClientID ||
 		pending.target.SessionID != binding.SessionID ||
-		pending.target.ProxyType != binding.ProxyType ||
+		pending.target.TrafficType != TrafficType(binding.ProxyType) ||
 		pending.target.BindingID != binding.BindingID ||
 		pending.target.Authentication != authenticationContext ||
 		normalizeLinkDirection(pending.target.Direction) !=
@@ -550,48 +559,48 @@ func (broker *Broker) limitReachedLocked(target Target) bool {
 		len(broker.pending)+len(broker.active) >= maxActive {
 		return true
 	}
-	proxyKey := brokerProxyKey(target)
+	bindingKey := brokerBindingKey(target)
 	pendingClient := broker.pendingClients[target.ClientID]
-	pendingProxy := broker.pendingProxies[proxyKey]
+	pendingBinding := broker.pendingBindings[bindingKey]
 	activeClient := broker.activeClients[target.ClientID]
-	activeProxy := broker.activeProxies[proxyKey]
+	activeBinding := broker.activeBindings[bindingKey]
 	directionKey := brokerDirectionKey(target)
 	pendingDirection := broker.pendingDirections[directionKey]
 	activeDirection := broker.activeDirections[directionKey]
 	return pendingClient >= maxPendingPerClient ||
-		pendingProxy >= maxPendingPerProxy ||
+		pendingBinding >= maxPendingPerProxy ||
 		(target.MaxActiveLinks > 0 &&
 			pendingDirection+activeDirection >= target.MaxActiveLinks) ||
 		pendingClient+activeClient >= maxActivePerClient ||
-		pendingProxy+activeProxy >= maxActivePerProxy
+		pendingBinding+activeBinding >= maxActivePerProxy
 }
 
 func (broker *Broker) incrementPendingLocked(target Target) {
 	broker.pendingClients[target.ClientID]++
-	broker.pendingProxies[brokerProxyKey(target)]++
+	broker.pendingBindings[brokerBindingKey(target)]++
 	broker.pendingDirections[brokerDirectionKey(target)]++
 }
 
 func (broker *Broker) decrementPendingLocked(target Target) {
 	decrementBrokerCount(broker.pendingClients, target.ClientID)
-	decrementBrokerCount(broker.pendingProxies, brokerProxyKey(target))
+	decrementBrokerCount(broker.pendingBindings, brokerBindingKey(target))
 	decrementBrokerCount(broker.pendingDirections, brokerDirectionKey(target))
 }
 
 func (broker *Broker) incrementActiveLocked(target Target) {
 	broker.activeClients[target.ClientID]++
-	broker.activeProxies[brokerProxyKey(target)]++
+	broker.activeBindings[brokerBindingKey(target)]++
 	broker.activeDirections[brokerDirectionKey(target)]++
 }
 
 func (broker *Broker) decrementActiveLocked(target Target) {
 	decrementBrokerCount(broker.activeClients, target.ClientID)
-	decrementBrokerCount(broker.activeProxies, brokerProxyKey(target))
+	decrementBrokerCount(broker.activeBindings, brokerBindingKey(target))
 	decrementBrokerCount(broker.activeDirections, brokerDirectionKey(target))
 }
 
-func brokerProxyKey(target Target) string {
-	return target.ClientID + "\x00" + target.ProxyName
+func brokerBindingKey(target Target) string {
+	return target.ClientID + "\x00" + target.BindingName
 }
 
 func brokerDirectionKey(target Target) string {

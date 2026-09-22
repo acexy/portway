@@ -17,12 +17,12 @@ func BenchmarkBrokerPendingLifecycle(b *testing.B) {
 	broker := NewBroker(ctx)
 	var controlFrames bytes.Buffer
 	target := Target{
-		ClientID:  "benchmark-client",
-		SessionID: "benchmark-session",
-		ProxyName: "benchmark-proxy",
-		ProxyType: protocol.ProxyTypeTCP,
-		BindingID: "benchmark-binding",
-		Writer:    control.NewWriter(&controlFrames),
+		ClientID:    "benchmark-client",
+		SessionID:   "benchmark-session",
+		BindingName: "benchmark-proxy",
+		TrafficType: TrafficTypeTCP,
+		BindingID:   "benchmark-binding",
+		Writer:      control.NewWriter(&controlFrames),
 	}
 	b.Cleanup(func() {
 		cancelContext()
@@ -46,12 +46,12 @@ func BenchmarkBrokerPendingLifecycleParallel(b *testing.B) {
 	ctx, cancelContext := context.WithCancel(context.Background())
 	broker := NewBroker(ctx)
 	target := Target{
-		ClientID:  "benchmark-client",
-		SessionID: "benchmark-session",
-		ProxyName: "benchmark-proxy",
-		ProxyType: protocol.ProxyTypeTCP,
-		BindingID: "benchmark-binding",
-		Writer:    control.NewWriter(io.Discard),
+		ClientID:    "benchmark-client",
+		SessionID:   "benchmark-session",
+		BindingName: "benchmark-proxy",
+		TrafficType: TrafficTypeTCP,
+		BindingID:   "benchmark-binding",
+		Writer:      control.NewWriter(io.Discard),
 	}
 	b.Cleanup(func() {
 		cancelContext()
@@ -77,12 +77,12 @@ func BenchmarkBrokerBindLifecycle(b *testing.B) {
 	broker := NewBroker(ctx)
 	var controlFrames bytes.Buffer
 	target := Target{
-		ClientID:  "benchmark-client",
-		SessionID: "benchmark-session",
-		ProxyName: "benchmark-proxy",
-		ProxyType: protocol.ProxyTypeTCP,
-		BindingID: "benchmark-binding",
-		Writer:    control.NewWriter(&controlFrames),
+		ClientID:    "benchmark-client",
+		SessionID:   "benchmark-session",
+		BindingName: "benchmark-proxy",
+		TrafficType: TrafficTypeTCP,
+		BindingID:   "benchmark-binding",
+		Writer:      control.NewWriter(&controlFrames),
 	}
 	b.Cleanup(func() {
 		cancelContext()
@@ -120,7 +120,7 @@ func BenchmarkBrokerBindLifecycle(b *testing.B) {
 			bindResults <- broker.Bind(context.Background(), serverData, protocol.BindLink{
 				ClientID:  target.ClientID,
 				SessionID: target.SessionID,
-				ProxyType: target.ProxyType,
+				ProxyType: protocol.ProxyType(target.TrafficType),
 				BindingID: target.BindingID,
 				LinkID:    openLink.LinkID,
 				Ticket:    openLink.Ticket,

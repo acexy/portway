@@ -89,7 +89,7 @@ func (binding *Binding) HandleDatagram(source netip.AddrPort, payload []byte) {
 	target.WriteTimeout = binding.configuration.LinkWriteTimeout
 	lease, allowed := binding.limiter.Acquire(
 		target.ClientID,
-		target.ProxyName,
+		target.BindingName,
 		source.Addr(),
 		time.Now(),
 	)

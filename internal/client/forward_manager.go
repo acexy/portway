@@ -19,6 +19,8 @@ import (
 	"github.com/acexy/portway/internal/transport"
 )
 
+const forwardLinkOfferTimeout = 10 * time.Second
+
 type forwardRuntime struct {
 	context       context.Context
 	configuration config.ForwardConfig
@@ -59,7 +61,7 @@ func newForwardManager(
 ) (*forwardManager, error) {
 	ctx, cancel := context.WithCancel(parent)
 	manager := &forwardManager{
-		context: ctx, cancel: cancel, logger: logger,
+		context: ctx, cancel: cancel, logger: logger.WithComponent("forward"),
 		clientID: clientID, sessionID: sessionID,
 		writer: writer, transport: transportSession,
 		runtimes: make(map[string]*forwardRuntime),
@@ -239,7 +241,7 @@ func (manager *forwardManager) requestForwardOffer(
 	}); err != nil {
 		return protocol.ForwardLinkOffer{}, err
 	}
-	timer := time.NewTimer(10 * time.Second)
+	timer := time.NewTimer(forwardLinkOfferTimeout)
 	defer timer.Stop()
 	var offer protocol.ForwardLinkOffer
 	select {

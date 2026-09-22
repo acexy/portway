@@ -1,5 +1,16 @@
 package protocol
 
+// VNetNetworkMode selects how inbound traffic reaches services on a VNet node.
+type VNetNetworkMode string
+
+const (
+	VNetNetworkModeTUN      VNetNetworkMode = "tun"
+	VNetNetworkModeLoopback VNetNetworkMode = "loopback"
+)
+
+// VNetMaximumPacketChannels is the protocol-wide channel count ceiling.
+const VNetMaximumPacketChannels = 8
+
 // VNetState identifies one externally observable VNet lifecycle state.
 type VNetState string
 
@@ -15,17 +26,17 @@ const (
 
 // VNetAssignment contains the server-owned virtual address and channel policy.
 type VNetAssignment struct {
-	NetworkMode            string    `json:"network_mode"`
-	CIDR                   string    `json:"cidr"`
-	ClientIP               string    `json:"client_ip"`
-	ServerIP               string    `json:"server_ip"`
-	MTU                    uint16    `json:"mtu"`
-	PacketChannels         uint8     `json:"packet_channels"`
-	TransportGeneration    uint64    `json:"transport_generation"`
-	PoolGeneration         uint64    `json:"pool_generation"`
-	ConfigGeneration       uint64    `json:"config_generation"`
-	State                  VNetState `json:"state"`
-	PeerRegistrationTicket string    `json:"peer_registration_ticket,omitempty"`
+	NetworkMode            VNetNetworkMode `json:"network_mode"`
+	CIDR                   string          `json:"cidr"`
+	ClientIP               string          `json:"client_ip"`
+	ServerIP               string          `json:"server_ip"`
+	MTU                    uint16          `json:"mtu"`
+	PacketChannels         uint8           `json:"packet_channels"`
+	TransportGeneration    uint64          `json:"transport_generation"`
+	PoolGeneration         uint64          `json:"pool_generation"`
+	ConfigGeneration       uint64          `json:"config_generation"`
+	State                  VNetState       `json:"state"`
+	PeerRegistrationTicket string          `json:"peer_registration_ticket,omitempty"`
 }
 
 // VNetActivate identifies the assignment generation allowed to enter Active.
@@ -106,9 +117,17 @@ const (
 
 // VNetPeerCandidate identifies one bounded UDP endpoint.
 type VNetPeerCandidate struct {
-	Address string `json:"address"`
-	Type    string `json:"type"`
+	Address string                `json:"address"`
+	Type    VNetPeerCandidateType `json:"type"`
 }
+
+// VNetPeerCandidateType identifies how a peer endpoint was discovered.
+type VNetPeerCandidateType string
+
+const (
+	VNetPeerCandidateHost            VNetPeerCandidateType = "host"
+	VNetPeerCandidateServerReflexive VNetPeerCandidateType = "server_reflexive"
+)
 
 // VNetPeerPortRange is one inclusive direct-path inbound range.
 type VNetPeerPortRange struct {

@@ -31,7 +31,7 @@ func TestOpenStreamCancellationClosesLinkActivatedBeforeDelivery(t *testing.T) {
 	defer peer.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	target := Target{ClientID: "client-a", SessionID: "session-a", ProxyType: protocol.ProxyTypeTCP}
+	target := Target{ClientID: "client-a", SessionID: "session-a", TrafficType: TrafficTypeTCP}
 	target.Writer = control.NewWriter(linkActivationWriter{activate: func() {
 		broker.mutex.Lock()
 		for linkID, pending := range broker.pending {
@@ -104,8 +104,8 @@ func TestBrokerRejectsTicketFromDifferentAuthenticationGeneration(t *testing.T) 
 		target: Target{
 			ClientID:       "client-a",
 			SessionID:      "session-a",
-			ProxyName:      "proxy-a",
-			ProxyType:      protocol.ProxyTypeTCP,
+			BindingName:    "proxy-a",
+			TrafficType:    TrafficTypeTCP,
 			BindingID:      "binding-a",
 			Authentication: current,
 		},
@@ -151,7 +151,7 @@ func TestBrokerRejectsExpiredTicketAndReleasesReservation(t *testing.T) {
 	defer broker.Close()
 	ticketBytes := make([]byte, 32)
 	ticket := base64.RawURLEncoding.EncodeToString(ticketBytes)
-	target := Target{ClientID: "client-a", ProxyName: "proxy-a"}
+	target := Target{ClientID: "client-a", BindingName: "proxy-a"}
 	broker.pending["link-a"] = &brokerPendingLink{
 		target:       target,
 		linkID:       "link-a",
@@ -185,7 +185,7 @@ func TestBrokerRejectsExpiredTicketAndReleasesReservation(t *testing.T) {
 
 func TestBrokerPendingLinksReserveActiveCapacity(t *testing.T) {
 	broker := NewBroker(context.Background())
-	target := Target{ClientID: "client-a", ProxyName: "proxy-a"}
+	target := Target{ClientID: "client-a", BindingName: "proxy-a"}
 	broker.activeClients[target.ClientID] = maxActivePerClient - 1
 	broker.pendingClients[target.ClientID] = 1
 	if !broker.limitReachedLocked(target) {
@@ -193,8 +193,8 @@ func TestBrokerPendingLinksReserveActiveCapacity(t *testing.T) {
 	}
 	broker.activeClients[target.ClientID] = 0
 	broker.pendingClients[target.ClientID] = 0
-	broker.activeProxies[brokerProxyKey(target)] = maxActivePerProxy - 1
-	broker.pendingProxies[brokerProxyKey(target)] = 1
+	broker.activeBindings[brokerBindingKey(target)] = maxActivePerProxy - 1
+	broker.pendingBindings[brokerBindingKey(target)] = 1
 	if !broker.limitReachedLocked(target) {
 		t.Fatal("pending Link did not reserve per-proxy active capacity")
 	}
@@ -207,8 +207,8 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 	defer serverControl.Close()
 	defer clientControl.Close()
 	target := Target{
-		ClientID: "client-a", SessionID: "session-a", ProxyName: "proxy-a",
-		ProxyType: protocol.ProxyTypeTCP, BindingID: "binding-a",
+		ClientID: "client-a", SessionID: "session-a", BindingName: "proxy-a",
+		TrafficType: TrafficTypeTCP, BindingID: "binding-a",
 		Writer: control.NewWriter(serverControl),
 	}
 	handlerObserved := make(chan bool, 1)
@@ -218,7 +218,7 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 		_, err := broker.ServeStream(target, nil, func(_ context.Context, linkID string, _ net.Conn) error {
 			broker.mutex.Lock()
 			active := broker.activeClients[target.ClientID] == 1 &&
-				broker.activeProxies[brokerProxyKey(target)] == 1 &&
+				broker.activeBindings[brokerBindingKey(target)] == 1 &&
 				broker.pendingClients[target.ClientID] == 0
 			broker.mutex.Unlock()
 			handlerObserved <- active
@@ -240,7 +240,7 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 	}
 	broker.mutex.Lock()
 	pendingCounted := broker.pendingClients[target.ClientID] == 1 &&
-		broker.pendingProxies[brokerProxyKey(target)] == 1
+		broker.pendingBindings[brokerBindingKey(target)] == 1
 	broker.mutex.Unlock()
 	if !pendingCounted {
 		t.Fatal("pending Link counters were not incremented")
@@ -257,7 +257,7 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 			serverData,
 			protocol.BindLink{
 				ClientID: target.ClientID, SessionID: target.SessionID,
-				ProxyType: target.ProxyType, BindingID: target.BindingID,
+				ProxyType: protocol.ProxyType(target.TrafficType), BindingID: target.BindingID,
 				LinkID: open.LinkID, Ticket: open.Ticket,
 			},
 			authentication.Context{},
@@ -283,8 +283,8 @@ func TestBrokerMaintainsCapacityCountersAcrossBindLifecycle(t *testing.T) {
 	}
 	broker.mutex.Lock()
 	defer broker.mutex.Unlock()
-	if len(broker.pendingClients) != 0 || len(broker.pendingProxies) != 0 ||
-		len(broker.activeClients) != 0 || len(broker.activeProxies) != 0 {
+	if len(broker.pendingClients) != 0 || len(broker.pendingBindings) != 0 ||
+		len(broker.activeClients) != 0 || len(broker.activeBindings) != 0 {
 		t.Fatal("Link capacity counters were not released")
 	}
 }
@@ -300,8 +300,8 @@ func TestBrokerParentContextReleasesPendingLinks(t *testing.T) {
 	go func() {
 		_, err := broker.ServeStream(
 			Target{
-				ClientID: "client-a", SessionID: "session-a", ProxyName: "proxy-a",
-				ProxyType: protocol.ProxyTypeTCP, BindingID: "binding-a",
+				ClientID: "client-a", SessionID: "session-a", BindingName: "proxy-a",
+				TrafficType: TrafficTypeTCP, BindingID: "binding-a",
 				Writer: control.NewWriter(serverControl),
 			},
 			func(string) { cancelled <- struct{}{} },
@@ -324,7 +324,7 @@ func TestBrokerParentContextReleasesPendingLinks(t *testing.T) {
 	broker.mutex.Lock()
 	defer broker.mutex.Unlock()
 	if len(broker.pending) != 0 || len(broker.pendingClients) != 0 ||
-		len(broker.pendingProxies) != 0 {
+		len(broker.pendingBindings) != 0 {
 		t.Fatal("parent context cancellation retained pending Link state")
 	}
 }

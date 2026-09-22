@@ -161,8 +161,8 @@ func (registry *Registry) Offer(
 	}
 	offer, err := registry.broker.OfferStream(link.Target{
 		ClientID: clientID, SessionID: sessionID,
-		ProxyName:      request.Name,
-		ProxyType:      protocol.ProxyType(request.Type),
+		BindingName:    request.Name,
+		TrafficType:    link.TrafficType(request.Type),
 		BindingID:      request.BindingID,
 		Writer:         bindingSnapshot.writer,
 		Authentication: bindingSnapshot.authentication,

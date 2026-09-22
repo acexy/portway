@@ -43,11 +43,10 @@ func ValidateClientID(clientID string) error {
 	return nil
 }
 
-// ValidateProxyName applies the single proxy-name rule shared by configuration
-// loading and runtime registration.
-func ValidateProxyName(name string) error {
-	if !proxyNamePattern.MatchString(name) {
-		return errors.New("proxy name has an invalid format")
+// ValidateResourceName applies the name rule shared by Proxy and Forward resources.
+func ValidateResourceName(name string) error {
+	if !resourceNamePattern.MatchString(name) {
+		return errors.New("resource name has an invalid format")
 	}
 	return nil
 }
@@ -287,11 +286,11 @@ func validatePublicSchemeListener(
 }
 
 func validateProxies(proxies []ProxyConfig, field string) error {
-	if len(proxies) > hardMaxProxiesPerClient {
+	if len(proxies) > hardMaxBindingsPerClient {
 		return fmt.Errorf(
 			"%s must contain at most %d entries",
 			field,
-			hardMaxProxiesPerClient,
+			hardMaxBindingsPerClient,
 		)
 	}
 	names := make(map[string]struct{}, len(proxies))
@@ -299,7 +298,7 @@ func validateProxies(proxies []ProxyConfig, field string) error {
 	udpPorts := make(map[uint16]struct{})
 	httpDomains := make(map[string]struct{})
 	for index, proxy := range proxies {
-		if err := ValidateProxyName(proxy.Name); err != nil {
+		if err := ValidateResourceName(proxy.Name); err != nil {
 			return fmt.Errorf("%s[%d].name has an invalid format", field, index)
 		}
 		if _, duplicate := names[proxy.Name]; duplicate {

@@ -566,7 +566,7 @@ func TestLoadGovernedClientRejectsPermissionLimitOutsideHardBoundary(t *testing.
 		{
 			name:  "proxy overflow",
 			field: "max_total",
-			value: hardMaxProxiesPerClient + 1,
+			value: hardMaxBindingsPerClient + 1,
 		},
 		{
 			name:  "active link overflow",
@@ -596,7 +596,7 @@ permissions:
 }
 
 func TestValidateManagedProxiesRejectsHardLimitOverflow(t *testing.T) {
-	proxies := make([]ProxyConfig, hardMaxProxiesPerClient+1)
+	proxies := make([]ProxyConfig, hardMaxBindingsPerClient+1)
 	for index := range proxies {
 		proxies[index] = ProxyConfig{
 			Name:   fmt.Sprintf("tcp-%d", index),
@@ -626,7 +626,7 @@ configuration:
   revision: 1
   proxies:
 `)
-	for index := range hardMaxProxiesPerClient + 1 {
+	for index := range hardMaxBindingsPerClient + 1 {
 		fmt.Fprintf(&managed, `
     - name: tcp-%d
       type: tcp

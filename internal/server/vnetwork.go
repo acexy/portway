@@ -233,7 +233,7 @@ func (runtime *serverVNetRuntime) assignLocked(clientID string, sessionID string
 	runtime.sessions[clientID] = current
 	runtime.mutex.Unlock()
 	assignment := protocol.VNetAssignment{
-		NetworkMode: string(config.EffectiveVNetNetworkMode(configuration)),
+		NetworkMode: protocol.VNetNetworkMode(config.EffectiveVNetNetworkMode(configuration)),
 		CIDR:        configuration.CIDR, ClientIP: node.IP, ServerIP: configuration.ServerIP,
 		MTU: vnetMTU, PacketChannels: uint8(configuration.PacketChannels),
 		TransportGeneration: uint64(session.generation),

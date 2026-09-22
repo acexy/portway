@@ -95,7 +95,7 @@ func (manager *Registry) openVisitor(
 	linkID, err := manager.linkBroker.ServeStream(
 		link.Target{
 			ClientID: binding.clientID, SessionID: sessionID,
-			ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeTCP,
+			BindingName: binding.declaration.Name, TrafficType: link.TrafficTypeTCP,
 			BindingID: binding.bindingID, Writer: writer,
 			Authentication: authenticationContext,
 			MaxActiveLinks: maxActiveLinks,

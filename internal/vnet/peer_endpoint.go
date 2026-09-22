@@ -253,6 +253,12 @@ func (endpoint *PeerEndpoint) ApplyOffer(offer protocol.VNetPeerOffer) error {
 		offer.ExpiresAtUnixMS <= time.Now().UnixMilli() || len(offer.Candidates) > peerMaximumCandidates {
 		return errors.New("invalid VNet peer offer")
 	}
+	for _, candidate := range offer.Candidates {
+		if candidate.Type != protocol.VNetPeerCandidateHost &&
+			candidate.Type != protocol.VNetPeerCandidateServerReflexive {
+			return errors.New("invalid VNet peer candidate type")
+		}
+	}
 	state := &peerOfferState{offer: offer, secret: secret, failedCandidates: make(map[string]bool), probeAttempts: make(map[string]int)}
 	endpoint.mutex.Lock()
 	if err := endpoint.context.Err(); err != nil {
@@ -271,7 +277,7 @@ func (endpoint *PeerEndpoint) ApplyOffer(offer protocol.VNetPeerOffer) error {
 	hostCandidates := make([]protocol.VNetPeerCandidate, 0, len(offer.Candidates))
 	reflexiveCandidates := make([]protocol.VNetPeerCandidate, 0, 1)
 	for _, candidate := range offer.Candidates {
-		if candidate.Type == "host" {
+		if candidate.Type == protocol.VNetPeerCandidateHost {
 			hostCandidates = append(hostCandidates, candidate)
 		} else {
 			reflexiveCandidates = append(reflexiveCandidates, candidate)

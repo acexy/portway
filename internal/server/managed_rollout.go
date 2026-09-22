@@ -203,13 +203,35 @@ func (s *Service) applyManagedGeneration(
 	if deactivate {
 		s.proxyRegistry.Deactivate(clientID, sessionID)
 	}
-	result := s.proxyRegistry.SyncAllowEmpty(
-		clientID,
-		sessionID,
-		"managed-"+preparation.Digest,
-		proxyregistry.SyncRequest{Revision: declarations.Revision, Proxies: declarations.Proxies},
-	)
-	if result.Status != proxyregistry.SyncStatusApplied {
+	forwardResults := []protocol.ForwardResult{}
+	if forwardTransaction != nil {
+		forwardResults = append(forwardResults, forwardTransaction.Results()...)
+	}
+	if err := exchange.activate(ctx, protocol.ManagedConfigActivate{
+		Revision: status.Revision, Digest: status.Digest, Forwards: forwardResults,
+	}); err != nil {
+		if deactivate {
+			s.proxyRegistry.Activate(clientID, sessionID)
+		}
+		return err
+	}
+	var result proxyregistry.SyncResult
+	commitProxy := func() bool {
+		result = s.proxyRegistry.SyncAllowEmpty(
+			clientID,
+			sessionID,
+			"managed-"+preparation.Digest,
+			proxyregistry.SyncRequest{Revision: declarations.Revision, Proxies: declarations.Proxies},
+		)
+		return result.Status == proxyregistry.SyncStatusApplied
+	}
+	committed := false
+	if forwardTransaction != nil {
+		committed = forwardTransaction.CommitWith(commitProxy)
+	} else {
+		committed = commitProxy()
+	}
+	if !committed {
 		if forwardTransaction != nil {
 			forwardTransaction.Rollback()
 		}
@@ -224,20 +246,6 @@ func (s *Service) applyManagedGeneration(
 			)
 		}
 		return errors.New("apply managed proxy configuration: rejected")
-	}
-	forwardResults := []protocol.ForwardResult{}
-	if forwardTransaction != nil {
-		forwardResults = append(forwardResults, forwardTransaction.Results()...)
-	}
-	if err := exchange.activate(ctx, protocol.ManagedConfigActivate{
-		Revision: status.Revision, Digest: status.Digest, Forwards: forwardResults,
-	}); err != nil {
-		return err
-	}
-	if forwardTransaction != nil {
-		if !forwardTransaction.Commit() {
-			return errors.New("managed Forward generation changed before activation")
-		}
 	}
 	if deactivate {
 		s.proxyRegistry.Activate(clientID, sessionID)
