@@ -676,6 +676,10 @@ permissions: {}
 	if err != nil {
 		t.Fatal(err)
 	}
+	unchanged, err := ServerSourcesUnchanged(configuration)
+	if err != nil || !unchanged {
+		t.Fatalf("stable sources were not recognized: unchanged=%t, err=%v", unchanged, err)
+	}
 	before, err := serverSourceManifest(configuration)
 	if err != nil {
 		t.Fatal(err)
@@ -692,6 +696,10 @@ permissions: {}
 	}
 	if before.digest == after.digest {
 		t.Fatal("authentication file change did not change the source manifest")
+	}
+	unchanged, err = ServerSourcesUnchanged(configuration)
+	if err != nil || unchanged {
+		t.Fatalf("changed source was skipped: unchanged=%t, err=%v", unchanged, err)
 	}
 }
 
