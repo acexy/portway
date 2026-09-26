@@ -72,6 +72,25 @@ func TestBufferedDatagramWriteRejectsNoProgress(t *testing.T) {
 	}
 }
 
+func TestDatagramWriterCoalescesAndReusesStorage(t *testing.T) {
+	output := &datagramCountingWriter{}
+	writer := NewDatagramWriter(output, 64)
+	for _, payload := range [][]byte{nil, []byte("one"), []byte("two")} {
+		if err := writer.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if output.writes != 3 {
+		t.Fatalf("three frames used %d writes", output.writes)
+	}
+	for _, expected := range []string{"", "one", "two"} {
+		payload, err := ReadDatagram(output, 64)
+		if err != nil || string(payload) != expected {
+			t.Fatalf("frame = %q, want %q: %v", payload, expected, err)
+		}
+	}
+}
+
 func TestDatagramFrameRejectsOversizedPayload(t *testing.T) {
 	var buffer bytes.Buffer
 	if err := WriteDatagram(&buffer, []byte("large"), 4); !errors.Is(err, ErrInvalidFrame) {

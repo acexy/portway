@@ -18,6 +18,7 @@ import (
 	forwardudp "github.com/acexy/portway/internal/forward/udp"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
+	proxyudp "github.com/acexy/portway/internal/proxy/udp"
 )
 
 const forwardTargetDialTimeout = 5 * time.Second
@@ -38,12 +39,13 @@ type binding struct {
 
 // Registry owns active Forward Bindings.
 type Registry struct {
-	mutex     sync.RWMutex
-	bindings  map[string]*binding
-	broker    *link.Broker
-	policy    Policy
-	udpConfig func() config.UDPConfig
-	closed    bool
+	mutex      sync.RWMutex
+	bindings   map[string]*binding
+	broker     *link.Broker
+	policy     Policy
+	udpConfig  func() config.UDPConfig
+	udpLimiter *proxyudp.Limiter
+	closed     bool
 }
 
 // Stats is a low-cardinality snapshot of Forward Binding state.
@@ -75,10 +77,11 @@ func (registry *Registry) SnapshotStats() Stats {
 // New creates a Forward Registry.
 func New(broker *link.Broker, policy Policy, udpConfig func() config.UDPConfig) *Registry {
 	return &Registry{
-		bindings:  make(map[string]*binding),
-		broker:    broker,
-		policy:    policy,
-		udpConfig: udpConfig,
+		bindings:   make(map[string]*binding),
+		broker:     broker,
+		policy:     policy,
+		udpConfig:  udpConfig,
+		udpLimiter: proxyudp.NewLimiter(udpConfig()),
 	}
 }
 
@@ -147,17 +150,24 @@ func (registry *Registry) Offer(
 	request protocol.RequestForwardLink,
 ) protocol.ForwardLinkOffer {
 	registry.mutex.RLock()
+	defer registry.mutex.RUnlock()
 	current := registry.bindings[bindingKey(clientID, sessionID, request.Name)]
 	if current == nil || !current.active || current.bindingID != request.BindingID ||
 		current.declaration.Type != request.Type {
-		registry.mutex.RUnlock()
 		return rejectedOffer(request, protocol.ForwardErrorBindingInvalid, "Forward Binding is invalid")
 	}
 	bindingSnapshot := *current
-	registry.mutex.RUnlock()
 	_, active := registry.policy(bindingSnapshot.authentication, bindingSnapshot.declaration)
 	if !active {
 		return rejectedOffer(request, protocol.ForwardErrorTargetNotAllowed, "Forward target is not allowed")
+	}
+	var reservation link.Reservation
+	if request.Type == protocol.ForwardTypeUDP {
+		lease, allowed := registry.udpLimiter.AcquireWithoutSource(clientID, request.Name, time.Now())
+		if !allowed {
+			return rejectedOffer(request, protocol.ForwardErrorLimitExceeded, "Forward UDP capacity or rate reached")
+		}
+		reservation = lease
 	}
 	offer, err := registry.broker.OfferStream(link.Target{
 		ClientID: clientID, SessionID: sessionID,
@@ -168,8 +178,12 @@ func (registry *Registry) Offer(
 		Authentication: bindingSnapshot.authentication,
 		MaxActiveLinks: bindingSnapshot.maxActiveLinks,
 		Direction:      protocol.LinkDirectionForward,
+		Reservation:    reservation,
 	}, registry.handlerFactory(bindingSnapshot))
 	if err != nil {
+		if reservation != nil {
+			reservation.Close()
+		}
 		code := protocol.ForwardErrorInvalidRequest
 		if errors.Is(err, link.ErrCapacityReached) {
 			code = protocol.ForwardErrorLimitExceeded
@@ -189,6 +203,12 @@ func (registry *Registry) Offer(
 
 func (registry *Registry) handlerFactory(current binding) link.StreamHandlerFactory {
 	authorize := func() bool {
+		registry.mutex.RLock()
+		defer registry.mutex.RUnlock()
+		registered := registry.bindings[bindingKey(current.clientID, current.sessionID, current.declaration.Name)]
+		if registry.closed || registered == nil || !registered.active || registered.bindingID != current.bindingID {
+			return false
+		}
 		_, active := registry.policy(current.authentication, current.declaration)
 		return active
 	}
@@ -205,8 +225,8 @@ func (registry *Registry) handlerFactory(current binding) link.StreamHandlerFact
 			address, configuration.MaxDatagramSize, configuration.LinkWriteTimeout, authorize,
 		)
 	default:
-		return func(context.Context) (link.StreamHandler, error) {
-			return nil, errors.New("unsupported Forward type")
+		return func(context.Context) (link.StreamHandler, func(), error) {
+			return nil, nil, errors.New("unsupported Forward type")
 		}
 	}
 }
@@ -233,6 +253,7 @@ func (registry *Registry) ApplyPolicy(
 	affectedPolicy func(authentication.Context, protocol.ForwardDeclaration) bool,
 ) {
 	registry.mutex.Lock()
+	registry.udpLimiter.UpdateConfiguration(registry.udpConfig())
 	affected := make([]*binding, 0)
 	deactivated := make([]*binding, 0)
 	activated := make([]*binding, 0)

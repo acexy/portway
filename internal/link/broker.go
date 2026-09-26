@@ -43,13 +43,22 @@ type Target struct {
 	Authentication  authentication.Context
 	MaxActiveLinks  int
 	Direction       protocol.LinkDirection
+	Reservation     Reservation
+}
+
+// Reservation owns protocol capacity from Offer through stream cleanup.
+// Implementations must support idempotent Close and concurrent Activate/Close.
+type Reservation interface {
+	Activate()
+	Close()
 }
 
 // StreamHandler handles one authenticated active Link.
 type StreamHandler func(context.Context, string, net.Conn) error
 
-// StreamHandlerFactory prepares target-side resources before Bind is accepted.
-type StreamHandlerFactory func(context.Context) (StreamHandler, error)
+// StreamHandlerFactory transfers prepared resources to the broker. Cleanup runs
+// even if preparation or Bind delivery fails, before capacity is released.
+type StreamHandlerFactory func(context.Context) (StreamHandler, func(), error)
 
 type brokerPendingLink struct {
 	target         Target
@@ -332,6 +341,9 @@ func (broker *Broker) BindWithActivation(
 		broker.decrementPendingLocked(pending.target)
 		pending.timer.Stop()
 		broker.mutex.Unlock()
+		if pending.target.Reservation != nil {
+			pending.target.Reservation.Close()
+		}
 		if pending.onCancel != nil {
 			pending.onCancel(binding.LinkID)
 		}
@@ -355,18 +367,23 @@ func (broker *Broker) BindWithActivation(
 	delete(broker.pending, binding.LinkID)
 	broker.decrementPendingLocked(pending.target)
 	pending.timer.Stop()
+	linkContext, cancelLink := context.WithCancel(ctx)
 	managed := newManagedLinkConnection(connection)
+	managed.cancel = cancelLink
 	broker.active[binding.LinkID] = &brokerActiveLink{
 		target:     pending.target,
 		connection: managed,
 	}
 	broker.incrementActiveLocked(pending.target)
 	broker.mutex.Unlock()
+	defer broker.finish(binding.LinkID)
+	defer managed.Close()
+	stopContextClose := context.AfterFunc(linkContext, func() { managed.Close() })
+	defer stopContextClose()
 	// Promotion consumes the timer, so pre-delivery failures must notify the
 	// original owner explicitly. No handler or ready receiver owns the stream yet.
 	failDelivery := func(err error) error {
 		managed.Close()
-		broker.finish(binding.LinkID)
 		if pending.onCancel != nil {
 			pending.onCancel(binding.LinkID)
 		}
@@ -376,7 +393,10 @@ func (broker *Broker) BindWithActivation(
 		return err
 	}
 	if pending.handlerFactory != nil {
-		handler, prepareError := pending.handlerFactory(ctx)
+		handler, cleanup, prepareError := pending.handlerFactory(linkContext)
+		if cleanup != nil {
+			defer cleanup()
+		}
 		if prepareError != nil {
 			code := protocol.LinkErrorLocalDialFailed
 			if pending.target.Direction == protocol.LinkDirectionForward {
@@ -404,9 +424,15 @@ func (broker *Broker) BindWithActivation(
 	if err := connection.SetDeadline(time.Time{}); err != nil {
 		return failDelivery(err)
 	}
+	if err := linkContext.Err(); err != nil {
+		return failDelivery(err)
+	}
+	if pending.target.Reservation != nil {
+		pending.target.Reservation.Activate()
+	}
 
 	if pending.handler != nil {
-		err = pending.handler(ctx, binding.LinkID, managed)
+		err = pending.handler(linkContext, binding.LinkID, managed)
 		managed.Close()
 	} else {
 		pending.ready <- linkOpenResult{connection: managed}
@@ -416,7 +442,6 @@ func (broker *Broker) BindWithActivation(
 			managed.Close()
 		}
 	}
-	broker.finish(binding.LinkID)
 	return err
 }
 
@@ -451,6 +476,9 @@ func (broker *Broker) cancel(linkID string, notify bool, err error) {
 	broker.decrementPendingLocked(pending.target)
 	broker.mutex.Unlock()
 	pending.timer.Stop()
+	if pending.target.Reservation != nil {
+		pending.target.Reservation.Close()
+	}
 	if pending.onCancel != nil {
 		pending.onCancel(linkID)
 	}
@@ -463,15 +491,23 @@ func (broker *Broker) cancel(linkID string, notify bool, err error) {
 }
 
 func (broker *Broker) cancelAny(linkID string, err error) {
+	broker.cancelMatching(linkID, err, nil)
+}
+
+func (broker *Broker) cancelMatching(linkID string, err error, allowed func(Target) bool) {
 	broker.mutex.Lock()
 	active := broker.active[linkID]
 	if active != nil {
+		if allowed != nil && !allowed(active.target) {
+			broker.mutex.Unlock()
+			return
+		}
 		broker.mutex.Unlock()
 		active.connection.Close()
 		return
 	}
 	pending := broker.pending[linkID]
-	if pending == nil {
+	if pending == nil || (allowed != nil && !allowed(pending.target)) {
 		broker.mutex.Unlock()
 		return
 	}
@@ -479,6 +515,9 @@ func (broker *Broker) cancelAny(linkID string, err error) {
 	broker.decrementPendingLocked(pending.target)
 	broker.mutex.Unlock()
 	pending.timer.Stop()
+	if pending.target.Reservation != nil {
+		pending.target.Reservation.Close()
+	}
 	if pending.onCancel != nil {
 		pending.onCancel(linkID)
 	}
@@ -556,6 +595,14 @@ func (broker *Broker) CancelLink(linkID string) {
 	broker.cancelAny(linkID, context.Canceled)
 }
 
+// CancelForwardLink only cancels resources owned by the authenticated caller.
+func (broker *Broker) CancelForwardLink(clientID, sessionID, linkID string) {
+	broker.cancelMatching(linkID, context.Canceled, func(target Target) bool {
+		return target.ClientID == clientID && target.SessionID == sessionID &&
+			normalizeLinkDirection(target.Direction) == protocol.LinkDirectionForward
+	})
+}
+
 func (broker *Broker) ReportFailure(
 	clientID string,
 	sessionID string,
@@ -601,6 +648,9 @@ func (broker *Broker) finish(linkID string) {
 		broker.decrementActiveLocked(active.target)
 	}
 	broker.mutex.Unlock()
+	if active != nil && active.target.Reservation != nil {
+		active.target.Reservation.Close()
+	}
 }
 
 func (broker *Broker) limitReachedLocked(target Target) bool {
@@ -682,8 +732,9 @@ func newBrokerLinkCredentials() (string, string, [sha256.Size]byte, error) {
 
 type managedLinkConnection struct {
 	net.Conn
-	once sync.Once
-	done chan struct{}
+	once   sync.Once
+	done   chan struct{}
+	cancel context.CancelFunc
 }
 
 func newManagedLinkConnection(connection net.Conn) *managedLinkConnection {
@@ -691,6 +742,9 @@ func newManagedLinkConnection(connection net.Conn) *managedLinkConnection {
 }
 
 func (connection *managedLinkConnection) Close() error {
+	if connection.cancel != nil {
+		connection.cancel()
+	}
 	err := connection.Conn.Close()
 	connection.once.Do(func() { close(connection.done) })
 	return err

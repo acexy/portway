@@ -63,6 +63,14 @@ func NewLimiter(configuration config.UDPConfig) *Limiter {
 	}
 }
 
+// UpdateConfiguration preserves live leases and rate windows across reloads.
+// The caller must validate the configuration before publishing it.
+func (limiter *Limiter) UpdateConfiguration(configuration config.UDPConfig) {
+	limiter.mutex.Lock()
+	limiter.configuration = configuration
+	limiter.mutex.Unlock()
+}
+
 // AssociationLease owns all accounting for one UDP association.
 type AssociationLease struct {
 	limiter  *Limiter
@@ -82,6 +90,16 @@ func (limiter *Limiter) Acquire(
 	source netip.Addr,
 	now time.Time,
 ) (*AssociationLease, bool) {
+	return limiter.acquire(clientID, proxyName, source, now)
+}
+
+// AcquireWithoutSource enforces aggregate limits where the remote visitor IP is
+// unavailable. It deliberately does not invent a shared source-IP identity.
+func (limiter *Limiter) AcquireWithoutSource(clientID, name string, now time.Time) (*AssociationLease, bool) {
+	return limiter.acquire(clientID, name, netip.Addr{}, now)
+}
+
+func (limiter *Limiter) acquire(clientID, proxyName string, source netip.Addr, now time.Time) (*AssociationLease, bool) {
 	source = source.Unmap()
 	proxyKey := clientID + "\x00" + proxyName
 	limiter.mutex.Lock()
@@ -90,7 +108,7 @@ func (limiter *Limiter) Acquire(
 	if limiter.total >= limiter.configuration.MaxAssociations ||
 		limiter.clients[clientID] >= limiter.configuration.MaxAssociationsPerClient ||
 		limiter.proxies[proxyKey] >= limiter.configuration.MaxAssociationsPerProxy ||
-		limiter.sources[source] >= limiter.configuration.MaxAssociationsPerSourceIP ||
+		(source.IsValid() && limiter.sources[source] >= limiter.configuration.MaxAssociationsPerSourceIP) ||
 		limiter.pending >= limiter.configuration.MaxPendingAssociations ||
 		limiter.pendingClients[clientID] >= limiter.configuration.MaxPendingAssociationsPerClient ||
 		limiter.pendingProxies[proxyKey] >= limiter.configuration.MaxPendingAssociationsPerProxy ||
@@ -108,7 +126,9 @@ func (limiter *Limiter) Acquire(
 	limiter.pendingClients[clientID]++
 	limiter.proxies[proxyKey]++
 	limiter.pendingProxies[proxyKey]++
-	limiter.sources[source]++
+	if source.IsValid() {
+		limiter.sources[source]++
+	}
 	return &AssociationLease{
 		limiter:  limiter,
 		clientID: clientID,
@@ -183,12 +203,12 @@ func (lease *AssociationLease) Activate() {
 func (lease *AssociationLease) ReserveQueue(size int) bool {
 	lease.mutex.Lock()
 	defer lease.mutex.Unlock()
+	lease.limiter.mutex.Lock()
+	defer lease.limiter.mutex.Unlock()
 	if lease.closed ||
 		lease.queued+size > lease.limiter.configuration.MaxQueuedBytesPerAssociation {
 		return false
 	}
-	lease.limiter.mutex.Lock()
-	defer lease.limiter.mutex.Unlock()
 	if lease.limiter.queuedBytes+size > lease.limiter.configuration.MaxQueuedBytes {
 		return false
 	}
@@ -228,7 +248,9 @@ func (lease *AssociationLease) Close() {
 	lease.limiter.total--
 	decrement(lease.limiter.clients, lease.clientID)
 	decrement(lease.limiter.proxies, lease.proxyKey)
-	decrement(lease.limiter.sources, lease.source)
+	if lease.source.IsValid() {
+		decrement(lease.limiter.sources, lease.source)
+	}
 	if pending {
 		lease.limiter.pending--
 		decrement(lease.limiter.pendingClients, lease.clientID)

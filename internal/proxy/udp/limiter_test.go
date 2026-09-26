@@ -41,6 +41,48 @@ func TestLimiterEnforcesAssociationAndQueueBounds(t *testing.T) {
 	}
 }
 
+func TestRemoteLimiterPreservesRatesAndLeasesAcrossConfigurationUpdates(t *testing.T) {
+	configuration := config.DefaultUDPConfig()
+	configuration.MaxNewAssociationsPerSecond = 2
+	configuration.MaxNewAssociationsPerSecondPerClient = 1
+	configuration.MaxNewAssociationsPerSecondPerProxy = 1
+	configuration.MaxAssociationsPerSourceIP = 1
+	limiter := NewLimiter(configuration)
+	now := time.Unix(100, 0)
+	first, ok := limiter.AcquireWithoutSource("one", "udp", now)
+	if !ok {
+		t.Fatal("first association rejected")
+	}
+	if lease, ok := limiter.AcquireWithoutSource("one", "other", now); ok {
+		lease.Close()
+		t.Fatal("client rate limit was exceeded")
+	}
+	second, ok := limiter.AcquireWithoutSource("two", "udp", now)
+	if !ok {
+		t.Fatal("client rejection consumed global rate or a synthetic source limit")
+	}
+	configuration.MaxAssociations = 1
+	limiter.UpdateConfiguration(configuration)
+	if limiter.SnapshotStats().Associations != 2 {
+		t.Fatal("configuration update discarded outstanding leases")
+	}
+	first.Activate()
+	first.Close()
+	second.Close()
+	if lease, ok := limiter.AcquireWithoutSource("three", "udp", now); ok {
+		lease.Close()
+		t.Fatal("configuration update reset the current rate window")
+	}
+	lease, ok := limiter.AcquireWithoutSource("three", "udp", now.Add(time.Second))
+	if !ok {
+		t.Fatal("next rate window did not recover")
+	}
+	lease.Close()
+	if stats := limiter.SnapshotStats(); stats.Associations != 0 || stats.PendingAssociations != 0 {
+		t.Fatalf("leases retained counters: %+v", stats)
+	}
+}
+
 func TestLimiterEnforcesAssociationCreationRate(t *testing.T) {
 	configuration := config.DefaultUDPConfig()
 	configuration.MaxNewAssociationsPerSecond = 1

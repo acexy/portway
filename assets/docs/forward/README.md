@@ -48,6 +48,16 @@ TCP preserves full-duplex byte streams and half-close. UDP preserves datagram
 boundaries and isolates source associations. Forward works over either TCP or
 QUIC client-server transport without changing these application semantics.
 
+The client limits TCP connections to 512 in total and 256 per Forward name,
+including connections still being established. Establishment is limited to 128
+connections in total and 64 per name; excess connections are closed immediately.
+TCP and UDP share a limit of 128 outstanding link-offer requests.
+
+For UDP, the server enforces global, per-client, and per-Forward association,
+pending-association, and creation-rate limits. Reloading limits preserves existing
+counts and rate windows. Source-IP and queued-byte limits are enforced on the
+client, where the original local source address is available.
+
 ## Configuration
 
 Forward is disabled by default. The server must enable it and define a global

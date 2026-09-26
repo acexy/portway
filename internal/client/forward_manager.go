@@ -21,6 +21,20 @@ import (
 
 const forwardLinkOfferTimeout = 10 * time.Second
 
+type forwardOfferRequest struct {
+	context   context.Context
+	runtime   *forwardRuntime
+	ready     chan protocol.ForwardLinkOffer
+	link      *forwardLink
+	delivered bool
+}
+
+type forwardLink struct {
+	context context.Context
+	cancel  context.CancelFunc
+	offer   protocol.ForwardLinkOffer
+}
+
 type forwardRuntime struct {
 	context       context.Context
 	configuration config.ForwardConfig
@@ -33,21 +47,22 @@ type forwardRuntime struct {
 }
 
 type forwardManager struct {
-	context    context.Context
-	cancel     context.CancelFunc
-	logger     *logging.Logger
-	clientID   string
-	sessionID  string
-	writer     *control.Writer
-	transport  transport.ClientSession
-	mutex      sync.Mutex
-	runtimes   map[string]*forwardRuntime
-	offers     map[string]chan protocol.ForwardLinkOffer
-	links      map[string]context.CancelFunc
-	waitGroup  sync.WaitGroup
-	udpConfig  config.UDPConfig
-	udpLimiter *proxyudp.Limiter
-	started    bool
+	context     context.Context
+	cancel      context.CancelFunc
+	logger      *logging.Logger
+	clientID    string
+	sessionID   string
+	writer      *control.Writer
+	transport   transport.ClientSession
+	mutex       sync.Mutex
+	runtimes    map[string]*forwardRuntime
+	offers      map[string]*forwardOfferRequest
+	links       map[string]*forwardLink
+	tcpCapacity forwardCapacity
+	waitGroup   sync.WaitGroup
+	udpConfig   config.UDPConfig
+	udpLimiter  *proxyudp.Limiter
+	started     bool
 }
 
 func newForwardManager(
@@ -65,8 +80,8 @@ func newForwardManager(
 		clientID: clientID, sessionID: sessionID,
 		writer: writer, transport: transportSession,
 		runtimes: make(map[string]*forwardRuntime),
-		offers:   make(map[string]chan protocol.ForwardLinkOffer),
-		links:    make(map[string]context.CancelFunc),
+		offers:   make(map[string]*forwardOfferRequest),
+		links:    make(map[string]*forwardLink),
 	}
 	for _, configuration := range configurations {
 		runtimeContext, runtimeCancel := context.WithCancel(ctx)
@@ -155,7 +170,15 @@ func (manager *forwardManager) serveRuntime(runtime *forwardRuntime) {
 	if runtimeSnapshot.tcp != nil {
 		manager.waitGroup.Go(func() {
 			err := runtimeSnapshot.tcp.Serve(func(visitor net.Conn) {
-				manager.waitGroup.Go(func() { manager.serveTCP(&runtimeSnapshot, visitor) })
+				lease := manager.tcpCapacity.acquire(runtimeSnapshot.configuration.Name)
+				if lease == nil {
+					visitor.Close()
+					return
+				}
+				manager.waitGroup.Go(func() {
+					defer lease.close()
+					manager.serveTCP(&runtimeSnapshot, visitor, lease)
+				})
 			})
 			if err != nil && manager.context.Err() == nil && !errors.Is(err, net.ErrClosed) {
 				manager.logger.WithFields(map[string]any{
@@ -182,36 +205,31 @@ func (manager *forwardManager) serveUDPAssociation(
 	runtime *forwardRuntime,
 	association *forwardudp.Association,
 ) {
-	offer, err := manager.requestForwardOffer(association.Context, runtime)
+	link, err := manager.requestForwardOffer(association.Context, runtime)
 	if err != nil {
 		return
 	}
-	linkContext, cancelLink := context.WithCancel(association.Context)
-	defer cancelLink()
-	stream, err := manager.transport.OpenDataStream(linkContext)
-	if err != nil {
-		manager.reportForwardFailure(offer.LinkID, protocol.LinkErrorTransportFailed)
-		return
-	}
-	defer stream.Close()
-	if failure := manager.bindForwardStream(stream, offer); failure != "" {
-		manager.reportForwardFailure(offer.LinkID, failure)
-		return
-	}
-	association.Activate()
-	_ = forwardudp.ForwardClient(
-		association.Context, stream, association.Packets, association.ReleaseQueue,
-		association.Write, runtime.udpConfig.MaxDatagramSize, runtime.udpConfig.LinkWriteTimeout,
-	)
+	manager.serveForwardStream(link, func(ctx context.Context, stream transport.Stream) {
+		association.Activate()
+		_ = forwardudp.ForwardClient(
+			ctx, stream, association.Packets, association.ReleaseQueue,
+			association.Write, runtime.udpConfig.MaxDatagramSize, runtime.udpConfig.LinkWriteTimeout,
+		)
+	})
 }
 
-func (manager *forwardManager) serveTCP(runtime *forwardRuntime, visitor net.Conn) {
+func (manager *forwardManager) serveTCP(runtime *forwardRuntime, visitor net.Conn, lease *forwardLease) {
 	defer visitor.Close()
-	offer, err := manager.requestForwardOffer(runtime.context, runtime)
+	stopVisitor := context.AfterFunc(runtime.context, func() { visitor.Close() })
+	defer stopVisitor()
+	link, err := manager.requestForwardOffer(runtime.context, runtime)
 	if err != nil {
 		return
 	}
-	manager.serveForwardStream(runtime, offer, func(linkContext context.Context, stream transport.Stream) {
+	stopLinkVisitor := context.AfterFunc(link.context, func() { visitor.Close() })
+	defer stopLinkVisitor()
+	manager.serveForwardStream(link, func(linkContext context.Context, stream transport.Stream) {
+		lease.activate()
 		_ = forwardtcp.Forward(linkContext, visitor, stream)
 	})
 }
@@ -219,19 +237,33 @@ func (manager *forwardManager) serveTCP(runtime *forwardRuntime, visitor net.Con
 func (manager *forwardManager) requestForwardOffer(
 	ctx context.Context,
 	runtime *forwardRuntime,
-) (protocol.ForwardLinkOffer, error) {
+) (*forwardLink, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	requestID, err := newRequestID()
 	if err != nil {
-		return protocol.ForwardLinkOffer{}, err
+		return nil, err
 	}
 	offers := make(chan protocol.ForwardLinkOffer, 1)
+	request := &forwardOfferRequest{context: ctx, runtime: runtime, ready: offers}
 	manager.mutex.Lock()
-	manager.offers[requestID] = offers
+	if len(manager.offers) >= maxForwardPending || manager.context.Err() != nil {
+		manager.mutex.Unlock()
+		return nil, errors.New("Forward offer capacity reached or manager closed")
+	}
+	manager.offers[requestID] = request
 	manager.mutex.Unlock()
+	accepted := false
 	defer func() {
 		manager.mutex.Lock()
 		delete(manager.offers, requestID)
+		link := request.link
 		manager.mutex.Unlock()
+		if !accepted && link != nil {
+			manager.releaseForwardLink(link)
+			manager.cancelForwardOffer(link.offer.LinkID)
+		}
 	}()
 	if err := manager.writer.Write(protocol.MessageRequestForwardLink, protocol.RequestForwardLink{
 		RequestID: requestID,
@@ -239,7 +271,7 @@ func (manager *forwardManager) requestForwardOffer(
 		Type:      runtime.configuration.Type,
 		BindingID: runtime.bindingID,
 	}); err != nil {
-		return protocol.ForwardLinkOffer{}, err
+		return nil, err
 	}
 	timer := time.NewTimer(forwardLinkOfferTimeout)
 	defer timer.Stop()
@@ -247,43 +279,60 @@ func (manager *forwardManager) requestForwardOffer(
 	select {
 	case offer = <-offers:
 	case <-timer.C:
-		return protocol.ForwardLinkOffer{}, errors.New("Forward Link offer timed out")
+		return nil, errors.New("Forward Link offer timed out")
 	case <-ctx.Done():
-		return protocol.ForwardLinkOffer{}, ctx.Err()
+		return nil, ctx.Err()
 	}
-	if offer.Error != nil || offer.LinkID == "" || offer.Ticket == "" ||
-		offer.BindingID != runtime.bindingID || offer.Type != runtime.configuration.Type {
-		return protocol.ForwardLinkOffer{}, errors.New("Forward Link offer was rejected")
+	if offer.Error != nil || request.link == nil {
+		return nil, errors.New("Forward Link offer was rejected")
 	}
-	return offer, nil
+	accepted = true
+	return request.link, nil
 }
 
 func (manager *forwardManager) serveForwardStream(
-	runtime *forwardRuntime,
-	offer protocol.ForwardLinkOffer,
+	link *forwardLink,
 	handler func(context.Context, transport.Stream),
 ) {
-	linkContext, cancelLink := context.WithCancel(runtime.context)
-	manager.mutex.Lock()
-	manager.links[offer.LinkID] = cancelLink
-	manager.mutex.Unlock()
-	defer func() {
-		cancelLink()
-		manager.mutex.Lock()
-		delete(manager.links, offer.LinkID)
-		manager.mutex.Unlock()
-	}()
-	stream, err := manager.transport.OpenDataStream(linkContext)
+	defer manager.releaseForwardLink(link)
+	offer := link.offer
+	// Stop expiry after Bind; active streams retain their normal lifetime.
+	timer := time.AfterFunc(time.Until(time.UnixMilli(offer.ExpiresAtUnixMS)), link.cancel)
+	defer timer.Stop()
+	if link.context.Err() != nil {
+		manager.cancelForwardOffer(offer.LinkID)
+		return
+	}
+	stream, err := manager.transport.OpenDataStream(link.context)
 	if err != nil {
 		manager.reportForwardFailure(offer.LinkID, protocol.LinkErrorTransportFailed)
 		return
 	}
 	defer stream.Close()
+	stopStream := context.AfterFunc(link.context, func() { stream.Close() })
+	defer stopStream()
 	if failure := manager.bindForwardStream(stream, offer); failure != "" {
 		manager.reportForwardFailure(offer.LinkID, failure)
 		return
 	}
-	handler(linkContext, stream)
+	if !timer.Stop() || link.context.Err() != nil {
+		manager.cancelForwardOffer(offer.LinkID)
+		return
+	}
+	handler(link.context, stream)
+}
+
+func (manager *forwardManager) releaseForwardLink(link *forwardLink) {
+	link.cancel()
+	manager.mutex.Lock()
+	if manager.links[link.offer.LinkID] == link {
+		delete(manager.links, link.offer.LinkID)
+	}
+	manager.mutex.Unlock()
+}
+
+func (manager *forwardManager) cancelForwardOffer(linkID string) {
+	_ = manager.writer.Write(protocol.MessageCancelForwardLink, protocol.CancelForwardLink{LinkID: linkID})
 }
 
 func (manager *forwardManager) bindForwardStream(
@@ -326,11 +375,22 @@ func (manager *forwardManager) bindForwardStream(
 
 func (manager *forwardManager) deliverOffer(offer protocol.ForwardLinkOffer) {
 	manager.mutex.Lock()
-	destination := manager.offers[offer.RequestID]
-	manager.mutex.Unlock()
-	if destination != nil {
+	defer manager.mutex.Unlock()
+	request := manager.offers[offer.RequestID]
+	if request != nil && !request.delivered {
+		request.delivered = true
+		if offer.Error == nil && offer.LinkID != "" && offer.Ticket != "" &&
+			offer.BindingID == request.runtime.bindingID && offer.Type == request.runtime.configuration.Type &&
+			offer.Name == request.runtime.configuration.Name && offer.ExpiresAtUnixMS > time.Now().UnixMilli() {
+			if _, exists := manager.links[offer.LinkID]; exists {
+				return
+			}
+			ctx, cancel := context.WithCancel(request.context)
+			request.link = &forwardLink{context: ctx, cancel: cancel, offer: offer}
+			manager.links[offer.LinkID] = request.link
+		}
 		select {
-		case destination <- offer:
+		case request.ready <- offer:
 		default:
 		}
 	}
@@ -338,10 +398,10 @@ func (manager *forwardManager) deliverOffer(offer protocol.ForwardLinkOffer) {
 
 func (manager *forwardManager) cancelLink(linkID string) {
 	manager.mutex.Lock()
-	cancel := manager.links[linkID]
+	link := manager.links[linkID]
 	manager.mutex.Unlock()
-	if cancel != nil {
-		cancel()
+	if link != nil {
+		link.cancel()
 	}
 }
 
@@ -461,8 +521,8 @@ func (manager *forwardManager) close() {
 	for _, runtime := range manager.runtimes {
 		runtimes = append(runtimes, runtime)
 	}
-	for _, cancel := range manager.links {
-		cancel()
+	for _, link := range manager.links {
+		link.cancel()
 	}
 	manager.mutex.Unlock()
 	for _, runtime := range runtimes {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ type deliveryFailureConnection struct {
 	net.Conn
 	writeError    error
 	deadlineError error
-	closed        bool
+	closed        atomic.Bool
 }
 
 func (connection *deliveryFailureConnection) Write(payload []byte) (int, error) {
@@ -33,7 +34,7 @@ func (connection *deliveryFailureConnection) SetDeadline(time.Time) error {
 }
 
 func (connection *deliveryFailureConnection) Close() error {
-	connection.closed = true
+	connection.closed.Store(true)
 	return nil
 }
 
@@ -67,8 +68,8 @@ func TestBindFailureNotifiesOwnerAfterPromotion(t *testing.T) {
 				ProxyType: protocol.ProxyTypeTCP, BindingID: target.BindingID,
 				LinkID: offer.LinkID, Ticket: offer.Ticket,
 			}, authentication.Context{})
-			if !errors.Is(err, io.ErrClosedPipe) || !connection.closed {
-				t.Fatalf("bind error = %v, closed = %v", err, connection.closed)
+			if !errors.Is(err, io.ErrClosedPipe) || !connection.closed.Load() {
+				t.Fatalf("bind error = %v, closed = %v", err, connection.closed.Load())
 			}
 			broker.CancelLink(offer.LinkID)
 			broker.Close()

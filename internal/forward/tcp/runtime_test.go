@@ -55,8 +55,32 @@ func TestListenerAcceptsAndForwardsTCPVisitor(t *testing.T) {
 
 func TestTargetHandlerFactoryRejectsUnauthorizedTarget(t *testing.T) {
 	factory := TargetHandlerFactory("127.0.0.1:1", time.Second, func() bool { return false })
-	_, err := factory(context.Background())
+	_, _, err := factory(context.Background())
 	if err == nil || errors.Is(err, context.Canceled) {
 		t.Fatalf("factory returned %v", err)
+	}
+}
+
+func TestPreparedTargetCanCloseWithoutInvokingHandler(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	factory := TargetHandlerFactory(listener.Addr().String(), time.Second, func() bool { return true })
+	handler, cleanup, err := factory(context.Background())
+	if err != nil || handler == nil || cleanup == nil {
+		t.Fatalf("target preparation failed: %v", err)
+	}
+	defer cleanup()
+	peer, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	cleanup()
+	peer.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("target remained open before handler invocation: %v", err)
 	}
 }

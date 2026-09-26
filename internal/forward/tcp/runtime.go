@@ -58,19 +58,18 @@ func TargetHandlerFactory(
 	dialTimeout time.Duration,
 	authorize func() bool,
 ) link.StreamHandlerFactory {
-	return func(ctx context.Context) (link.StreamHandler, error) {
+	return func(ctx context.Context) (link.StreamHandler, func(), error) {
 		if !authorize() {
-			return nil, errors.New("Forward target is no longer allowed")
+			return nil, nil, errors.New("Forward target is no longer allowed")
 		}
 		dialContext, cancel := context.WithTimeout(ctx, dialTimeout)
 		defer cancel()
 		target, err := (&net.Dialer{}).DialContext(dialContext, "tcp", address)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		return func(linkContext context.Context, _ string, stream net.Conn) error {
-			defer target.Close()
 			return Forward(linkContext, stream, target)
-		}, nil
+		}, func() { target.Close() }, nil
 	}
 }

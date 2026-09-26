@@ -10,6 +10,24 @@ import (
 
 const frameHeaderSize = 4
 
+// DatagramWriter owns reusable framing storage for one sending goroutine.
+// It must not be shared by concurrent senders.
+type DatagramWriter struct {
+	writer  io.Writer
+	maxSize int
+	buffer  []byte
+}
+
+// NewDatagramWriter creates a writer with a bounded, reusable frame buffer.
+func NewDatagramWriter(writer io.Writer, maxSize int) *DatagramWriter {
+	return &DatagramWriter{writer: writer, maxSize: maxSize, buffer: make([]byte, frameHeaderSize+maxSize)}
+}
+
+// Write preserves one datagram boundary and coalesces the header and payload.
+func (writer *DatagramWriter) Write(payload []byte) error {
+	return writeDatagramBuffer(writer.writer, payload, writer.maxSize, writer.buffer)
+}
+
 // ErrInvalidFrame indicates malformed UDP data framing.
 var ErrInvalidFrame = errors.New("invalid UDP datagram frame")
 
