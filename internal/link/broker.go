@@ -112,6 +112,8 @@ type Broker struct {
 	activeDirections  map[string]int
 	closed            bool
 	closeOnce         sync.Once
+	sendSlots         chan struct{}
+	sendWaitGroup     sync.WaitGroup
 }
 
 // NewBroker creates a link broker.
@@ -125,6 +127,7 @@ func NewBroker(ctx context.Context) *Broker {
 		activeBindings:    make(map[string]int),
 		pendingDirections: make(map[string]int),
 		activeDirections:  make(map[string]int),
+		sendSlots:         make(chan struct{}, maxPending),
 	}
 	context.AfterFunc(ctx, broker.Close)
 	return broker
@@ -136,6 +139,44 @@ func (broker *Broker) ServeStream(
 	handler func(context.Context, string, net.Conn) error,
 ) (string, error) {
 	return broker.request(target, onCancel, nil, handler)
+}
+
+// ServeStreamAsync reserves capacity before dispatching a bounded control write.
+// The send slot remains owned until Write returns, even if the link is cancelled.
+func (broker *Broker) ServeStreamAsync(
+	target Target,
+	onCancel func(string),
+	handler StreamHandler,
+) (string, error) {
+	broker.mutex.Lock()
+	if broker.closed {
+		broker.mutex.Unlock()
+		return "", ErrCapacityReached
+	}
+	select {
+	case broker.sendSlots <- struct{}{}:
+		broker.sendWaitGroup.Add(1)
+	default:
+		broker.mutex.Unlock()
+		return "", ErrCapacityReached
+	}
+	broker.mutex.Unlock()
+	releaseSend := func() {
+		<-broker.sendSlots
+		broker.sendWaitGroup.Done()
+	}
+	offer, err := broker.createPending(target, onCancel, nil, handler, nil)
+	if err != nil {
+		releaseSend()
+		return "", err
+	}
+	go func() {
+		defer releaseSend()
+		if err := target.Writer.Write(protocol.MessageOpenLink, offer); err != nil {
+			broker.cancel(offer.LinkID, false, err)
+		}
+	}()
+	return offer.LinkID, nil
 }
 
 // OfferStream creates a client-originated pending Link without sending open_link.
@@ -321,6 +362,19 @@ func (broker *Broker) BindWithActivation(
 	}
 	broker.incrementActiveLocked(pending.target)
 	broker.mutex.Unlock()
+	// Promotion consumes the timer, so pre-delivery failures must notify the
+	// original owner explicitly. No handler or ready receiver owns the stream yet.
+	failDelivery := func(err error) error {
+		managed.Close()
+		broker.finish(binding.LinkID)
+		if pending.onCancel != nil {
+			pending.onCancel(binding.LinkID)
+		}
+		if pending.ready != nil {
+			pending.ready <- linkOpenResult{err: err}
+		}
+		return err
+	}
 	if pending.handlerFactory != nil {
 		handler, prepareError := pending.handlerFactory(ctx)
 		if prepareError != nil {
@@ -333,9 +387,7 @@ func (broker *Broker) BindWithActivation(
 				binding.LinkID,
 				code,
 			)
-			managed.Close()
-			broker.finish(binding.LinkID)
-			return fmt.Errorf("prepare data link target: %w: %v", rejectionError, prepareError)
+			return failDelivery(fmt.Errorf("prepare data link target: %w: %v", rejectionError, prepareError))
 		}
 		pending.handler = handler
 	}
@@ -347,14 +399,10 @@ func (broker *Broker) BindWithActivation(
 		LinkID: binding.LinkID,
 		Status: protocol.LinkStatusAccepted,
 	}); err != nil {
-		managed.Close()
-		broker.finish(binding.LinkID)
-		return err
+		return failDelivery(err)
 	}
 	if err := connection.SetDeadline(time.Time{}); err != nil {
-		managed.Close()
-		broker.finish(binding.LinkID)
-		return err
+		return failDelivery(err)
 	}
 
 	if pending.handler != nil {
@@ -542,6 +590,7 @@ func (broker *Broker) Close() {
 			connection.Close()
 		}
 	})
+	broker.sendWaitGroup.Wait()
 }
 
 func (broker *Broker) finish(linkID string) {

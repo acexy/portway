@@ -38,6 +38,7 @@ func (session *TCPSession) addConnection(
 	}
 	previous := session.members[target.ClientID]
 	session.members[target.ClientID] = member
+	session.memberReadyOnce.Do(func() { close(session.memberReady) })
 	session.mutex.Unlock()
 	if previous != nil {
 		previous.close()

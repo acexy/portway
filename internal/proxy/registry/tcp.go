@@ -92,7 +92,7 @@ func (manager *Registry) openVisitor(
 		})
 	}
 
-	linkID, err := manager.linkBroker.ServeStream(
+	linkID, err := manager.linkBroker.ServeStreamAsync(
 		link.Target{
 			ClientID: binding.clientID, SessionID: sessionID,
 			BindingName: binding.declaration.Name, TrafficType: link.TrafficTypeTCP,

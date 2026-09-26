@@ -82,6 +82,27 @@ func WriteDatagram(writer io.Writer, payload []byte, maxSize int) error {
 	return writeAll(writer, payload)
 }
 
+// writeDatagramBuffer borrows storage exclusively for this synchronous write.
+// Callers on hot paths keep one buffer per sending goroutine.
+func writeDatagramBuffer(writer io.Writer, payload []byte, maxSize int, buffer []byte) error {
+	if len(payload) > maxSize {
+		return fmt.Errorf(
+			"%w: payload length %d exceeds %d",
+			ErrInvalidFrame,
+			len(payload),
+			maxSize,
+		)
+	}
+	length := frameHeaderSize + len(payload)
+	if cap(buffer) < length {
+		buffer = make([]byte, length)
+	}
+	buffer = buffer[:length]
+	binary.BigEndian.PutUint32(buffer[:frameHeaderSize], uint32(len(payload)))
+	copy(buffer[frameHeaderSize:], payload)
+	return writeAll(writer, buffer)
+}
+
 func writeAll(writer io.Writer, payload []byte) error {
 	for len(payload) > 0 {
 		written, err := writer.Write(payload)

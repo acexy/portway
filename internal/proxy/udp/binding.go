@@ -266,6 +266,7 @@ func (association *association) forward(
 
 	writeErrors := make(chan error, 1)
 	go func() {
+		frameBuffer := make([]byte, frameHeaderSize+association.binding.configuration.MaxDatagramSize)
 		fail := func(err error) {
 			writeErrors <- err
 			stream.Close()
@@ -283,10 +284,11 @@ func (association *association) forward(
 					fail(err)
 					return
 				}
-				if err := WriteDatagram(
+				if err := writeDatagramBuffer(
 					stream,
 					payload,
 					association.binding.configuration.MaxDatagramSize,
+					frameBuffer,
 				); err != nil {
 					fail(err)
 					return
@@ -296,9 +298,11 @@ func (association *association) forward(
 		}
 	}()
 
+	responseBuffer := make([]byte, association.binding.configuration.MaxDatagramSize)
 	for {
-		payload, err := ReadDatagram(
+		payload, err := ReadDatagramInto(
 			stream,
+			responseBuffer,
 			association.binding.configuration.MaxDatagramSize,
 		)
 		if err != nil {

@@ -42,6 +42,8 @@ type TCPSession struct {
 	members         map[string]*tcpMember
 	workers         map[string]*tcpWorker
 	inputDone       chan struct{}
+	memberReady     chan struct{}
+	memberReadyOnce sync.Once
 	waitGroup       sync.WaitGroup
 	responseMutex   sync.Mutex
 	primaryClientID atomic.Pointer[string]
@@ -67,7 +69,8 @@ func NewTCPSession(ctx context.Context, visitor net.Conn, guard TargetGuard, ope
 		context: sessionContext, cancel: cancel, visitor: visitor,
 		guard: guard, open: open,
 		members: make(map[string]*tcpMember), workers: make(map[string]*tcpWorker),
-		inputDone: make(chan struct{}),
+		inputDone:   make(chan struct{}),
+		memberReady: make(chan struct{}),
 	}
 }
 
@@ -94,9 +97,12 @@ func (session *TCPSession) Serve(targets []link.Target) {
 	for _, target := range targets {
 		initial = append(initial, session.AddTarget(target))
 	}
+waitInitial:
 	for _, ready := range initial {
 		select {
 		case <-ready:
+		case <-session.memberReady:
+			break waitInitial
 		case <-ctx.Done():
 			return
 		}
@@ -106,8 +112,13 @@ func (session *TCPSession) Serve(targets []link.Target) {
 	for {
 		length, err := visitor.Read(buffer)
 		if length != 0 {
-			for _, member := range session.snapshotMembers() {
-				payload := append([]byte(nil), buffer[:length]...)
+			members := session.snapshotMembers()
+			var payload []byte
+			if len(members) != 0 {
+				// Queues share immutable storage, independent of the next read.
+				payload = append([]byte(nil), buffer[:length]...)
+			}
+			for _, member := range members {
 				select {
 				case member.queue <- payload:
 				default:

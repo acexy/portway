@@ -32,6 +32,87 @@ func waitSignal(t *testing.T, signal <-chan struct{}) {
 	}
 }
 
+func TestTCPSessionReadyMemberDoesNotWaitForSlowInitialMember(t *testing.T) {
+	targets := []link.Target{
+		{ClientID: "slow", SessionID: "slow", BindingID: "slow"},
+		{ClientID: "ready", SessionID: "ready", BindingID: "ready"},
+	}
+	guard := &testTargetGuard{targets: map[string]link.Target{"slow": targets[0], "ready": targets[1]}}
+	visitor, peer := net.Pipe()
+	defer peer.Close()
+	stream, backend := net.Pipe()
+	defer backend.Close()
+	slowStarted := make(chan struct{})
+	session := NewTCPSession(context.Background(), visitor, guard,
+		func(ctx context.Context, target link.Target) (net.Conn, error) {
+			if target.ClientID == "slow" {
+				close(slowStarted)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return stream, nil
+		})
+	done := make(chan struct{})
+	go func() { defer close(done); session.Serve(targets) }()
+	t.Cleanup(func() { session.Cancel(); waitSignal(t, done) })
+	waitSignal(t, slowStarted)
+	peer.SetWriteDeadline(time.Now().Add(time.Second))
+	if _, err := peer.Write([]byte("first")); err != nil {
+		t.Fatalf("slow member blocked visitor input: %v", err)
+	}
+	backend.SetReadDeadline(time.Now().Add(time.Second))
+	payload := make([]byte, 5)
+	if _, err := io.ReadFull(backend, payload); err != nil || string(payload) != "first" {
+		t.Fatalf("ready member received %q: %v", payload, err)
+	}
+	if _, err := peer.Write([]byte("later")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(backend, payload); err != nil || string(payload) != "later" {
+		t.Fatalf("later member data = %q: %v", payload, err)
+	}
+}
+
+func TestTCPSessionQueuedMembersRetainInputAcrossReads(t *testing.T) {
+	targets := []link.Target{
+		{ClientID: "one", SessionID: "one", BindingID: "one"},
+		{ClientID: "two", SessionID: "two", BindingID: "two"},
+	}
+	guard := &testTargetGuard{targets: map[string]link.Target{"one": targets[0], "two": targets[1]}}
+	visitor, peer := net.Pipe()
+	defer peer.Close()
+	streams := make(map[string]net.Conn)
+	backends := make([]net.Conn, 0, len(targets))
+	for _, target := range targets {
+		stream, backend := net.Pipe()
+		streams[target.ClientID] = stream
+		backends = append(backends, backend)
+		defer backend.Close()
+	}
+	session := NewTCPSession(context.Background(), visitor, guard,
+		func(_ context.Context, target link.Target) (net.Conn, error) { return streams[target.ClientID], nil })
+	for _, target := range targets {
+		waitSignal(t, session.AddTarget(target))
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); session.Serve(targets) }()
+	t.Cleanup(func() { session.Cancel(); waitSignal(t, done) })
+	peer.SetWriteDeadline(time.Now().Add(time.Second))
+	for _, payload := range []string{"first", "later", "final"} {
+		if _, err := peer.Write([]byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Neither backend has consumed data while the visitor read buffer is reused.
+	for _, backend := range backends {
+		backend.SetReadDeadline(time.Now().Add(time.Second))
+		payload := make([]byte, len("firstlaterfinal"))
+		if _, err := io.ReadFull(backend, payload); err != nil || string(payload) != "firstlaterfinal" {
+			t.Fatalf("queued data = %q: %v", payload, err)
+		}
+	}
+}
+
 func TestTCPSessionRejectsTargetRevokedDuringOpen(t *testing.T) {
 	target := link.Target{ClientID: "client", SessionID: "session", BindingID: "binding"}
 	guard := &testTargetGuard{targets: map[string]link.Target{target.ClientID: target}}
