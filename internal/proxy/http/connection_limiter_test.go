@@ -7,7 +7,9 @@ import (
 	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestConnectionLimiterBoundsAllBindings(t *testing.T) {
@@ -35,6 +37,8 @@ func TestConnectionLimiterReclaimsIdlePoolWithoutClosingActiveRequest(t *testing
 	}))
 	defer server.Close()
 	limiter := NewConnectionLimiter(1)
+	firstConnectionClosed := make(chan struct{})
+	var closeOnce sync.Once
 	transport := &stdhttp.Transport{
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			release, err := limiter.acquire(ctx)
@@ -46,7 +50,10 @@ func TestConnectionLimiterReclaimsIdlePoolWithoutClosingActiveRequest(t *testing
 				release()
 				return nil, err
 			}
-			return &limitedConnection{Conn: connection, release: release}, nil
+			return &limitedConnection{Conn: connection, release: func() {
+				release()
+				closeOnce.Do(func() { close(firstConnectionClosed) })
+			}}, nil
 		},
 	}
 	unregister := limiter.register(transport)
@@ -67,6 +74,11 @@ func TestConnectionLimiterReclaimsIdlePoolWithoutClosingActiveRequest(t *testing
 	response.Body.Close()
 	// The earlier pressure closes this connection on return to the pool.
 	// A fresh request clears that flag and leaves a genuine idle connection.
+	select {
+	case <-firstConnectionClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection was not closed after returning to the pool")
+	}
 	response, err = client.Get(server.URL)
 	if err != nil {
 		t.Fatal(err)
