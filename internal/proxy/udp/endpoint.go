@@ -129,6 +129,7 @@ func (endpoint *Endpoint) summaryLoop() {
 				"UDP endpoint traffic summary",
 				map[string]any{
 					"event":               "udp_endpoint_summary",
+					"local_address":       endpoint.connection.LocalAddr().String(),
 					"interval_ms":         summaryInterval.Milliseconds(),
 					"received_datagrams":  received,
 					"denied_datagrams":    denied,

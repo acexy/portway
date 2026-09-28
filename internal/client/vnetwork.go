@@ -352,7 +352,7 @@ func (manager *clientVNetManager) activatePreparedDevice(
 		manager.waitGroup.Go(func() { manager.readDevice(device, assignment) })
 	}
 	manager.mutex.Unlock()
-	manager.logger.InfoWithFields("VNet network is ready", map[string]any{
+	manager.logger.DebugWithFields("VNet network is ready", map[string]any{
 		"event":          "vnet_network_ready",
 		"interface_name": device.Name(),
 		"virtual_ip":     assignment.ClientIP,
@@ -491,6 +491,7 @@ func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
 		"event":          "vnet_active",
 		"interface_name": device.Name(),
 		"virtual_ip":     assignment.ClientIP,
+		"cidr":           assignment.CIDR,
 		"channel_count":  len(channels),
 	})
 	for _, stream := range channels {
