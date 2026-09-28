@@ -57,7 +57,7 @@ type associationRuntime struct {
 type Endpoint struct {
 	context       context.Context
 	cancel        context.CancelFunc
-	packet        net.PacketConn
+	packet        *net.UDPConn
 	maxDatagram   int
 	queueSize     int
 	configuration config.UDPConfig
@@ -65,7 +65,7 @@ type Endpoint struct {
 	forwardName   string
 	limiter       *proxyudp.Limiter
 	mutex         sync.Mutex
-	associations  map[string]*associationRuntime
+	associations  map[netip.AddrPort]*associationRuntime
 	waitGroup     sync.WaitGroup
 	closed        bool
 }
@@ -86,11 +86,11 @@ func Listen(
 		return nil, err
 	}
 	endpoint := &Endpoint{
-		context: endpointContext, cancel: cancel, packet: packet, maxDatagram: configuration.MaxDatagramSize,
+		context: endpointContext, cancel: cancel, packet: packet.(*net.UDPConn), maxDatagram: configuration.MaxDatagramSize,
 		queueSize:     configuration.MaxQueuedDatagramsPerAssociation,
 		configuration: configuration, clientID: clientID, forwardName: forwardName,
 		limiter:      limiter,
-		associations: make(map[string]*associationRuntime),
+		associations: make(map[netip.AddrPort]*associationRuntime),
 	}
 	endpoint.waitGroup.Go(endpoint.sweep)
 	return endpoint, nil
@@ -100,7 +100,7 @@ func Listen(
 func (endpoint *Endpoint) Serve(handler func(*Association)) error {
 	buffer := make([]byte, endpoint.maxDatagram+1)
 	for {
-		length, address, err := endpoint.packet.ReadFrom(buffer)
+		length, address, err := endpoint.packet.ReadFromUDPAddrPort(buffer)
 		if err != nil {
 			return err
 		}
@@ -114,10 +114,11 @@ func (endpoint *Endpoint) Serve(handler func(*Association)) error {
 		if association == nil {
 			continue
 		}
-		payload := append([]byte(nil), buffer[:length]...)
-		if !association.lease.ReserveQueue(len(payload)) {
+		// The endpoint is the only queue producer; consumers can only free slots.
+		if len(association.queue) == cap(association.queue) || !association.lease.ReserveQueue(length) {
 			continue
 		}
+		payload := append([]byte(nil), buffer[:length]...)
 		select {
 		case association.queue <- payload:
 			association.lastActivity.Store(time.Now().UnixNano())
@@ -128,10 +129,10 @@ func (endpoint *Endpoint) Serve(handler func(*Association)) error {
 }
 
 func (endpoint *Endpoint) association(
-	address net.Addr,
+	address netip.AddrPort,
 	handler func(*Association),
 ) (*associationRuntime, bool) {
-	key := address.String()
+	key := address
 	endpoint.mutex.Lock()
 	defer endpoint.mutex.Unlock()
 	if endpoint.closed {
@@ -140,12 +141,8 @@ func (endpoint *Endpoint) association(
 	if current := endpoint.associations[key]; current != nil {
 		return current, true
 	}
-	addressPort, err := netip.ParseAddrPort(key)
-	if err != nil {
-		return nil, true
-	}
 	lease, allowed := endpoint.limiter.Acquire(
-		endpoint.clientID, endpoint.forwardName, addressPort.Addr(), time.Now(),
+		endpoint.clientID, endpoint.forwardName, address.Addr(), time.Now(),
 	)
 	if !allowed {
 		return nil, true
@@ -158,7 +155,7 @@ func (endpoint *Endpoint) association(
 		Context: ctx,
 		Packets: queue,
 		write: func(payload []byte) error {
-			written, err := endpoint.packet.WriteTo(payload, address)
+			written, err := endpoint.packet.WriteToUDPAddrPort(payload, address)
 			if err == nil && written != len(payload) {
 				return io.ErrShortWrite
 			}
@@ -243,6 +240,8 @@ func ForwardClient(
 ) error {
 	forwardContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	stopStream := context.AfterFunc(forwardContext, func() { stream.Close() })
+	defer stopStream()
 	results := make(chan error, 2)
 	go func() {
 		buffer := make([]byte, maxDatagram)
@@ -258,15 +257,20 @@ func ForwardClient(
 		}
 	}()
 	go func() {
+		writer := proxyudp.NewDatagramWriter(stream, maxDatagram)
 		for {
 			select {
-			case payload := <-packets:
+			case payload, open := <-packets:
+				if !open {
+					results <- io.EOF
+					return
+				}
 				releaseQueue(len(payload))
 				if err := stream.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 					results <- err
 					return
 				}
-				if err := proxyudp.WriteDatagram(stream, payload, maxDatagram); err != nil {
+				if err := writer.Write(payload); err != nil {
 					results <- err
 					return
 				}
@@ -290,16 +294,16 @@ func TargetHandlerFactory(
 	writeTimeout time.Duration,
 	authorize func() bool,
 ) link.StreamHandlerFactory {
-	return func(_ context.Context) (link.StreamHandler, error) {
+	return func(ctx context.Context) (link.StreamHandler, func(), error) {
 		if !authorize() {
-			return nil, errors.New("Forward target is no longer allowed")
+			return nil, nil, errors.New("Forward target is no longer allowed")
 		}
-		target, err := net.Dial("udp", address)
+		target, err := (&net.Dialer{}).DialContext(ctx, "udp", address)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		return func(ctx context.Context, _ string, stream net.Conn) error {
 			return proxyudp.Forward(ctx, stream, target, maxDatagram, writeTimeout)
-		}, nil
+		}, func() { target.Close() }, nil
 	}
 }

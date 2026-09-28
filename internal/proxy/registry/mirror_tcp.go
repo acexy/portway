@@ -4,7 +4,6 @@ import (
 	"net"
 
 	"github.com/acexy/portway/internal/link"
-	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/proxy/mirror"
 )
 
@@ -35,7 +34,7 @@ func (guard mirrorTargetGuard) IsCurrent(target link.Target) bool {
 	return !manager.closed && manager.tcpMirrorGroups[guard.group.port] == guard.group &&
 		state != nil && state.active && state.sessionID == target.SessionID &&
 		state.writer == target.Writer && binding != nil && binding.bindingID == target.BindingID &&
-		state.tcpProxies[target.ProxyName] == binding
+		state.tcpProxies[target.BindingName] == binding
 }
 
 func (manager *Registry) openMirrorVisitor(group *mirrorGroup, visitor net.Conn) {
@@ -113,7 +112,7 @@ func (manager *Registry) snapshotMirrorTCPTargets(group *mirrorGroup) []link.Tar
 func mirrorTCPLinkTarget(clientID string, state *clientState, binding *tcpProxyBinding) link.Target {
 	return link.Target{
 		ClientID: clientID, SessionID: state.sessionID,
-		ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeTCP,
+		BindingName: binding.declaration.Name, TrafficType: link.TrafficTypeTCP,
 		BindingID: binding.bindingID, Writer: state.writer,
 		Authentication: state.authentication, MaxActiveLinks: state.maxActiveLinks,
 	}

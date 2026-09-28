@@ -2,11 +2,22 @@ package config
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// ServerSourcesUnchanged checks the loaded source set without decoding YAML.
+// A changed source must still pass the complete two-manifest load path.
+func ServerSourcesUnchanged(configuration ServerConfig) (bool, error) {
+	manifest, err := serverSourceManifest(configuration)
+	if err != nil {
+		return false, err
+	}
+	return hex.EncodeToString(manifest.digest[:]) == configuration.SourceDigest, nil
+}
 
 type sourceManifest struct {
 	mainDigest [sha256.Size]byte

@@ -121,6 +121,48 @@ func TestSyncTransactionRollbackPreservesPublishedBinding(t *testing.T) {
 	}
 }
 
+func TestSyncTransactionCompanionFailurePreservesPublishedBinding(t *testing.T) {
+	broker := link.NewBroker(context.Background())
+	defer broker.Close()
+	registry := New(
+		broker,
+		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
+		config.DefaultUDPConfig,
+	)
+	declaration := protocol.ForwardDeclaration{
+		Name: "database", Type: protocol.ForwardTypeTCP,
+		TargetIP: "127.0.0.1", TargetPort: 5432,
+	}
+	results, forwardError := registry.Sync(
+		"client", "session", nil, authentication.Context{}, 10,
+		[]protocol.ForwardDeclaration{declaration},
+	)
+	if forwardError != nil {
+		t.Fatal(forwardError)
+	}
+	transaction, forwardError := registry.BeginSync(
+		"client", "session", nil, authentication.Context{}, 10,
+		[]protocol.ForwardDeclaration{{
+			Name: "database", Type: protocol.ForwardTypeTCP,
+			TargetIP: "127.0.0.1", TargetPort: 6432,
+		}},
+	)
+	if forwardError != nil {
+		t.Fatal(forwardError)
+	}
+	if transaction.CommitWith(func() bool { return false }) {
+		t.Fatal("transaction committed after companion publication failed")
+	}
+	transaction.Rollback()
+	offer := registry.Offer("client", "session", protocol.RequestForwardLink{
+		RequestID: "request", Name: declaration.Name, Type: declaration.Type,
+		BindingID: results[0].BindingID,
+	})
+	if offer.Error != nil {
+		t.Fatalf("companion failure replaced the published Binding: %+v", offer.Error)
+	}
+}
+
 func TestSyncTransactionDoesNotBlockAndRejectsStaleCommit(t *testing.T) {
 	broker := link.NewBroker(context.Background())
 	defer broker.Close()

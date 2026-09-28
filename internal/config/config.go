@@ -35,7 +35,7 @@ const (
 )
 
 var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-var proxyNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+var resourceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 var httpHeaderNamePattern = regexp.MustCompile(
 	"^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$",
 )

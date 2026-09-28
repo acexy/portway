@@ -207,7 +207,7 @@ func (s *Service) serveControlMessages(
 			if err := protocol.DecodePayload(envelope, &cancellation); err != nil {
 				return false, err
 			}
-			s.linkBroker.CancelLink(cancellation.LinkID)
+			s.linkBroker.CancelForwardLink(clientID, sessionID, cancellation.LinkID)
 		case protocol.MessageForwardLinkFailed:
 			var failure protocol.ForwardLinkFailed
 			if err := protocol.DecodePayload(envelope, &failure); err != nil {

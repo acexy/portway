@@ -50,8 +50,8 @@ func (binding *udpProxyBinding) resolveTarget() (link.Target, error) {
 	return link.Target{
 		ClientID:       binding.clientID,
 		SessionID:      binding.sessionID,
-		ProxyName:      binding.declaration.Name,
-		ProxyType:      protocol.ProxyTypeUDP,
+		BindingName:    binding.declaration.Name,
+		TrafficType:    link.TrafficTypeUDP,
 		BindingID:      binding.bindingID,
 		Writer:         state.writer,
 		Authentication: state.authentication,

@@ -566,7 +566,7 @@ func TestLoadGovernedClientRejectsPermissionLimitOutsideHardBoundary(t *testing.
 		{
 			name:  "proxy overflow",
 			field: "max_total",
-			value: hardMaxProxiesPerClient + 1,
+			value: hardMaxBindingsPerClient + 1,
 		},
 		{
 			name:  "active link overflow",
@@ -596,7 +596,7 @@ permissions:
 }
 
 func TestValidateManagedProxiesRejectsHardLimitOverflow(t *testing.T) {
-	proxies := make([]ProxyConfig, hardMaxProxiesPerClient+1)
+	proxies := make([]ProxyConfig, hardMaxBindingsPerClient+1)
 	for index := range proxies {
 		proxies[index] = ProxyConfig{
 			Name:   fmt.Sprintf("tcp-%d", index),
@@ -626,7 +626,7 @@ configuration:
   revision: 1
   proxies:
 `)
-	for index := range hardMaxProxiesPerClient + 1 {
+	for index := range hardMaxBindingsPerClient + 1 {
 		fmt.Fprintf(&managed, `
     - name: tcp-%d
       type: tcp
@@ -676,6 +676,10 @@ permissions: {}
 	if err != nil {
 		t.Fatal(err)
 	}
+	unchanged, err := ServerSourcesUnchanged(configuration)
+	if err != nil || !unchanged {
+		t.Fatalf("stable sources were not recognized: unchanged=%t, err=%v", unchanged, err)
+	}
 	before, err := serverSourceManifest(configuration)
 	if err != nil {
 		t.Fatal(err)
@@ -692,6 +696,10 @@ permissions: {}
 	}
 	if before.digest == after.digest {
 		t.Fatal("authentication file change did not change the source manifest")
+	}
+	unchanged, err = ServerSourcesUnchanged(configuration)
+	if err != nil || unchanged {
+		t.Fatalf("changed source was skipped: unchanged=%t, err=%v", unchanged, err)
 	}
 }
 

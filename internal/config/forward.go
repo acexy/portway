@@ -9,13 +9,13 @@ import (
 )
 
 func validateForwards(forwards []ForwardConfig, field string) error {
-	if len(forwards) > hardMaxProxiesPerClient {
-		return fmt.Errorf("%s must contain at most %d entries", field, hardMaxProxiesPerClient)
+	if len(forwards) > hardMaxBindingsPerClient {
+		return fmt.Errorf("%s must contain at most %d entries", field, hardMaxBindingsPerClient)
 	}
 	names := make(map[string]struct{}, len(forwards))
 	listeners := make(map[string]struct{}, len(forwards))
 	for index, forward := range forwards {
-		if err := ValidateProxyName(forward.Name); err != nil {
+		if err := ValidateResourceName(forward.Name); err != nil {
 			return fmt.Errorf("%s[%d].name has an invalid format", field, index)
 		}
 		if _, duplicate := names[forward.Name]; duplicate {

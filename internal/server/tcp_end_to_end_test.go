@@ -135,6 +135,7 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 	defer mirrorListener.Close()
 	mirrorReceived := make(chan []byte, 2)
 	mirrorConnected := make(chan int, 2)
+	mirrorReady := []chan byte{make(chan byte, 256), make(chan byte, 256)}
 	mirrorPayloads := [][]byte{
 		[]byte("mirror-payload"),
 		[]byte("mirror-rejoin-payload"),
@@ -147,7 +148,22 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 			}
 			mirrorConnected <- index
 			payload := make([]byte, len(expected))
-			if _, readError := io.ReadFull(connection, payload); readError == nil {
+			// Registration and local Accept precede publication of the data link.
+			// Consume probes until this member demonstrably receives visitor input.
+			for {
+				if _, readError := io.ReadFull(connection, payload[:1]); readError != nil {
+					connection.Close()
+					return
+				}
+				if payload[0] != 0 {
+					break
+				}
+				select {
+				case mirrorReady[index] <- 0:
+				default:
+				}
+			}
+			if _, readError := io.ReadFull(connection, payload[1:]); readError == nil {
 				mirrorReceived <- payload
 			}
 			_ = connection.Close()
@@ -239,6 +255,7 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer visitor.Close()
+	exchangeRecoveryTCP(t, visitor, mirrorReady[0], 0)
 	if err := visitor.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +263,20 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := make([]byte, len(payload))
-	if _, err := io.ReadFull(visitor, response); err != nil {
+	readResponse := func(response []byte) error {
+		// A delayed probe echo may precede the business payload.
+		for {
+			if _, err := io.ReadFull(visitor, response[:1]); err != nil {
+				return err
+			}
+			if response[0] != 0 {
+				break
+			}
+		}
+		_, err := io.ReadFull(visitor, response[1:])
+		return err
+	}
+	if err := readResponse(response); err != nil {
 		t.Fatal(err)
 	}
 	if string(response) != string(payload) {
@@ -305,11 +335,15 @@ func TestTCPMirrorProxyEndToEnd(t *testing.T) {
 		t.Fatal("rejoined mirror client did not receive a live data link")
 	}
 	rejoinPayload := mirrorPayloads[1]
+	exchangeRecoveryTCP(t, visitor, mirrorReady[1], 0)
+	if err := visitor.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := visitor.Write(rejoinPayload); err != nil {
 		t.Fatal(err)
 	}
 	response = make([]byte, len(rejoinPayload))
-	if _, err := io.ReadFull(visitor, response); err != nil {
+	if err := readResponse(response); err != nil {
 		t.Fatal(err)
 	}
 	if string(response) != string(rejoinPayload) {

@@ -49,6 +49,12 @@ or message boundaries and does not replay a handshake or request prefix. Its
 local service must tolerate incomplete stream context. UDP preserves datagram
 boundaries; a newly active member begins with the next datagram.
 
+For a new TCP visitor, forwarding starts as soon as any member's link is ready;
+it does not wait for every member or specifically for the Primary. Members that
+finish connecting later can therefore miss the beginning of the stream even if
+their clients were already registered. If every initial link attempt fails,
+visitor input is consumed and discarded while members retry independently.
+
 A local service being unavailable does not log out its client. TCP members,
 including the Primary, automatically retry failed links with backoff and resume
 forwarding subsequent bytes when the local service starts or restarts. Traffic

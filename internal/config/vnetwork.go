@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+
+	"github.com/acexy/portway/internal/protocol"
 )
 
 const (
 	defaultVNetPacketChannels = 4
-	hardMaxVNetPacketChannels = 8
+	hardMaxVNetPacketChannels = protocol.VNetMaximumPacketChannels
 	hardMaxVNetNodes          = 256
 )
 

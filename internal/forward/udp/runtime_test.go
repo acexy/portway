@@ -3,6 +3,7 @@ package udp
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -62,6 +63,52 @@ func TestEndpointPreservesUDPAssociationDatagrams(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Serve did not stop")
+	}
+}
+
+func TestForwardClientCancellationInterruptsBlockedFrameWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, peer := net.Pipe()
+	defer peer.Close()
+	packets := make(chan []byte, 1)
+	packets <- []byte("blocked")
+	dequeued := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- ForwardClient(ctx, stream, packets, func(int) { close(dequeued) },
+			func([]byte) error { return nil }, 64, time.Minute)
+	}()
+	select {
+	case <-dequeued:
+	case <-time.After(time.Second):
+		t.Fatal("sender did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled sender waited for its write deadline")
+	}
+}
+
+func TestForwardClientClosedQueueTerminates(t *testing.T) {
+	stream, peer := net.Pipe()
+	defer peer.Close()
+	packets := make(chan []byte)
+	close(packets)
+	done := make(chan error, 1)
+	go func() {
+		done <- ForwardClient(context.Background(), stream, packets, func(int) {},
+			func([]byte) error { return nil }, 64, time.Second)
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("closed queue error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closed queue kept sending empty datagrams")
 	}
 }
 

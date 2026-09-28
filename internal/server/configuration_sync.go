@@ -120,13 +120,17 @@ func (s *Service) synchronizeConfiguration(
 		}
 		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
 	}
-	proxyResult := s.proxyRegistry.SyncAllowEmpty(
-		session.clientID,
-		session.sessionID,
-		envelope.RequestID,
-		proxyRequest,
-	)
-	if proxyResult.Status == proxyregistry.SyncStatusRejected {
+	var proxyResult proxyregistry.SyncResult
+	committed := forwardTransaction.CommitWith(func() bool {
+		proxyResult = s.proxyRegistry.SyncAllowEmpty(
+			session.clientID,
+			session.sessionID,
+			envelope.RequestID,
+			proxyRequest,
+		)
+		return proxyResult.Status == proxyregistry.SyncStatusApplied
+	})
+	if !committed && proxyResult.Status == proxyregistry.SyncStatusRejected {
 		forwardTransaction.Rollback()
 		rejection := configurationProxyError(proxyResult.Error)
 		s.logConfigurationSyncRejected(session, request.Revision, rejection)
@@ -140,14 +144,15 @@ func (s *Service) synchronizeConfiguration(
 		}
 		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
 	}
+	if !committed {
+		forwardTransaction.Rollback()
+		return protocol.SyncConfigurationResult{}, errors.New("Forward generation changed while synchronizing")
+	}
 	result := protocol.SyncConfigurationResult{
 		Revision: request.Revision,
 		Status:   protocol.ConfigurationSyncStatusApplied,
 		Proxies:  proxyResult.Proxies,
 		Forwards: append([]protocol.ForwardResult(nil), forwardTransaction.Results()...),
-	}
-	if !forwardTransaction.Commit() {
-		return protocol.SyncConfigurationResult{}, errors.New("Forward generation changed while synchronizing")
 	}
 	s.cacheConfigurationSync(session.clientID, session.sessionID, envelope.RequestID, request, result)
 	s.logConfigurationSyncApplied(session, request, result, false)
@@ -162,7 +167,7 @@ func (s *Service) logConfigurationSyncRejected(
 	if s.logger == nil || rejection == nil {
 		return
 	}
-	s.logger.WithComponent("proxy_registry").WarnWithFields(
+	s.logger.WithComponent("configuration_sync").WarnWithFields(
 		"client configuration synchronization rejected",
 		nil,
 		map[string]any{
@@ -196,7 +201,7 @@ func (s *Service) logConfigurationSyncApplied(
 	for _, declaration := range request.Forwards {
 		forwardCounts[declaration.Type]++
 	}
-	s.logger.WithComponent("proxy_registry").InfoWithFields(
+	s.logger.WithComponent("configuration_sync").InfoWithFields(
 		"client configuration synchronized",
 		map[string]any{
 			"event":        "configuration_sync_applied",

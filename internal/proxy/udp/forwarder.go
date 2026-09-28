@@ -50,7 +50,8 @@ func Forward(
 		}
 	}()
 	go func() {
-		buffer := make([]byte, maxDatagramSize+1)
+		frameBuffer := make([]byte, frameHeaderSize+maxDatagramSize+1)
+		buffer := frameBuffer[frameHeaderSize:]
 		for {
 			length, err := local.Read(buffer)
 			if err != nil {
@@ -64,7 +65,7 @@ func Forward(
 				results <- err
 				return
 			}
-			if err := WriteDatagram(stream, buffer[:length], maxDatagramSize); err != nil {
+			if err := writeDatagramBuffer(stream, buffer[:length], maxDatagramSize, frameBuffer); err != nil {
 				results <- err
 				return
 			}

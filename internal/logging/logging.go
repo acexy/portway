@@ -17,11 +17,9 @@ import (
 
 var consoleFieldPriority = []string{
 	"event",
-	"client_id",
-	"session_id",
 	"proxy_type",
 	"proxy_name",
-	"link_id",
+	"forward_name",
 	"remote_address",
 	"local_address",
 	"result",
@@ -31,6 +29,14 @@ var consoleFieldPriority = []string{
 	"retryable",
 	"status_code",
 	"duration_ms",
+	"setup_ms",
+	"visitor_to_client_bytes",
+	"client_to_visitor_bytes",
+	"transport_to_local_bytes",
+	"local_to_transport_bytes",
+	"client_id",
+	"session_id",
+	"link_id",
 	"error",
 }
 

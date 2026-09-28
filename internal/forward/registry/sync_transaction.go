@@ -91,6 +91,14 @@ func (transaction *SyncTransaction) Results() []protocol.ForwardResult {
 // Commit atomically publishes the prepared Forward generation if the observed
 // Session generation and current policy still match.
 func (transaction *SyncTransaction) Commit() bool {
+	return transaction.CommitWith(nil)
+}
+
+// CommitWith atomically publishes the prepared Forward generation around an
+// optional companion publication. The companion runs only after the Forward
+// generation and policy have been revalidated; while it runs, concurrent
+// Forward removal or policy publication cannot invalidate the transaction.
+func (transaction *SyncTransaction) CommitWith(companion func() bool) bool {
 	if transaction == nil || transaction.registry == nil {
 		return false
 	}
@@ -103,12 +111,15 @@ func (transaction *SyncTransaction) Commit() bool {
 	}
 	for _, current := range transaction.next {
 		configured, active := registry.policy(current.authentication, current.declaration)
-		if !configured {
+		if !configured || active != current.active {
 			transaction.registry = nil
 			registry.mutex.Unlock()
 			return false
 		}
-		current.active = active
+	}
+	if companion != nil && !companion() {
+		registry.mutex.Unlock()
+		return false
 	}
 	for key, existing := range registry.bindings {
 		if existing.clientID == transaction.clientID && existing.sessionID == transaction.sessionID {

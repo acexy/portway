@@ -229,7 +229,8 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		return
 	}
 
-	logger.DebugWithFields("proxy link streaming started", map[string]any{
+	setupDuration := time.Since(startedAt)
+	logger.TraceWithFields("proxy link streaming started", map[string]any{
 		"event": "proxy_link_started",
 	})
 	forwardResult, err := proxytcp.Forward(ctx, dataConnection, localConnection)
@@ -238,6 +239,7 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		"transport_to_local_bytes": forwardResult.LeftToRightBytes,
 		"local_to_transport_bytes": forwardResult.RightToLeftBytes,
 		"duration_ms":              time.Since(startedAt).Milliseconds(),
+		"setup_ms":                 setupDuration.Milliseconds(),
 	}
 	if err != nil && ctx.Err() == nil {
 		fields["result"] = "failed"
@@ -247,7 +249,6 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		logger.DebugWithFields("proxy link closed", fields)
 	} else {
 		fields["result"] = "completed"
-		fields["reason"] = "stream_closed"
 		if ctx.Err() != nil {
 			fields["result"] = "cancelled"
 			fields["reason"] = "link_cancelled"
@@ -266,15 +267,12 @@ func (manager *linkManager) warnLinkFailure(
 	if !emit {
 		return
 	}
-	logger.WarnWithFields(
+	manager.logger.WarnWithFields(
 		"proxy link failed; additional failures are rate limited",
-		err,
+		nil,
 		map[string]any{
 			"event":         "proxy_link_failure_summary",
-			"stage":         stage,
-			"result":        "failed",
-			"reason":        errorCode,
-			"error_code":    errorCode,
+			"scope":         "proxy_links",
 			"failure_count": count,
 		},
 	)

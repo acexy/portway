@@ -34,6 +34,12 @@ func (s *Service) watchConfiguration(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+		if lastError == "" {
+			unchanged, checkError := config.ServerSourcesUnchanged(s.configuration.snapshot())
+			if checkError == nil && unchanged {
+				continue
+			}
+		}
 		candidate, err := config.LoadServer(sourcePath, false)
 		if err == nil {
 			err = s.applyConfigurationCandidateContext(ctx, candidate)

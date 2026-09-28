@@ -46,7 +46,7 @@ func (binding *httpProxyBinding) resolveTarget() (link.Target, error) {
 	}
 	return link.Target{
 		ClientID: binding.clientID, SessionID: binding.sessionID,
-		ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeHTTP,
+		BindingName: binding.declaration.Name, TrafficType: link.TrafficTypeHTTP,
 		BindingID: binding.bindingID, Writer: state.writer,
 		Authentication: state.authentication,
 		MaxActiveLinks: state.maxActiveLinks,
@@ -175,15 +175,14 @@ func (manager *Registry) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	}
 	if requestResult.ErrorCode != "" {
 		if count, emit := manager.httpFailureLogs.Record(time.Now()); emit {
-			warningFields := make(map[string]any, len(fields)+1)
-			for field, value := range fields {
-				warningFields[field] = value
-			}
-			warningFields["failure_count"] = count
 			manager.logger.WithComponent("proxy_http").WarnWithFields(
 				"HTTP proxy request failed; additional failures are rate limited",
-				requestResult.Err,
-				warningFields,
+				nil,
+				map[string]any{
+					"event":         "http_request_failure_summary",
+					"failure_count": count,
+					"scope":         "http_proxy",
+				},
 			)
 		}
 	}
@@ -211,7 +210,12 @@ func (manager *Registry) logHTTPRequest(
 	if reason != "" {
 		fields["reason"] = reason
 	}
-	manager.logger.WithComponent("proxy_http").DebugWithFields(
+	logger := manager.logger.WithComponent("proxy_http")
+	if result == "accepted" {
+		logger.TraceWithFields("HTTP request routed", fields)
+		return
+	}
+	logger.DebugWithFields(
 		"HTTP request routed",
 		fields,
 	)

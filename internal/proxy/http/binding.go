@@ -61,6 +61,7 @@ type Binding struct {
 	cancel              context.CancelFunc
 	broker              *link.Broker
 	connectionLimiter   *ConnectionLimiter
+	unregisterPool      func()
 	resolve             TargetResolver
 	transport           *stdhttp.Transport
 	upgradeTransport    *stdhttp.Transport
@@ -108,6 +109,7 @@ func NewBinding(
 		DialContext:            binding.dialContext,
 	}
 	binding.upgradeTransport = binding.transport.Clone()
+	binding.unregisterPool = connectionLimiter.register(binding.transport)
 	binding.upgradeTransport.DisableKeepAlives = true
 	binding.upgradeTransport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		connection, err := binding.dialContext(ctx, network, address)
@@ -143,7 +145,10 @@ func NewBinding(
 			message := "Bad Gateway"
 			var networkError net.Error
 			var maximumBytesError *stdhttp.MaxBytesError
-			if errors.Is(context.Cause(request.Context()), errRequestBodyTimeout) {
+			if errors.Is(err, errConnectionCapacity) || errors.Is(err, link.ErrCapacityReached) {
+				status = stdhttp.StatusServiceUnavailable
+				message = "Service Unavailable"
+			} else if errors.Is(context.Cause(request.Context()), errRequestBodyTimeout) {
 				status = stdhttp.StatusRequestTimeout
 				message = "Request Timeout"
 			} else if errors.As(err, &maximumBytesError) {
@@ -195,6 +200,7 @@ func (binding *Binding) CloseIdleConnections() {
 // Close terminates the binding and all links owned by it.
 func (binding *Binding) Close() {
 	binding.cancel()
+	binding.unregisterPool()
 	binding.transport.CloseIdleConnections()
 	binding.upgradeTransport.CloseIdleConnections()
 	binding.broker.CancelBinding(binding.bindingID)
@@ -277,6 +283,8 @@ func (binding *Binding) ServeHTTPResult(
 
 func httpProxyErrorCode(statusCode int) string {
 	switch statusCode {
+	case stdhttp.StatusServiceUnavailable:
+		return "capacity_exceeded"
 	case stdhttp.StatusRequestTimeout:
 		return "request_body_timeout"
 	case stdhttp.StatusRequestEntityTooLarge:

@@ -89,6 +89,22 @@ func TestReverseProxyReturnsGatewayTimeoutForUpstreamTimeout(t *testing.T) {
 	}
 }
 
+func TestReverseProxyReturnsServiceUnavailableForBackendCapacity(t *testing.T) {
+	binding, cleanup := newTestBinding(t, config.DefaultServer().Proxies.HTTP.HTTPConfig)
+	defer cleanup()
+	for _, capacityError := range []error{errConnectionCapacity, link.ErrCapacityReached} {
+		binding.proxy.Transport = timeoutRoundTripper(func(*stdhttp.Request) (*stdhttp.Response, error) {
+			return nil, capacityError
+		})
+		response := httptest.NewRecorder()
+		result := binding.ServeHTTPResult(response,
+			httptest.NewRequest(stdhttp.MethodGet, "http://app.example.com/", nil))
+		if response.Code != stdhttp.StatusServiceUnavailable || result.ErrorCode != "capacity_exceeded" {
+			t.Fatalf("unexpected capacity response: %+v", result)
+		}
+	}
+}
+
 func TestReverseProxyRejectsOversizedRequestBody(t *testing.T) {
 	configuration := config.DefaultServer().Proxies.HTTP.HTTPConfig
 	configuration.MaxRequestBodyBytes = 4

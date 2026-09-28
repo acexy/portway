@@ -13,7 +13,7 @@ const (
 	defaultMaxUDPForwards        = 5
 	defaultMaxActiveForwardLinks = 100
 
-	hardMaxProxiesPerClient     = systemlimits.HardMaxProxiesPerClient
+	hardMaxBindingsPerClient    = systemlimits.HardMaxBindingsPerClient
 	hardMaxActiveLinksPerClient = systemlimits.HardMaxActiveLinksPerClient
 )
 

@@ -73,10 +73,10 @@ func validateGovernedLimits(permissions GovernedPermissions) error {
 		value int
 		max   int
 	}{
-		{"max_total", proxyLimits.MaxTotal, hardMaxProxiesPerClient},
-		{"max_tcp", proxyLimits.MaxTCP, hardMaxProxiesPerClient},
-		{"max_udp", proxyLimits.MaxUDP, hardMaxProxiesPerClient},
-		{"max_http", proxyLimits.MaxHTTP, hardMaxProxiesPerClient},
+		{"max_total", proxyLimits.MaxTotal, hardMaxBindingsPerClient},
+		{"max_tcp", proxyLimits.MaxTCP, hardMaxBindingsPerClient},
+		{"max_udp", proxyLimits.MaxUDP, hardMaxBindingsPerClient},
+		{"max_http", proxyLimits.MaxHTTP, hardMaxBindingsPerClient},
 		{"max_active_links", proxyLimits.MaxActiveLinks, hardMaxActiveLinksPerClient},
 	} {
 		if limit.value <= 0 || limit.value > limit.max {
@@ -97,9 +97,9 @@ func validateGovernedLimits(permissions GovernedPermissions) error {
 		value int
 		max   int
 	}{
-		{"max_total", forwardLimits.MaxTotal, hardMaxProxiesPerClient},
-		{"max_tcp", forwardLimits.MaxTCP, hardMaxProxiesPerClient},
-		{"max_udp", forwardLimits.MaxUDP, hardMaxProxiesPerClient},
+		{"max_total", forwardLimits.MaxTotal, hardMaxBindingsPerClient},
+		{"max_tcp", forwardLimits.MaxTCP, hardMaxBindingsPerClient},
+		{"max_udp", forwardLimits.MaxUDP, hardMaxBindingsPerClient},
 		{"max_active_links", forwardLimits.MaxActiveLinks, hardMaxActiveLinksPerClient},
 	} {
 		if limit.value <= 0 || limit.value > limit.max {

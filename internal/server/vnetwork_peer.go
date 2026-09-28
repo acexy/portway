@@ -97,7 +97,7 @@ func (runtime *serverVNetRuntime) readPeerRegistrations(connection *net.UDPConn)
 		runtime.mutex.Unlock()
 		candidates := normalizePeerCandidates(signal.HostCandidates)
 		candidates = append(candidates, protocol.VNetPeerCandidate{
-			Address: address.String(), Type: "server_reflexive",
+			Address: address.String(), Type: protocol.VNetPeerCandidateServerReflexive,
 		})
 		runtime.mutex.Lock()
 		session, exists = runtime.sessions[signal.ClientID]
@@ -130,7 +130,7 @@ func normalizePeerCandidates(values []string) []protocol.VNetPeerCandidate {
 			continue
 		}
 		seen[normalized] = struct{}{}
-		result = append(result, protocol.VNetPeerCandidate{Address: normalized, Type: "host"})
+		result = append(result, protocol.VNetPeerCandidate{Address: normalized, Type: protocol.VNetPeerCandidateHost})
 	}
 	return result
 }

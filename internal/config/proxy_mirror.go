@@ -61,7 +61,7 @@ func validateProxyMirrorGroups(
 ) error {
 	for index, group := range groups {
 		field := fmt.Sprintf("%s[%d]", path, index)
-		if !proxyNamePattern.MatchString(group.Name) {
+		if !resourceNamePattern.MatchString(group.Name) {
 			return fmt.Errorf("%s.name is invalid", field)
 		}
 		if _, duplicate := names[group.Name]; duplicate {

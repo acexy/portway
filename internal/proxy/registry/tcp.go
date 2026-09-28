@@ -58,7 +58,7 @@ func (manager *Registry) openVisitor(
 		"remote_address": remoteAddress,
 		"local_address":  localAddress,
 	})
-	visitorLogger.DebugWithFields("TCP visitor accepted", map[string]any{
+	visitorLogger.TraceWithFields("TCP visitor accepted", map[string]any{
 		"event":  "tcp_visitor_accepted",
 		"result": "accepted",
 	})
@@ -68,6 +68,7 @@ func (manager *Registry) openVisitor(
 		result string,
 		reason string,
 		streamStarted bool,
+		setupDuration time.Duration,
 		forwardResult proxytcp.ForwardResult,
 		forwardError error,
 	) {
@@ -75,11 +76,17 @@ func (manager *Registry) openVisitor(
 			fields := map[string]any{
 				"event":                   "tcp_visitor_closed",
 				"result":                  result,
-				"reason":                  reason,
 				"stream_started":          streamStarted,
 				"visitor_to_client_bytes": forwardResult.LeftToRightBytes,
 				"client_to_visitor_bytes": forwardResult.RightToLeftBytes,
 				"duration_ms":             time.Since(startedAt).Milliseconds(),
+			}
+			if result != "completed" {
+				fields["reason"] = reason
+			}
+			if streamStarted {
+				fields["setup_ms"] = setupDuration.Milliseconds()
+				delete(fields, "stream_started")
 			}
 			if linkID != "" {
 				fields["link_id"] = linkID
@@ -88,24 +95,25 @@ func (manager *Registry) openVisitor(
 				fields["error_code"] = reason
 				fields["error"] = forwardError
 			}
-			visitorLogger.DebugWithFields("TCP visitor closed", fields)
+			visitorLogger.DebugWithFields("TCP access completed", fields)
 		})
 	}
 
-	linkID, err := manager.linkBroker.ServeStream(
+	linkID, err := manager.linkBroker.ServeStreamAsync(
 		link.Target{
 			ClientID: binding.clientID, SessionID: sessionID,
-			ProxyName: binding.declaration.Name, ProxyType: protocol.ProxyTypeTCP,
+			BindingName: binding.declaration.Name, TrafficType: link.TrafficTypeTCP,
 			BindingID: binding.bindingID, Writer: writer,
 			Authentication: authenticationContext,
 			MaxActiveLinks: maxActiveLinks,
 		},
 		func(cancelledLinkID string) {
 			visitor.Close()
-			finish(cancelledLinkID, "cancelled", "link_cancelled", false, proxytcp.ForwardResult{}, nil)
+			finish(cancelledLinkID, "cancelled", "link_cancelled", false, 0, proxytcp.ForwardResult{}, nil)
 		},
 		func(ctx context.Context, activeLinkID string, stream net.Conn) error {
-			visitorLogger.DebugWithFields("TCP stream started", map[string]any{
+			setupDuration := time.Since(startedAt)
+			visitorLogger.TraceWithFields("TCP stream started", map[string]any{
 				"event":   "tcp_stream_started",
 				"link_id": activeLinkID,
 			})
@@ -116,13 +124,13 @@ func (manager *Registry) openVisitor(
 				result = "failed"
 				reason = proxytcp.CloseReason(ctx, forwardError)
 			}
-			finish(activeLinkID, result, reason, true, forwardResult, forwardError)
+			finish(activeLinkID, result, reason, true, setupDuration, forwardResult, forwardError)
 			return forwardError
 		},
 	)
 	if err != nil {
 		visitor.Close()
-		finish(linkID, "failed", tcpLinkRequestFailureReason(err), false, proxytcp.ForwardResult{}, err)
+		finish(linkID, "failed", tcpLinkRequestFailureReason(err), false, 0, proxytcp.ForwardResult{}, err)
 	}
 }
 

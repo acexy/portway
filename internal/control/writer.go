@@ -10,6 +10,8 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
+const writeTimeout = 5 * time.Second
+
 // Writer serializes control messages written by concurrent owners.
 type Writer struct {
 	gate   chan struct{}
@@ -28,14 +30,24 @@ func (writer *Writer) Write(messageType protocol.MessageType, payload any) error
 
 // WriteRequest sends one request-correlated control message.
 func (writer *Writer) WriteRequest(messageType protocol.MessageType, requestID string, payload any) error {
+	if _, ok := writer.writer.(interface {
+		io.Closer
+		SetWriteDeadline(time.Time) error
+	}); ok {
+		return writer.writeUntil(time.Now().Add(writeTimeout), messageType, requestID, payload)
+	}
 	writer.gate <- struct{}{}
 	defer func() { <-writer.gate }()
 	return protocol.WriteControlWithRequestID(writer.writer, messageType, requestID, payload)
 }
 
-// WriteUntil bounds both serialization admission and network I/O. A failed
-// admitted write closes the stream because its framing may be incomplete.
+// WriteUntil bounds both serialization admission and network I/O. A timeout
+// closes the stream so no writer can continue on an unhealthy control session.
 func (writer *Writer) WriteUntil(deadline time.Time, messageType protocol.MessageType, payload any) error {
+	return writer.writeUntil(deadline, messageType, "", payload)
+}
+
+func (writer *Writer) writeUntil(deadline time.Time, messageType protocol.MessageType, requestID string, payload any) error {
 	connection, ok := writer.writer.(interface {
 		io.Closer
 		SetWriteDeadline(time.Time) error
@@ -48,17 +60,19 @@ func (writer *Writer) WriteUntil(deadline time.Time, messageType protocol.Messag
 	select {
 	case writer.gate <- struct{}{}:
 	case <-timer.C:
+		_ = connection.Close()
 		return os.ErrDeadlineExceeded
 	}
 	defer func() { <-writer.gate }()
 	if !time.Now().Before(deadline) {
+		_ = connection.Close()
 		return os.ErrDeadlineExceeded
 	}
 	if err := connection.SetWriteDeadline(deadline); err != nil {
 		_ = connection.Close()
 		return err
 	}
-	err := protocol.WriteControl(writer.writer, messageType, payload)
+	err := protocol.WriteControlWithRequestID(writer.writer, messageType, requestID, payload)
 	err = errors.Join(err, connection.SetWriteDeadline(time.Time{}))
 	if err != nil {
 		_ = connection.Close()

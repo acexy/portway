@@ -5,5 +5,5 @@ package vnet
 import "errors"
 
 func openDevice() (Device, error) {
-	return nil, errors.New("VNet is supported only on Linux and macOS")
+	return nil, errors.New("VNet is unsupported on this platform")
 }

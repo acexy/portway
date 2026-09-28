@@ -16,7 +16,7 @@ func validateProxyDeclarations(
 	udpPorts := make(map[uint16]struct{})
 	httpDomains := make(map[string]struct{})
 	for _, declaration := range declarations {
-		if config.ValidateProxyName(declaration.Name) != nil {
+		if config.ValidateResourceName(declaration.Name) != nil {
 			result := rejectedSyncResult(
 				revision,
 				ErrorInvalidProxy,
