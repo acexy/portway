@@ -7,9 +7,10 @@ const (
 	maximumRegistrationReconnectDelay = 30 * time.Second
 	initialRecoveryReconnectDelay     = 500 * time.Millisecond
 	maximumRecoveryReconnectDelay     = 3 * time.Second
-	maximumReconnectPeriod            = 8 * time.Hour
+	controlSetupTimeout               = 20 * time.Second
+	stableSessionPeriod               = time.Minute
 	heartbeatInterval                 = 5 * time.Second
-	heartbeatTimeout                  = 10 * time.Second
+	heartbeatTimeout                  = 20 * time.Second
 	sessionRecoveryWindow             = 90 * time.Second
 	heartbeatCheckInterval            = time.Second
 	controlHelloTimeout               = 10 * time.Second

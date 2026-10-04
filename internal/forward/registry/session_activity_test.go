@@ -36,7 +36,7 @@ func TestForwardOfferFollowsSessionSuspensionAndRecovery(t *testing.T) {
 	if offer := registry.Offer("client", "session", request); offer.Error != nil {
 		t.Fatalf("active session rejected: %+v", offer.Error)
 	}
-	sessions.Sweep(now.Add(time.Second), time.Second, time.Minute)
+	sessions.Sweep(now.Add(time.Second), time.Second)
 	broker.CancelSession("client", "session")
 	if offer := registry.Offer("client", "session", request); offer.Error == nil || offer.Error.Code != protocol.ForwardErrorSessionInactive {
 		t.Fatalf("suspended session offer = %+v", offer)

@@ -97,3 +97,21 @@ readinessProbe:
 
 Network policy or an equivalent host firewall must still restrict access to
 the operations listener.
+
+## Client reconnection
+
+The client retries transient connection and server failures until it is stopped.
+Permanent authentication, protocol, and configuration errors terminate the client.
+Each control session setup has a 20-second total budget, including a maximum
+5-second transport dial. Cancellation can shorten either budget.
+
+Heartbeats are sent every 5 seconds; 20 seconds without a valid response triggers
+reconnection. The server retains a suspended session for 60 seconds. The client
+tries to recover its identity for up to 90 seconds, then registers again. Failed
+recovery initialization does not extend the server's retention window.
+
+Recovery retries use 0.5, 1, 2, and at most 3 seconds; ordinary registration retries
+use 1, 2, 4, 8, 15, and at most 30 seconds. Both include ±25% jitter. The first
+established connection enables fast recovery. Later short connections preserve
+backoff; a connection must remain healthy for at least 60 seconds and receive
+valid heartbeat responses before backoff resets. These timing values are fixed.

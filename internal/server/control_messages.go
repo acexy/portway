@@ -53,7 +53,6 @@ func (s *Service) serveControlMessages(
 		); err != nil {
 			return err
 		}
-		s.proxyRegistry.Activate(clientID, sessionID)
 		if initialProxySynchronizationRequired {
 			if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
 				return errors.New("initialized client session is no longer current")
@@ -63,6 +62,7 @@ func (s *Service) serveControlMessages(
 			}
 			initialProxySynchronizationRequired = false
 		}
+		s.proxyRegistry.Activate(clientID, sessionID)
 		if onProxySynchronizationApplied != nil {
 			onProxySynchronizationApplied()
 		}

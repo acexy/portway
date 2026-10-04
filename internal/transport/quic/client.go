@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	quicgo "github.com/quic-go/quic-go"
 
@@ -49,8 +50,10 @@ func NewClient(configuration ClientConfig) (*Client, error) {
 // Connect establishes one QUIC connection and authenticates its control stream.
 func (client *Client) Connect(ctx context.Context) (transport.ClientSession, error) {
 	generation := transport.Generation(client.nextGeneration.Add(1))
+	dialContext, cancelDial := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelDial()
 	connection, err := quicgo.DialAddr(
-		ctx,
+		dialContext,
 		client.configuration.Address,
 		client.tlsConfig.Clone(),
 		defaultQUICConfig(),

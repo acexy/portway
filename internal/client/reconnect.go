@@ -32,24 +32,18 @@ func (s *Service) Run(ctx context.Context) error {
 	})
 	defer s.logger.InfoWithField("client stopped", "event", "client_stopped")
 
-	reconnectDelay := initialRegistrationReconnectDelay
-	var reconnectAttempt uint64
-	var reconnectStartedAt time.Time
+	backoff := reconnectBackoff{delay: initialRegistrationReconnectDelay}
 	sessionID := ""
 	var disconnectedAt time.Time
 
 	for {
-		if reconnectPeriodExceeded(reconnectStartedAt, time.Now()) {
-			return errReconnectPeriodExceeded
-		}
 		if sessionID != "" &&
 			!disconnectedAt.IsZero() &&
 			time.Since(disconnectedAt) >= sessionRecoveryWindow {
 			s.logger.InfoWithField("client session recovery window expired", "session_id", sessionID)
 			sessionID = ""
 			disconnectedAt = time.Time{}
-			reconnectDelay = initialRegistrationReconnectDelay
-			reconnectAttempt = 0
+			backoff.delay = max(backoff.delay, initialRegistrationReconnectDelay)
 		}
 		attemptLogger := s.logger
 		if sessionID != "" {
@@ -61,7 +55,11 @@ func (s *Service) Run(ctx context.Context) error {
 			sessionID != "",
 		)
 
-		establishedSessionID, established, err := s.runControlSession(ctx, sessionID)
+		var recoveryDeadline time.Time
+		if !disconnectedAt.IsZero() {
+			recoveryDeadline = disconnectedAt.Add(sessionRecoveryWindow)
+		}
+		establishedSessionID, established, stable, err := s.runControlSession(ctx, sessionID, recoveryDeadline)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -80,11 +78,7 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 		if established {
 			disconnectedAt = time.Now()
-			reconnectDelay = initialRecoveryReconnectDelay
-			reconnectAttempt = 0
-			reconnectStartedAt = time.Now()
-		} else if reconnectStartedAt.IsZero() {
-			reconnectStartedAt = time.Now()
+			backoff.sessionEstablished(stable)
 		}
 
 		var sessionError *remoteSessionError
@@ -93,8 +87,7 @@ func (s *Service) Run(ctx context.Context) error {
 			case protocol.SessionErrorSessionExpired:
 				sessionID = ""
 				disconnectedAt = time.Time{}
-				reconnectDelay = initialRegistrationReconnectDelay
-				reconnectAttempt = 0
+				backoff.delay = max(backoff.delay, initialRegistrationReconnectDelay)
 				continue
 			case protocol.SessionErrorClientIDRecoveryPending:
 			case protocol.SessionErrorResumeSessionMismatch,
@@ -119,15 +112,14 @@ func (s *Service) Run(ctx context.Context) error {
 		)
 
 		phase := reconnectPhaseForSession(sessionID)
-		reconnectAttempt++
-		actualReconnectDelay := reconnectDelayWithJitter(reconnectDelay)
-		actualReconnectDelay, available := boundedReconnectDelay(
-			reconnectStartedAt,
-			time.Now(),
-			actualReconnectDelay,
-		)
-		if !available {
-			return errReconnectPeriodExceeded
+		if phase == reconnectPhaseRecovery {
+			backoff.delay = min(backoff.delay, maximumRecoveryReconnectDelay)
+		}
+		backoff.attempt++
+		actualReconnectDelay := reconnectDelayWithJitter(backoff.delay)
+		if !disconnectedAt.IsZero() {
+			remaining := time.Until(disconnectedAt.Add(sessionRecoveryWindow))
+			actualReconnectDelay = min(actualReconnectDelay, max(remaining, 0))
 		}
 		attemptLogger.TraceWithField(
 			"waiting before control connection retry",
@@ -137,14 +129,14 @@ func (s *Service) Run(ctx context.Context) error {
 		attemptLogger.InfoWithFields("session reconnect scheduled", map[string]any{
 			"event":          "session_reconnect_scheduled",
 			"retry_delay_ms": actualReconnectDelay.Milliseconds(),
-			"retry_attempt":  reconnectAttempt,
+			"retry_attempt":  backoff.attempt,
 			"retry_phase":    phase,
 			"resume":         sessionID != "",
 		})
 		if !waitForRetry(ctx, actualReconnectDelay) {
 			return nil
 		}
-		reconnectDelay = nextReconnectDelay(reconnectDelay, phase)
+		backoff.delay = nextReconnectDelay(backoff.delay, phase)
 	}
 }
 
@@ -190,22 +182,6 @@ func nextReconnectDelay(current time.Duration, phase reconnectPhase) time.Durati
 	return min(current*2, maximumRegistrationReconnectDelay)
 }
 
-func reconnectPeriodExceeded(startedAt time.Time, now time.Time) bool {
-	return !startedAt.IsZero() && now.Sub(startedAt) >= maximumReconnectPeriod
-}
-
-func boundedReconnectDelay(
-	startedAt time.Time,
-	now time.Time,
-	delay time.Duration,
-) (time.Duration, bool) {
-	remaining := maximumReconnectPeriod - now.Sub(startedAt)
-	if remaining <= 0 {
-		return 0, false
-	}
-	return min(delay, remaining), true
-}
-
 func waitForRetry(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -227,4 +203,20 @@ func reconnectDelayWithJitter(delay time.Duration) time.Duration {
 	jitterRange := 2*reconnectJitterPercent + 1
 	jitterPercent := int(randomByte[0])%jitterRange - reconnectJitterPercent
 	return delay + delay*time.Duration(jitterPercent)/100
+}
+
+// reconnectBackoff survives short sessions. Only the first established session
+// or confirmed stable operation starts a new fast recovery cycle.
+type reconnectBackoff struct {
+	delay          time.Duration
+	attempt        uint64
+	hasEstablished bool
+}
+
+func (backoff *reconnectBackoff) sessionEstablished(stable bool) {
+	if !backoff.hasEstablished || stable {
+		backoff.delay = initialRecoveryReconnectDelay
+		backoff.attempt = 0
+	}
+	backoff.hasEstablished = true
 }

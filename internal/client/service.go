@@ -41,10 +41,6 @@ var errClientDeclaredProxiesRequired = errors.New(
 	"shared and governed clients require at least one local proxy or forward",
 )
 
-var errReconnectPeriodExceeded = errors.New(
-	"control connection retry period exceeded 8 hours",
-)
-
 func (registrationError *configurationRegistrationError) Error() string {
 	return fmt.Sprintf(
 		"configuration registration rejected: kind=%q resource=%q code=%s message=%s",

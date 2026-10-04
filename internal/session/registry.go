@@ -10,6 +10,9 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
+// RecoveryWindow bounds one suspension, including failed resumed initialization.
+const RecoveryWindow = time.Minute
+
 type clientRecord struct {
 	clientID              string
 	sessionID             string
@@ -144,6 +147,11 @@ func (registry *Registry) RegisterAuthenticated(
 			Retryable: false,
 		}
 	}
+	if resumeSessionID != "" && !record.suspendedAt.IsZero() && now.Sub(record.suspendedAt) >= RecoveryWindow {
+		return false, false, nil, &protocol.SessionError{
+			Code: protocol.SessionErrorSessionExpired, Message: "client session recovery window expired", Retryable: true,
+		}
+	}
 
 	if record.state == stateInitializing {
 		if resumeSessionID == "" ||
@@ -182,7 +190,7 @@ func (registry *Registry) RegisterAuthenticated(
 			Retryable: true,
 		}
 	}
-	if resumeSessionID != record.sessionID {
+	if resumeSessionID != record.sessionID && resumeSessionID != record.previousSessionID {
 		return false, false, nil, &protocol.SessionError{
 			Code:      protocol.SessionErrorResumeSessionMismatch,
 			Message:   "resume session ID does not match the suspended client",
@@ -191,13 +199,14 @@ func (registry *Registry) RegisterAuthenticated(
 	}
 
 	previousConnection = record.connection
-	record.previousSessionID = record.sessionID
+	// Keep the identity actually known to this client until initialization is
+	// acknowledged by activation; a ServerHello may be lost repeatedly.
+	record.previousSessionID = resumeSessionID
 	record.sessionID = sessionID
 	record.state = stateInitializing
 	record.connection = connection
 	record.lastHeartbeatAt = now
 	record.lastHeartbeatSequence = 0
-	record.suspendedAt = time.Time{}
 	record.authentication = authenticationContext
 	return true, false, previousConnection, nil
 }
@@ -211,10 +220,14 @@ func (registry *Registry) Activate(clientID string, sessionID string, now time.T
 	if !exists || record.sessionID != sessionID || record.state != stateInitializing {
 		return false
 	}
+	if !record.suspendedAt.IsZero() && now.Sub(record.suspendedAt) >= RecoveryWindow {
+		return false
+	}
 	record.state = stateActive
 	record.previousSessionID = ""
 	record.lastHeartbeatAt = now
 	record.lastHeartbeatSequence = 0
+	record.suspendedAt = time.Time{}
 	return true
 }
 
@@ -270,6 +283,9 @@ func (registry *Registry) Heartbeat(
 		sequence == 0 || sequence <= record.lastHeartbeatSequence {
 		return false, false
 	}
+	if record.state == stateSuspended && now.Sub(record.suspendedAt) >= RecoveryWindow {
+		return false, false
+	}
 	reactivated = record.state == stateSuspended
 	record.state = stateActive
 	record.lastHeartbeatAt = now
@@ -297,7 +313,9 @@ func (registry *Registry) Disconnect(clientID string, sessionID string, now time
 	}
 	if record.state != stateSuspended {
 		record.state = stateSuspended
-		record.suspendedAt = now
+		if record.suspendedAt.IsZero() {
+			record.suspendedAt = now
+		}
 	}
 }
 
@@ -314,7 +332,6 @@ func (registry *Registry) Remove(clientID string, sessionID string) {
 func (registry *Registry) Sweep(
 	now time.Time,
 	heartbeatTimeout time.Duration,
-	recoveryWindow time.Duration,
 ) (suspendedClients []Client, expiredClients []ExpiredClient) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
@@ -329,7 +346,7 @@ func (registry *Registry) Sweep(
 			})
 			continue
 		}
-		if record.state == stateSuspended && now.Sub(record.suspendedAt) >= recoveryWindow {
+		if !record.suspendedAt.IsZero() && now.Sub(record.suspendedAt) >= RecoveryWindow {
 			delete(registry.clients, clientID)
 			expiredClients = append(expiredClients, ExpiredClient{
 				ClientID:       clientID,
