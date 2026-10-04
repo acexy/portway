@@ -280,7 +280,7 @@ func (s *Service) handleAdmittedConnection(
 		sessionLogger,
 		writer,
 		negotiatedCapabilities,
-		inbound.Authentication.Mode,
+		inbound.Authentication,
 		initialProxySynchronizationRequired,
 		func() {
 			recoverableSession = true
@@ -292,7 +292,6 @@ func (s *Service) handleAdmittedConnection(
 				},
 			)
 		},
-		inbound.Authentication,
 	)
 	if gracefullyClosed {
 		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)

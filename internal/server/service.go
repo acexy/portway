@@ -38,8 +38,8 @@ func (reloadError restartRequiredError) Error() string {
 
 // Service manages the server process lifecycle.
 //
-// It owns the client listener, control sessions, proxy registration, and
-// session-scoped TCP proxy resources.
+// It owns transport and public listeners, control sessions, configuration
+// publication, and the Proxy, Forward, and VNet runtimes.
 type Service struct {
 	logger                  *logging.Logger
 	configuration           *configurationManager
@@ -159,7 +159,7 @@ func (s *Service) Run(ctx context.Context) error {
 	defer s.vnetRuntime.Close()
 	s.forwardRegistry = forwardregistry.New(s.linkBroker, s.forwardPolicy, func() config.UDPConfig {
 		return config.EffectiveForwardUDPConfig(s.configuration.snapshot().Forwards)
-	})
+	}, s.clientRegistry.Active)
 	defer s.forwardRegistry.Close()
 	s.proxyRegistry = proxyregistry.NewConfigured(
 		sessionContext,

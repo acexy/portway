@@ -28,21 +28,13 @@ func (s *Service) serveControlMessages(
 	sessionLogger *logging.Logger,
 	writer *control.Writer,
 	negotiatedCapabilities []protocol.Capability,
-	authenticationMode authentication.Mode,
+	authenticationContext authentication.Context,
 	initialProxySynchronizationRequired bool,
 	onProxySynchronizationApplied func(),
-	authenticationContexts ...authentication.Context,
 ) (gracefullyClosed bool, err error) {
-	authenticationContext := authentication.Context{
-		Mode:     authenticationMode,
-		ClientID: clientID,
-	}
-	if len(authenticationContexts) != 0 {
-		authenticationContext = authenticationContexts[0]
-	}
 	configurationSession := configurationSyncSession{
 		clientID: clientID, sessionID: sessionID, writer: writer,
-		mode: authenticationMode, authentication: authenticationContext,
+		mode: authenticationContext.Mode, authentication: authenticationContext,
 		capabilities: negotiatedCapabilities,
 	}
 	vnetNegotiated := false
@@ -230,7 +222,7 @@ func (s *Service) serveControlMessages(
 			)
 		case protocol.MessageManagedConfigPrepared,
 			protocol.MessageManagedConfigApplied:
-			if authenticationMode != authentication.ModeManaged {
+			if authenticationContext.Mode != authentication.ModeManaged {
 				return false, errors.New("non-managed client sent managed configuration status")
 			}
 			var status protocol.ManagedConfigStatus

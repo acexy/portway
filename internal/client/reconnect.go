@@ -11,6 +11,7 @@ import (
 	transportfactory "github.com/acexy/portway/internal/transport/factory"
 )
 
+// Run runs the client until the parent context is canceled or a permanent failure occurs.
 func (s *Service) Run(ctx context.Context) error {
 	defer s.closeVNetManager()
 	defer s.vnetPeerRuntime.close()

@@ -25,12 +25,8 @@ func (s *Service) runControlLoop(
 	managementMode protocol.ManagementMode,
 	vnetNegotiated bool,
 	vnetPeerNegotiated bool,
-	forwardRuntimes ...*forwardManager,
+	forwardRuntime *forwardManager,
 ) error {
-	var forwardRuntime *forwardManager
-	if len(forwardRuntimes) != 0 {
-		forwardRuntime = forwardRuntimes[0]
-	}
 	sessionContext, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
 

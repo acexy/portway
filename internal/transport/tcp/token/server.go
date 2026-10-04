@@ -36,6 +36,7 @@ type Server struct {
 	results        chan acceptResult
 	nextGeneration atomic.Uint64
 	closeOnce      sync.Once
+	closeError     error
 	waitGroup      sync.WaitGroup
 }
 
@@ -140,7 +141,13 @@ func (server *Server) publish(result acceptResult) bool {
 // Accept returns the next authenticated TCP stream.
 func (server *Server) Accept(ctx context.Context) (transport.Inbound, error) {
 	select {
-	case result := <-server.results:
+	case result, open := <-server.results:
+		if !open || server.context.Err() != nil {
+			if result.inbound.Stream != nil {
+				_ = result.inbound.Stream.Close()
+			}
+			return transport.Inbound{}, net.ErrClosed
+		}
 		return result.inbound, result.err
 	case <-ctx.Done():
 		return transport.Inbound{}, ctx.Err()
@@ -151,11 +158,18 @@ func (server *Server) Accept(ctx context.Context) (transport.Inbound, error) {
 
 // Close stops accepting connections and waits for adapter-owned work to finish.
 func (server *Server) Close() error {
-	var closeError error
 	server.closeOnce.Do(func() {
 		server.cancel()
-		closeError = server.listener.Close()
+		server.closeError = server.listener.Close()
 		server.waitGroup.Wait()
+		// Producers have stopped. Only Accept can have transferred ownership;
+		// every stream still queued belongs to the adapter.
+		close(server.results)
+		for result := range server.results {
+			if result.inbound.Stream != nil {
+				_ = result.inbound.Stream.Close()
+			}
+		}
 	})
-	return closeError
+	return server.closeError
 }

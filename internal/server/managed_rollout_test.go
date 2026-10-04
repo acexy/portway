@@ -95,7 +95,7 @@ func TestManagedConfigurationRolloutCompletesOnActiveSession(t *testing.T) {
 			logging.New("test"),
 			writer,
 			[]protocol.Capability{protocol.CapabilityJSONControl},
-			authentication.ModeManaged,
+			authentication.Context{Mode: authentication.ModeManaged, ClientID: "managed-client"},
 			false,
 			nil,
 		)
@@ -216,7 +216,7 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 			logging.New("test"),
 			writer,
 			[]protocol.Capability{protocol.CapabilityJSONControl},
-			authentication.ModeManaged,
+			authentication.Context{Mode: authentication.ModeManaged, ClientID: "managed-client"},
 			false,
 			nil,
 		)
@@ -275,6 +275,7 @@ func TestManagedConfigurationActivationFailurePreservesForwardGeneration(t *test
 			return true, true
 		},
 		config.DefaultUDPConfig,
+		func(string, string) bool { return true },
 	)
 	defer forwardRegistry.Close()
 	proxyRegistry := proxyregistry.New(

@@ -37,7 +37,7 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 			}),
 			writer,
 			[]protocol.Capability{protocol.CapabilityTCP, protocol.CapabilityJSONControl},
-			authentication.ModeShared,
+			authentication.Context{Mode: authentication.ModeShared, ClientID: "client-one"},
 			false,
 			nil,
 		)
@@ -97,7 +97,7 @@ func TestServeControlMessagesRequiresInitialConfigurationSynchronization(t *test
 			logging.New("test"),
 			control.NewWriter(serverConnection),
 			[]protocol.Capability{protocol.CapabilityTCP, protocol.CapabilityJSONControl},
-			authentication.ModeShared,
+			authentication.Context{Mode: authentication.ModeShared, ClientID: "client-one"},
 			true,
 			nil,
 		)
@@ -134,7 +134,7 @@ func TestServeControlMessagesRejectsTCPMessageWithoutCapability(t *testing.T) {
 			logging.New("test"),
 			control.NewWriter(serverConnection),
 			[]protocol.Capability{protocol.CapabilityJSONControl},
-			authentication.ModeShared,
+			authentication.Context{Mode: authentication.ModeShared, ClientID: "client-one"},
 			false,
 			nil,
 		)
