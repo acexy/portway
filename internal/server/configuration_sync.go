@@ -120,16 +120,11 @@ func (s *Service) synchronizeConfiguration(
 		}
 		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
 	}
-	var proxyResult proxyregistry.SyncResult
-	committed := forwardTransaction.CommitWith(func() bool {
-		proxyResult = s.proxyRegistry.SyncAllowEmpty(
-			session.clientID,
-			session.sessionID,
-			envelope.RequestID,
-			proxyRequest,
-		)
-		return proxyResult.Status == proxyregistry.SyncStatusApplied
-	})
+	defer forwardTransaction.Retire()
+	proxyResult := s.proxyRegistry.SyncCoordinated(
+		session.clientID, session.sessionID, envelope.RequestID, proxyRequest, forwardTransaction.CommitWith,
+	)
+	committed := proxyResult.Status == proxyregistry.SyncStatusApplied
 	if !committed && proxyResult.Status == proxyregistry.SyncStatusRejected {
 		forwardTransaction.Rollback()
 		rejection := configurationProxyError(proxyResult.Error)

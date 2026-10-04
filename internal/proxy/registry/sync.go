@@ -17,7 +17,7 @@ func (manager *Registry) Sync(
 	requestID string,
 	request SyncRequest,
 ) SyncResult {
-	return manager.sync(clientID, sessionID, requestID, request, false)
+	return manager.sync(clientID, sessionID, requestID, request, false, nil)
 }
 
 // SyncAllowEmpty applies a Proxy set that may be empty when a Forward exists.
@@ -27,7 +27,7 @@ func (manager *Registry) SyncAllowEmpty(
 	requestID string,
 	request SyncRequest,
 ) SyncResult {
-	return manager.sync(clientID, sessionID, requestID, request, true)
+	return manager.sync(clientID, sessionID, requestID, request, true, nil)
 }
 
 func (manager *Registry) sync(
@@ -36,6 +36,7 @@ func (manager *Registry) sync(
 	requestID string,
 	request SyncRequest,
 	allowEmpty bool,
+	coordinate func(func() bool) bool,
 ) SyncResult {
 	manager.registrationMutex.Lock()
 	registrationLocked := true
@@ -83,7 +84,7 @@ func (manager *Registry) sync(
 		if request.Revision == cached.revision &&
 			subtle.ConstantTimeCompare(fingerprint[:], cached.fingerprint[:]) == 1 {
 			manager.mutex.Unlock()
-			return cached.result
+			return coordinateCachedSync(cached.result, coordinate)
 		}
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
@@ -106,7 +107,7 @@ func (manager *Registry) sync(
 		if subtle.ConstantTimeCompare(fingerprint[:], state.fingerprint[:]) == 1 {
 			result := state.lastResult
 			manager.mutex.Unlock()
-			return result
+			return coordinateCachedSync(result, coordinate)
 		}
 		manager.mutex.Unlock()
 		return rejectedSyncResult(
@@ -440,5 +441,5 @@ func (manager *Registry) sync(
 		nextHTTPProxies:       nextHTTPProxies,
 		declarationsByPort:    declarationsByPort,
 		declarationsByUDPPort: declarationsByUDPPort,
-	})
+	}, coordinate)
 }

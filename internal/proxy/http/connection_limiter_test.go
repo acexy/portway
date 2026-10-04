@@ -3,14 +3,37 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 )
+
+func BenchmarkConnectionLimiterSaturated(b *testing.B) {
+	for _, count := range []int{1, 128, 1024} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			limiter := NewConnectionLimiter(1)
+			for range count {
+				limiter.register(&stdhttp.Transport{})
+			}
+			release, err := limiter.acquire(context.Background())
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer release()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, err := limiter.acquire(context.Background()); !errors.Is(err, errConnectionCapacity) {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 func TestConnectionLimiterBoundsAllBindings(t *testing.T) {
 	limiter := NewConnectionLimiter(1)
@@ -59,7 +82,7 @@ func TestConnectionLimiterReclaimsIdlePoolWithoutClosingActiveRequest(t *testing
 	unregister := limiter.register(transport)
 	defer unregister()
 	defer transport.CloseIdleConnections()
-	client := &stdhttp.Client{Transport: transport}
+	client := &stdhttp.Client{Transport: limiter.track(transport)}
 	response, err := client.Get(server.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -72,21 +95,25 @@ func TestConnectionLimiterReclaimsIdlePoolWithoutClosingActiveRequest(t *testing
 		t.Fatalf("capacity pressure interrupted active response: %v", err)
 	}
 	response.Body.Close()
-	// The earlier pressure closes this connection on return to the pool.
-	// A fresh request clears that flag and leaves a genuine idle connection.
+	for range 3 {
+		response, err = client.Get(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(io.Discard, response.Body); err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+	}
+	if limiter.idle.Len() != 1 {
+		t.Fatal("idle notifications were not deduplicated")
+	}
+	// Failed admission must not mark active-only pools for deferred closure.
 	select {
 	case <-firstConnectionClosed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("connection was not closed after returning to the pool")
+		t.Fatal("capacity rejection closed an active connection on return")
+	default:
 	}
-	response, err = client.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.ReadAll(response.Body); err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
 	if len(limiter.slots) != 1 {
 		t.Fatal("expected idle connection to hold global capacity")
 	}
@@ -96,7 +123,7 @@ func TestConnectionLimiterReclaimsIdlePoolWithoutClosingActiveRequest(t *testing
 	}
 	release()
 	unregister()
-	if len(limiter.pools) != 0 {
+	if len(limiter.pools) != 0 || limiter.idle.Len() != 0 {
 		t.Fatal("closed binding retained its pool registration")
 	}
 }

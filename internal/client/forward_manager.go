@@ -284,6 +284,14 @@ func (manager *forwardManager) requestForwardOffer(
 		return nil, ctx.Err()
 	}
 	if offer.Error != nil || request.link == nil {
+		code := string(protocol.LinkErrorInvalidBinding)
+		if offer.Error != nil {
+			code = string(offer.Error.Code)
+		}
+		manager.logger.DebugWithFields("Forward Link offer rejected", map[string]any{
+			"event": "forward_link_rejected", "forward_name": runtime.configuration.Name,
+			"forward_type": runtime.configuration.Type, "error_code": code,
+		})
 		return nil, errors.New("Forward Link offer was rejected")
 	}
 	accepted = true
@@ -508,6 +516,14 @@ func forwardUDPConfig(configuration protocol.ForwardUDPConfig) config.UDPConfig 
 }
 
 func (manager *forwardManager) reportForwardFailure(linkID string, code protocol.LinkErrorCode) {
+	manager.mutex.Lock()
+	current := manager.links[linkID]
+	manager.mutex.Unlock()
+	fields := map[string]any{"event": "forward_link_failed", "error_code": code}
+	if current != nil {
+		fields["forward_name"], fields["forward_type"] = current.offer.Name, current.offer.Type
+	}
+	manager.logger.DebugWithFields("Forward Link establishment failed", fields)
 	_ = manager.writer.Write(protocol.MessageForwardLinkFailed, protocol.ForwardLinkFailed{
 		LinkID: linkID,
 		Code:   code,

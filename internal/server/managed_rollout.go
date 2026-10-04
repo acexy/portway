@@ -199,6 +199,7 @@ func (s *Service) applyManagedGeneration(
 			)
 		}
 		defer forwardTransaction.Rollback()
+		defer forwardTransaction.Retire()
 	}
 	if deactivate {
 		s.proxyRegistry.Deactivate(clientID, sessionID)
@@ -215,22 +216,13 @@ func (s *Service) applyManagedGeneration(
 		}
 		return err
 	}
-	var result proxyregistry.SyncResult
-	commitProxy := func() bool {
-		result = s.proxyRegistry.SyncAllowEmpty(
-			clientID,
-			sessionID,
-			"managed-"+preparation.Digest,
-			proxyregistry.SyncRequest{Revision: declarations.Revision, Proxies: declarations.Proxies},
-		)
-		return result.Status == proxyregistry.SyncStatusApplied
-	}
-	committed := false
+	var coordinate func(func() bool) bool
 	if forwardTransaction != nil {
-		committed = forwardTransaction.CommitWith(commitProxy)
-	} else {
-		committed = commitProxy()
+		coordinate = forwardTransaction.CommitWith
 	}
+	result := s.proxyRegistry.SyncCoordinated(clientID, sessionID, "managed-"+preparation.Digest,
+		proxyregistry.SyncRequest{Revision: declarations.Revision, Proxies: declarations.Proxies}, coordinate)
+	committed := result.Status == proxyregistry.SyncStatusApplied
 	if !committed {
 		if forwardTransaction != nil {
 			forwardTransaction.Rollback()

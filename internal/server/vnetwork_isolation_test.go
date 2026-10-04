@@ -16,6 +16,7 @@ import (
 
 func TestVNetDestinationFailureDoesNotFailSource(t *testing.T) {
 	configuration := config.DefaultServer().VirtualNetwork
+	configuration.Enabled = true
 	configuration.PacketChannels = 1
 	configuration.Nodes = []config.VNetNodeConfig{
 		{ClientID: "source", IP: "172.20.0.2"},
@@ -27,7 +28,9 @@ func TestVNetDestinationFailureDoesNotFailSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := &serverVNetRuntime{router: router, broker: vnet.NewPoolBroker()}
+	runtime := &serverVNetRuntime{router: router, broker: vnet.NewPoolBroker(), sessions: map[string]serverVNetSession{
+		"target": {sessionID: "session", poolGeneration: 1},
+	}}
 	defer runtime.broker.Close()
 	packet := make([]byte, 40)
 	packet[0], packet[9], packet[32], packet[33] = 0x45, 6, 0x50, 2

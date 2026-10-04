@@ -20,15 +20,15 @@ import (
 type Association struct {
 	Context  context.Context
 	Packets  <-chan []byte
-	write    func([]byte) error
+	write    func(context.Context, []byte) error
 	release  func(int)
 	touch    func()
 	activate func()
 }
 
 // Write sends one response datagram to the association visitor.
-func (association *Association) Write(payload []byte) error {
-	err := association.write(payload)
+func (association *Association) Write(ctx context.Context, payload []byte) error {
+	err := association.write(ctx, payload)
 	if err == nil {
 		association.touch()
 	}
@@ -58,6 +58,7 @@ type Endpoint struct {
 	context       context.Context
 	cancel        context.CancelFunc
 	packet        *net.UDPConn
+	responses     *proxyudp.ResponseWriter
 	maxDatagram   int
 	queueSize     int
 	configuration config.UDPConfig
@@ -86,7 +87,8 @@ func Listen(
 		return nil, err
 	}
 	endpoint := &Endpoint{
-		context: endpointContext, cancel: cancel, packet: packet.(*net.UDPConn), maxDatagram: configuration.MaxDatagramSize,
+		responses: proxyudp.NewResponseWriter(packet.(*net.UDPConn)),
+		context:   endpointContext, cancel: cancel, packet: packet.(*net.UDPConn), maxDatagram: configuration.MaxDatagramSize,
 		queueSize:     configuration.MaxQueuedDatagramsPerAssociation,
 		configuration: configuration, clientID: clientID, forwardName: forwardName,
 		limiter:      limiter,
@@ -154,12 +156,8 @@ func (endpoint *Endpoint) association(
 	current.association = Association{
 		Context: ctx,
 		Packets: queue,
-		write: func(payload []byte) error {
-			written, err := endpoint.packet.WriteToUDPAddrPort(payload, address)
-			if err == nil && written != len(payload) {
-				return io.ErrShortWrite
-			}
-			return err
+		write: func(writeContext context.Context, payload []byte) error {
+			return endpoint.responses.Write(writeContext, payload, address, endpoint.configuration.LinkWriteTimeout)
 		},
 		release:  lease.ReleaseQueue,
 		activate: lease.Activate,
@@ -234,7 +232,7 @@ func ForwardClient(
 	stream net.Conn,
 	packets <-chan []byte,
 	releaseQueue func(int),
-	writeResponse func([]byte) error,
+	writeResponse func(context.Context, []byte) error,
 	maxDatagram int,
 	writeTimeout time.Duration,
 ) error {
@@ -248,7 +246,7 @@ func ForwardClient(
 		for {
 			payload, err := proxyudp.ReadDatagramInto(stream, buffer, maxDatagram)
 			if err == nil {
-				err = writeResponse(payload)
+				err = writeResponse(forwardContext, payload)
 			}
 			if err != nil {
 				results <- err

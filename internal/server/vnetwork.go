@@ -389,10 +389,22 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	sessions := make([]serverVNetSession, 0, len(runtime.sessions))
 	clientIDs := make([]string, 0, len(runtime.sessions))
 	for clientID, session := range runtime.sessions {
+		if vnetAssignmentChanged(previous, configuration, clientID) {
+			current := session
+			current.poolGeneration = 0
+			current.channelsOffered = false
+			runtime.sessions[clientID] = current
+		}
 		clientIDs = append(clientIDs, clientID)
 		sessions = append(sessions, session)
 	}
 	runtime.mutex.Unlock()
+	// Invalidate every local pool before attempting any control-plane delivery.
+	for index, session := range sessions {
+		if vnetAssignmentChanged(previous, configuration, clientIDs[index]) {
+			runtime.broker.Remove(clientIDs[index], session.sessionID)
+		}
+	}
 	if previous.Enabled && !configuration.Enabled {
 		runtime.stopPeerCoordinator()
 	}
@@ -408,9 +420,14 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	if userspaceTCP != nil && (!configuration.Enabled || networkChanged) {
 		_ = userspaceTCP.Close()
 	}
+	var notifications sync.WaitGroup
 	for index, session := range sessions {
-		runtime.updateSessionConfiguration(clientIDs[index], session, previous, configuration, generation, networkChanged)
+		clientID := clientIDs[index]
+		notifications.Go(func() {
+			runtime.updateSessionConfiguration(clientID, session, previous, configuration, generation, networkChanged)
+		})
 	}
+	notifications.Wait()
 	migrationStarted := false
 	if configuration.Enabled && canMigrateDevice {
 		migrationStarted = runtime.migrateRuntimeDevice(device, previous, configuration)
@@ -421,6 +438,14 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	if configuration.Enabled && !runtime.deviceReady() && !migrationStarted {
 		runtime.prepareRuntimeDevice(configuration)
 	}
+}
+
+func vnetAssignmentChanged(previous, configuration config.VirtualNetworkConfig, clientID string) bool {
+	oldNode, oldExists := config.VNetNode(previous, clientID)
+	newNode, newExists := config.VNetNode(configuration, clientID)
+	return previous.Enabled != configuration.Enabled || previous.PacketChannels != configuration.PacketChannels ||
+		previous.CIDR != configuration.CIDR || previous.ServerIP != configuration.ServerIP ||
+		oldExists != newExists || oldNode.IP != newNode.IP
 }
 
 func (runtime *serverVNetRuntime) updateSessionConfiguration(
@@ -447,9 +472,12 @@ func (runtime *serverVNetRuntime) updateSessionConfiguration(
 		reason = protocol.VNetDeactivateNodeRemoved
 	}
 	if previous.Enabled || oldExists || oldNode.IP != newNode.IP {
-		_ = session.writer.Write(protocol.MessageVNetDeactivate, protocol.VNetDeactivate{
+		if err := session.writer.Write(protocol.MessageVNetDeactivate, protocol.VNetDeactivate{
 			ConfigGeneration: generation, Reason: reason,
-		})
+		}); err != nil {
+			_ = session.writer.Close()
+			return
+		}
 	}
 	runtime.mutex.Lock()
 	current := runtime.sessions[clientID]
@@ -463,7 +491,9 @@ func (runtime *serverVNetRuntime) updateSessionConfiguration(
 		runtime.router.RemoveClient(clientID)
 	}
 	if newExists {
-		_ = runtime.assignLocked(clientID, session.sessionID)
+		if err := runtime.assignLocked(clientID, session.sessionID); err != nil {
+			_ = session.writer.Close()
+		}
 	}
 }
 
@@ -475,14 +505,16 @@ func (runtime *serverVNetRuntime) bind(
 ) error {
 	return runtime.broker.Bind(
 		ctx, inbound.Stream, binding, inbound.Authentication,
-		func() {
+		func() error {
 			releaseAdmission()
-			_ = protocol.WriteControl(inbound.Stream, protocol.MessageVNetBindResult, protocol.VNetBindResult{
+			if err := protocol.WriteControl(inbound.Stream, protocol.MessageVNetBindResult, protocol.VNetBindResult{
 				PoolGeneration: binding.PoolGeneration,
 				ChannelIndex:   binding.ChannelIndex,
 				Status:         protocol.LinkStatusAccepted,
-			})
-			_ = inbound.Stream.SetDeadline(time.Time{})
+			}); err != nil {
+				return err
+			}
+			return inbound.Stream.SetDeadline(time.Time{})
 		},
 		func(pool *vnet.Pool) {
 			runtime.waitGroup.Go(func() {
@@ -579,6 +611,9 @@ func (runtime *serverVNetRuntime) readDevice(device vnet.Device) {
 }
 
 func (runtime *serverVNetRuntime) dispatch(destination vnet.Destination, packet []byte) error {
+	if !runtime.router.IsCurrent(destination) {
+		return vnet.ErrFlowRejected
+	}
 	if destination.Kind == vnet.DestinationServer {
 		runtime.mutex.RLock()
 		userspaceTCP := runtime.userspaceTCP
@@ -604,7 +639,13 @@ func (runtime *serverVNetRuntime) dispatch(destination vnet.Destination, packet 
 	if !exists {
 		return vnet.ErrTargetUnavailable
 	}
-	return pool.Send(packet, destination.ChannelIndex)
+	return pool.Enqueue(packet, destination.ChannelIndex, func() bool {
+		runtime.mutex.RLock()
+		session := runtime.sessions[destination.ClientID]
+		current := pool.MatchesSession(session.sessionID, session.poolGeneration)
+		runtime.mutex.RUnlock()
+		return current && runtime.router.IsCurrent(destination)
+	})
 }
 
 func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {

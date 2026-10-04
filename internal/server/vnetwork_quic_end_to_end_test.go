@@ -113,8 +113,8 @@ func testVNetPacketPoolOverQUIC(t *testing.T, packetProtocol uint8) {
 			t.Fatal(err)
 		}
 		go func() {
-			bindResults <- broker.Bind(ctx, inbound.Stream, receivedBinding, inbound.Authentication, func() {
-				_ = protocol.WriteControl(inbound.Stream, protocol.MessageVNetBindResult, protocol.VNetBindResult{
+			bindResults <- broker.Bind(ctx, inbound.Stream, receivedBinding, inbound.Authentication, func() error {
+				return protocol.WriteControl(inbound.Stream, protocol.MessageVNetBindResult, protocol.VNetBindResult{
 					PoolGeneration: receivedBinding.PoolGeneration,
 					ChannelIndex:   receivedBinding.ChannelIndex,
 					Status:         protocol.LinkStatusAccepted,

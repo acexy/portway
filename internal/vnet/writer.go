@@ -22,7 +22,11 @@ func NewPacketWriter(ctx context.Context, connection net.Conn, mtu uint16, timeo
 }
 
 func (writer *PacketWriter) Send(packet []byte) (result error) {
-	deadline := time.Now().Add(writer.timeout)
+	return writer.SendUntil(packet, time.Now().Add(writer.timeout))
+}
+
+// SendUntil includes the caller's queue residence in the write budget.
+func (writer *PacketWriter) SendUntil(packet []byte, deadline time.Time) (result error) {
 	defer func() {
 		if result != nil {
 			// A partial record cannot be retried on this byte stream.
