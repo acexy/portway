@@ -129,6 +129,19 @@ func (s *Service) serveControlMessages(
 				"reason",
 				closeSession.Reason,
 			)
+			// Release every old-session owner before acknowledging restart readiness.
+			if s.vnetRuntime != nil {
+				s.vnetRuntime.detach(clientID, sessionID)
+			}
+			if s.forwardRegistry != nil {
+				s.forwardRegistry.Remove(clientID, sessionID)
+			}
+			if s.proxyRegistry != nil {
+				s.proxyRegistry.Remove(clientID, sessionID)
+			}
+			if s.clientRegistry != nil {
+				s.clientRegistry.Remove(clientID, sessionID)
+			}
 			if err := writer.Write(protocol.MessageCloseAck, protocol.CloseAck{
 				SessionID: sessionID,
 			}); err != nil {

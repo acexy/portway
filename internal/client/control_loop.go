@@ -415,11 +415,12 @@ func (s *Service) closeControlSession(
 	sessionLogger *logging.Logger,
 	writer *control.Writer,
 ) {
-	if err := connection.SetDeadline(time.Now().Add(gracefulCloseTimeout)); err != nil {
+	deadline := time.Now().Add(gracefulCloseTimeout)
+	if err := connection.SetDeadline(deadline); err != nil {
 		sessionLogger.Error("failed to set graceful close deadline", err)
 		return
 	}
-	if err := writer.Write(protocol.MessageCloseSession, protocol.CloseSession{
+	if err := writer.WriteUntil(deadline, protocol.MessageCloseSession, protocol.CloseSession{
 		SessionID: sessionID,
 		Reason:    protocol.CloseReasonClientShutdown,
 	}); err != nil {
@@ -428,12 +429,13 @@ func (s *Service) closeControlSession(
 	}
 	sessionLogger.Trace("close session sent")
 
-	timer := time.NewTimer(gracefulCloseTimeout)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		select {
 		case envelope, ok := <-messages:
 			if !ok {
+				sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "reader_stopped"})
 				return
 			}
 			if envelope.Type != protocol.MessageCloseAck {
@@ -451,11 +453,13 @@ func (s *Service) closeControlSession(
 				)
 				return
 			}
-			sessionLogger.Trace("close acknowledgment received")
+			sessionLogger.Info("control session close acknowledged")
 			return
 		case <-readErrors:
+			sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "read_failed"})
 			return
 		case <-timer.C:
+			sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "timeout"})
 			return
 		}
 	}

@@ -5,11 +5,13 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/session"
 )
 
 func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
@@ -24,7 +26,10 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 		err              error
 	}
 	results := make(chan serverResult, 1)
-	service := &Service{}
+	service := &Service{clientRegistry: session.NewRegistry()}
+	if _, _, _, err := service.clientRegistry.Register("client-one", "", "session-one", serverConnection, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	writer := control.NewWriter(serverConnection)
 	go func() {
 		gracefullyClosed, err := service.serveControlMessages(
@@ -68,6 +73,11 @@ func TestServeControlMessagesAcceptsGracefulClose(t *testing.T) {
 	}
 	if acknowledgment.SessionID != "session-one" {
 		t.Fatalf("unexpected acknowledged session ID %q", acknowledgment.SessionID)
+	}
+
+	// The acknowledgment must already permit a fresh registration.
+	if _, created, _, err := service.clientRegistry.Register("client-one", "", "session-two", serverConnection, time.Now()); err != nil || !created {
+		t.Fatalf("client ID still reserved after close acknowledgment: %v", err)
 	}
 
 	result := <-results

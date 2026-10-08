@@ -106,14 +106,10 @@ func runHeartbeat(ctx context.Context, writer *control.Writer, heartbeat *heartb
 }
 
 func writeHeartbeat(ctx context.Context, writer *control.Writer, sequence uint64) error {
-	cancelled := make(chan struct{})
-	stopWriteCancel := context.AfterFunc(ctx, func() {
-		_ = writer.Close()
-		close(cancelled)
-	})
-	err := writer.Write(protocol.MessagePing, protocol.Heartbeat{Sequence: sequence})
-	if !stopWriteCancel() {
-		<-cancelled
+	if ctx.Err() != nil {
+		return nil
 	}
-	return err
+	// Complete an admitted frame before graceful close; cancellation must not
+	// close the shared control stream. Writer bounds stalled network I/O.
+	return writer.Write(protocol.MessagePing, protocol.Heartbeat{Sequence: sequence})
 }

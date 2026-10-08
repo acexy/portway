@@ -83,7 +83,7 @@ func (stream heartbeatWriteStream) Write(data []byte) (int, error) {
 	return stream.Conn.Write(data)
 }
 
-func TestHeartbeatCancellationInterruptsBlockedWrite(t *testing.T) {
+func TestHeartbeatCancellationPreservesControlStream(t *testing.T) {
 	local, peer := net.Pipe()
 	defer local.Close()
 	defer peer.Close()
@@ -98,10 +98,13 @@ func TestHeartbeatCancellationInterruptsBlockedWrite(t *testing.T) {
 		t.Fatal("write did not start")
 	}
 	cancel()
+	if _, err := protocol.ReadControl(peer); err != nil {
+		t.Fatalf("cancelled heartbeat closed control stream: %v", err)
+	}
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("blocked write succeeded")
+		if err != nil {
+			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancelled heartbeat write leaked")

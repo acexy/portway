@@ -661,6 +661,9 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 		}
 	}
 	runtime.mutex.Unlock()
+	if !exists || session.sessionID != sessionID {
+		return
+	}
 	runtime.revokeClientPeers(clientID, "session_closed")
 	runtime.broker.Remove(clientID, sessionID)
 }
