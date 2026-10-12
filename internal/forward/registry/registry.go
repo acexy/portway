@@ -55,12 +55,12 @@ type Stats struct {
 	ActiveBindings int
 	TCPBindings    int
 	UDPBindings    int
+	UDP            proxyudp.Stats
 }
 
-// SnapshotStats returns aggregate Forward Binding counts.
+// SnapshotStats returns separate snapshots of Forward bindings and UDP resources.
 func (registry *Registry) SnapshotStats() Stats {
 	registry.mutex.RLock()
-	defer registry.mutex.RUnlock()
 	stats := Stats{Bindings: len(registry.bindings)}
 	for _, current := range registry.bindings {
 		if current.active {
@@ -72,6 +72,8 @@ func (registry *Registry) SnapshotStats() Stats {
 			stats.UDPBindings++
 		}
 	}
+	registry.mutex.RUnlock()
+	stats.UDP = registry.udpLimiter.SnapshotStats()
 	return stats
 }
 

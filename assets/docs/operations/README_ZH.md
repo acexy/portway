@@ -41,7 +41,7 @@ ok
 
 ## 指标
 
-`GET /metrics` 返回兼容 Prometheus 文本格式的当前快照。现有指标均为 Gauge：
+`GET /metrics` 返回兼容 Prometheus 文本格式的当前快照。除以 `_total` 结尾的 Counter 外，其余指标均为 Gauge：
 
 | 指标 | 含义 |
 |---|---|
@@ -60,11 +60,58 @@ ok
 | `portway_udp_associations` | UDP Association 总数，包括 Pending Association |
 | `portway_udp_pending_associations` | 等待 Data Link 的 UDP Association 数量 |
 | `portway_udp_queued_bytes` | 当前在内存中排队的 UDP Payload 字节数 |
+| `portway_forward_links_pending` | 等待绑定的 Forward Data Link |
+| `portway_forward_links_active` | 已绑定的 Forward Data Link |
+| `portway_forward_bindings` | 已注册 Forward Binding |
+| `portway_forward_bindings_active` | Active Forward Binding |
+| `portway_forward_bindings_inactive` | 非 Active Forward Binding，不等同故障数 |
+| `portway_tcp_forwards` | 已注册 TCP Forward |
+| `portway_udp_forwards` | 已注册 UDP Forward |
+| `portway_forward_udp_associations` | 服务端 Forward UDP Association，含 Pending |
+| `portway_forward_udp_pending_associations` | 服务端 Forward Pending UDP Association |
+| `portway_forward_udp_queued_bytes` | 服务端 Forward UDP 排队 Payload 字节 |
+| `portway_tcp_mirror_groups` | TCP Mirror 组 |
+| `portway_udp_mirror_groups` | UDP Mirror 组 |
+| `portway_tcp_mirror_members` | TCP Mirror 已注册成员 |
+| `portway_udp_mirror_members` | UDP Mirror 已注册成员 |
+| `portway_vnet_enabled` | VNet 配置是否启用 |
+| `portway_vnet_device_open` | 服务端运行时是否持有 VNet Device |
+| `portway_vnet_device_preparing` | 服务端是否正在准备 VNet Device |
+| `portway_vnet_nodes` | 已配置 VNet 节点数 |
+| `portway_vnet_sessions` | 已附着的 VNet 控制 Session 数 |
+| `portway_vnet_configuration_generation` | VNet 配置 Generation |
+| `portway_vnet_pools_pending` | Pending Channel Pool 数 |
+| `portway_vnet_pools_active` | 已发布的 Active Channel Pool 数 |
+| `portway_vnet_channels_active` | Active Pool 中 Channel 数 |
+| `portway_vnet_flows` | 服务端 Router Flow 记录数 |
+| `portway_vnet_peer_pairs` | 服务端协调的 Peer Pair 数 |
+| `portway_vnet_direct_pairs` | 服务端已激活的 Direct Pair 数 |
+| `portway_vnet_queued_packets` | 服务端发送队列包数 |
+| `portway_vnet_userspace_flows` | 服务端用户态 Flow 记录数 |
+| `portway_vnet_tcp_connections` | 服务端用户态 TCP Connection 数 |
+| `portway_vnet_udp_associations` | 服务端用户态 UDP Association 数 |
+| `portway_vnet_capacity_rejected_total` | Router 容量拒绝累计数 |
+| `portway_vnet_rate_rejected_total` | Router 速率拒绝累计数 |
+| `portway_vnet_policy_rejected_total` | Router 策略拒绝累计数 |
+| `portway_vnet_queue_rejected_total` | 发送队列准入拒绝累计数 |
+| `portway_vnet_queue_expired_total` | 排队包过期累计数 |
+| `portway_vnet_queue_revoked_total` | 排队包授权撤销累计数 |
+| `portway_vnet_queue_write_failed_total` | 排队包写入失败累计数 |
 
 指标不会使用 ClientID、SessionID、ProxyName、LinkID、域名或来源 IP 作为标签，
 从而保持基数有界，并避免通过监控接口暴露部署身份。
 
-第一版只报告当前资源水位，暂不提供请求、失败或流量累计 Counter。
+Counter 在同一服务端 VNet Runtime 生命周期内累计，配置更新、Session 重连、Pool
+重建和 VNet 禁用不会主动清零；新 Runtime 或进程重启可以重置。未创建的组件返回零。
+
+这些指标仅描述服务端观察到的资源与事件：Forward Active 不保证客户端 Listener 或
+目标服务可达；VNet Device 存在不保证系统路由或端到端通信健康；Attached Session
+不等于 Active 节点；Direct Pair 表示协调状态，不保证当前直连路径健康。P2P 直连流量
+不经过服务端，本接口不报告完整 VNet 流量。正常 Relay 回退不是整体故障。
+
+各组件快照分别采集，跨组件读数不保证全局事务一致性。Forward UDP 与 Proxy UDP
+分别记账。局部功能不可用不会使全局 `/readyz` 失败。接口不会主动探测目标、修复
+系统网络或返回身份、地址、策略明细；保护 Listener 的既有要求保持不变。
 
 ## 探针示例
 

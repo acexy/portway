@@ -31,6 +31,9 @@ func TestPoolBrokerActivatesCompletePoolAndTransfersPacket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare pool: %v", err)
 	}
+	if stats := broker.Statistics(); stats.Pending != 1 || stats.Active != 0 || stats.ActiveChannels != 0 {
+		t.Fatalf("pending pool statistics: %+v", stats)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	peers := make([]net.Conn, len(offers))
@@ -61,6 +64,9 @@ func TestPoolBrokerActivatesCompletePoolAndTransfersPacket(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("pool did not activate")
 	}
+	if stats := broker.Statistics(); stats.Pending != 0 || stats.Active != 1 || stats.ActiveChannels != 2 {
+		t.Fatalf("activated pool statistics: %+v", stats)
+	}
 	packet := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
 	sendError := make(chan error, 1)
 	go func() { sendError <- pool.Send(packet, 0) }()
@@ -81,6 +87,9 @@ func TestPoolBrokerActivatesCompletePoolAndTransfersPacket(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("binding did not stop")
 		}
+	}
+	if stats := broker.Statistics(); stats != (PoolStatistics{}) {
+		t.Fatalf("cancelled pool retained resources: %+v", stats)
 	}
 	for _, peer := range peers {
 		peer.Close()

@@ -42,3 +42,21 @@ func (runtime *UserspaceTCP) Statistics() UserspaceStatistics {
 	defer runtime.mutex.Unlock()
 	return UserspaceStatistics{len(runtime.flows) + len(runtime.hostFlows), len(runtime.connections), len(runtime.associations)}
 }
+
+// PoolStatistics counts registered pools and channels in published active pools.
+type PoolStatistics struct {
+	Pending        int
+	Active         int
+	ActiveChannels int
+}
+
+// Statistics takes a bounded snapshot without retaining pool connections.
+func (broker *PoolBroker) Statistics() PoolStatistics {
+	broker.mutex.Lock()
+	defer broker.mutex.Unlock()
+	statistics := PoolStatistics{Pending: len(broker.pending), Active: len(broker.active)}
+	for _, pool := range broker.active {
+		statistics.ActiveChannels += len(pool.channels)
+	}
+	return statistics
+}
