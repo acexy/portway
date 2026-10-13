@@ -59,7 +59,11 @@ func ElevateCurrentProcess() (exitCode int, relaunched bool, err error) {
 	if windowsProcessElevated() {
 		return 0, false, nil
 	}
-	return elevateWindowsProcess(os.Args[1:])
+	arguments, err := windowsConsoleArguments(os.Args[1:])
+	if err != nil {
+		return 0, false, err
+	}
+	return elevateWindowsProcess(arguments)
 }
 
 func elevateWindowsProcess(arguments []string) (exitCode int, relaunched bool, err error) {
@@ -89,6 +93,14 @@ func elevateWindowsProcess(arguments []string) (exitCode int, relaunched bool, e
 		parameters: parametersPointer, directory: directoryPointer, show: windowsShowNormal,
 	}
 	info.size = uint32(unsafe.Sizeof(info))
+	if len(arguments) > 0 && arguments[0] == windowsConsoleHelper {
+		info.show = 0 // Attach to the caller's console before starting the command.
+		stop, err := ignoreWindowsConsoleInterrupts()
+		if err != nil {
+			return 0, false, err
+		}
+		defer stop()
+	}
 	success, _, callError := windowsShellExecuteEx.Call(uintptr(unsafe.Pointer(&info)))
 	if success == 0 {
 		if errors.Is(callError, windows.ERROR_CANCELLED) {
@@ -106,6 +118,9 @@ func elevateWindowsProcess(arguments []string) (exitCode int, relaunched bool, e
 	var childExitCode uint32
 	if err := windows.GetExitCodeProcess(info.process, &childExitCode); err != nil {
 		return 0, false, fmt.Errorf("read elevated Windows process exit code: %w", err)
+	}
+	if childExitCode != 0 && len(arguments) > 0 && arguments[0] == windowsConsoleHelper {
+		_, _ = fmt.Fprintf(os.Stderr, "elevated Windows command exited with code %d\n", childExitCode)
 	}
 	return int(childExitCode), true, nil
 }
@@ -158,6 +173,16 @@ func readWindowsUninstallResponse(reader io.Reader, nonce string, exitCode int) 
 }
 
 func runWindowsElevationHelper(arguments []string) (bool, error) {
+	if len(arguments) > 0 && arguments[0] == windowsConsoleHelper {
+		if !windowsProcessElevated() {
+			return true, errors.New("Windows console helper requires administrator privileges")
+		}
+		exitCode, err := runWindowsConsoleCommand(arguments[1:])
+		if err != nil {
+			return true, err
+		}
+		os.Exit(exitCode)
+	}
 	if len(arguments) == 0 || arguments[0] != windowsUninstallHelper {
 		return false, nil
 	}
