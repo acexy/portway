@@ -22,11 +22,11 @@ func TestPolicyDisablesAndReactivatesDormantBinding(t *testing.T) {
 	enabled := false
 	registry := New(broker, func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) {
 		return true, enabled
-	}, config.DefaultUDPConfig)
+	}, config.DefaultUDPConfig, func(string, string) bool { return true })
 	declaration := protocol.ForwardDeclaration{
 		Name: "database", Type: protocol.ForwardTypeTCP, TargetIP: "127.0.0.1", TargetPort: 5432,
 	}
-	var messages bytes.Buffer
+	var messages policyTestBuffer
 	results, forwardError := registry.Sync(
 		"client", "session", control.NewWriter(&messages), authentication.Context{Mode: authentication.ModeShared},
 		10, []protocol.ForwardDeclaration{declaration},
@@ -36,7 +36,7 @@ func TestPolicyDisablesAndReactivatesDormantBinding(t *testing.T) {
 	}
 
 	enabled = true
-	registry.ApplyPolicy(2, func(authentication.Context, protocol.ForwardDeclaration) bool { return true })
+	registry.ApplyPolicy(2, func(authentication.Context, protocol.ForwardDeclaration) bool { return true }).Deliver(ctx)
 	offer := registry.Offer("client", "session", protocol.RequestForwardLink{
 		RequestID: "request", Name: declaration.Name, Type: declaration.Type, BindingID: results[0].BindingID,
 	})
@@ -45,7 +45,7 @@ func TestPolicyDisablesAndReactivatesDormantBinding(t *testing.T) {
 	}
 
 	enabled = false
-	registry.ApplyPolicy(3, func(authentication.Context, protocol.ForwardDeclaration) bool { return true })
+	registry.ApplyPolicy(3, func(authentication.Context, protocol.ForwardDeclaration) bool { return true }).Deliver(ctx)
 	offer = registry.Offer("client", "session", protocol.RequestForwardLink{
 		RequestID: "disabled", Name: declaration.Name, Type: declaration.Type, BindingID: results[0].BindingID,
 	})
@@ -69,6 +69,7 @@ func TestUDPBindingCarriesServerRuntimeLimits(t *testing.T) {
 		broker,
 		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
 		func() config.UDPConfig { return configuration },
+		func(string, string) bool { return true },
 	)
 	results, forwardError := registry.Sync(
 		"client", "session", control.NewWriter(&bytes.Buffer{}), authentication.Context{}, 10,
@@ -89,6 +90,7 @@ func TestSyncTransactionRollbackPreservesPublishedBinding(t *testing.T) {
 		broker,
 		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
 		config.DefaultUDPConfig,
+		func(string, string) bool { return true },
 	)
 	declaration := protocol.ForwardDeclaration{
 		Name: "database", Type: protocol.ForwardTypeTCP,
@@ -128,6 +130,7 @@ func TestSyncTransactionCompanionFailurePreservesPublishedBinding(t *testing.T) 
 		broker,
 		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
 		config.DefaultUDPConfig,
+		func(string, string) bool { return true },
 	)
 	declaration := protocol.ForwardDeclaration{
 		Name: "database", Type: protocol.ForwardTypeTCP,
@@ -170,6 +173,7 @@ func TestSyncTransactionDoesNotBlockAndRejectsStaleCommit(t *testing.T) {
 		broker,
 		func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) { return true, true },
 		config.DefaultUDPConfig,
+		func(string, string) bool { return true },
 	)
 	declaration := protocol.ForwardDeclaration{
 		Name: "database", Type: protocol.ForwardTypeTCP,
@@ -211,3 +215,9 @@ func TestSyncTransactionDoesNotBlockAndRejectsStaleCommit(t *testing.T) {
 		t.Fatal("stale Forward candidate replaced a newer generation")
 	}
 }
+
+// policyTestBuffer models a bounded control stream without network scheduling.
+type policyTestBuffer struct{ bytes.Buffer }
+
+func (*policyTestBuffer) SetWriteDeadline(time.Time) error { return nil }
+func (*policyTestBuffer) Close() error                     { return nil }

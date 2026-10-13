@@ -31,7 +31,7 @@ func TestEndpointPreservesUDPAssociationDatagrams(t *testing.T) {
 			select {
 			case payload := <-association.Packets:
 				association.ReleaseQueue(len(payload))
-				_ = association.Write(payload)
+				_ = association.Write(association.Context, payload)
 			case <-association.Context.Done():
 			}
 		})
@@ -77,7 +77,7 @@ func TestForwardClientCancellationInterruptsBlockedFrameWrite(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- ForwardClient(ctx, stream, packets, func(int) { close(dequeued) },
-			func([]byte) error { return nil }, 64, time.Minute)
+			func(context.Context, []byte) error { return nil }, 64, time.Minute)
 	}()
 	select {
 	case <-dequeued:
@@ -100,7 +100,7 @@ func TestForwardClientClosedQueueTerminates(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- ForwardClient(context.Background(), stream, packets, func(int) {},
-			func([]byte) error { return nil }, 64, time.Second)
+			func(context.Context, []byte) error { return nil }, 64, time.Second)
 	}()
 	select {
 	case err := <-done:
@@ -109,6 +109,38 @@ func TestForwardClientClosedQueueTerminates(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("closed queue kept sending empty datagrams")
+	}
+}
+
+func TestForwardClientCancellationReachesResponseWriter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, peer := net.Pipe()
+	defer peer.Close()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- ForwardClient(ctx, stream, make(chan []byte), func(int) {},
+			func(responseContext context.Context, _ []byte) error {
+				close(started)
+				<-responseContext.Done()
+				return responseContext.Err()
+			}, 64, time.Minute)
+	}()
+	_ = peer.SetWriteDeadline(time.Now().Add(time.Second))
+	if err := proxyudp.NewDatagramWriter(peer, 64).Write([]byte("reply")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("response did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("response task did not join")
 	}
 }
 

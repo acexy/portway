@@ -21,28 +21,36 @@ import (
 func (s *Service) runControlSession(
 	ctx context.Context,
 	resumeSessionID string,
-) (sessionID string, established bool, err error) {
-	transportSession, err := s.transport.Connect(ctx)
+	recoveryDeadline time.Time,
+) (sessionID string, established bool, stable bool, err error) {
+	setupDeadline := time.Now().Add(controlSetupTimeout)
+	if !recoveryDeadline.IsZero() && recoveryDeadline.Before(setupDeadline) {
+		setupDeadline = recoveryDeadline
+	}
+	setupContext, cancelSetup := context.WithDeadline(ctx, setupDeadline)
+	defer cancelSetup()
+	setupDeadline, _ = setupContext.Deadline()
+	transportSession, err := s.transport.Connect(setupContext)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	defer transportSession.Close()
 	connection := transportSession.ControlStream()
 
-	stopHelloContextClose := context.AfterFunc(ctx, func() {
+	stopHelloContextClose := context.AfterFunc(setupContext, func() {
 		connection.Close()
 	})
 	defer stopHelloContextClose()
 
-	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
-		return "", false, fmt.Errorf("set control hello deadline: %w", err)
+	if err := connection.SetDeadline(minDeadline(time.Now().Add(controlHelloTimeout), setupDeadline)); err != nil {
+		return "", false, false, fmt.Errorf("set control hello deadline: %w", err)
 	}
 	envelope, err := protocol.ReadControl(connection)
 	if err != nil {
-		return "", false, classifyControlProtocolError(err)
+		return "", false, false, classifyControlProtocolError(err)
 	}
 	if envelope.Type != protocol.MessageServerIdentification {
-		return "", false, fmt.Errorf(
+		return "", false, false, fmt.Errorf(
 			"%w: expected %s, got %s",
 			transport.ErrProtocol,
 			protocol.MessageServerIdentification,
@@ -51,17 +59,17 @@ func (s *Service) runControlSession(
 	}
 	var serverIdentification protocol.ServerIdentification
 	if err := protocol.DecodePayload(envelope, &serverIdentification); err != nil {
-		return "", false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
+		return "", false, false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
 	}
 	if err := protocol.ValidateServerIdentification(serverIdentification); err != nil {
-		return "", false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
+		return "", false, false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
 	}
 	if err := protocol.WriteControl(
 		connection,
 		protocol.MessageClientIdentification,
 		s.identification,
 	); err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	s.logger.TraceWithField(
 		"server identification accepted",
@@ -89,7 +97,7 @@ func (s *Service) runControlSession(
 		ResumeSessionID: resumeSessionID,
 		Capabilities:    capabilities,
 	}); err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	s.logger.TraceWithField(
 		"client hello sent",
@@ -99,13 +107,13 @@ func (s *Service) runControlSession(
 
 	envelope, err = protocol.ReadControl(connection)
 	if err != nil {
-		return "", false, classifyControlProtocolError(err)
+		return "", false, false, classifyControlProtocolError(err)
 	}
 	if envelope.Type == protocol.MessageSessionError {
-		return "", false, decodeRemoteSessionError(envelope)
+		return "", false, false, decodeRemoteSessionError(envelope)
 	}
 	if envelope.Type != protocol.MessageServerHello {
-		return "", false, fmt.Errorf(
+		return "", false, false, fmt.Errorf(
 			"%w: expected %s, got %s",
 			transport.ErrProtocol,
 			protocol.MessageServerHello,
@@ -114,12 +122,12 @@ func (s *Service) runControlSession(
 	}
 	var serverHello protocol.ServerHello
 	if err := protocol.DecodePayload(envelope, &serverHello); err != nil {
-		return "", false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
+		return "", false, false, fmt.Errorf("%w: %w", transport.ErrProtocol, err)
 	}
 	if serverHello.ManagementMode == "" ||
 		serverHello.ManagementMode == protocol.ManagementModeShared {
 		if serverHello.ClientID != s.configuration.Authentication.ClientID {
-			return "", false, fmt.Errorf(
+			return "", false, false, fmt.Errorf(
 				"%w: server returned unexpected client ID: expected %q, got %q",
 				transport.ErrProtocol,
 				s.configuration.Authentication.ClientID,
@@ -128,13 +136,13 @@ func (s *Service) runControlSession(
 		}
 	} else {
 		if err := config.ValidateClientID(serverHello.ClientID); err != nil {
-			return "", false, fmt.Errorf(
+			return "", false, false, fmt.Errorf(
 				"%w: server returned invalid authenticated client ID",
 				transport.ErrProtocol,
 			)
 		}
 		if serverHello.ClientID != s.configuration.Authentication.ClientID {
-			return "", false, fmt.Errorf(
+			return "", false, false, fmt.Errorf(
 				"%w: server returned a client ID that does not match the configured identity",
 				transport.ErrProtocol,
 			)
@@ -142,20 +150,29 @@ func (s *Service) runControlSession(
 		s.setRuntimeClientID(serverHello.ClientID)
 	}
 	if serverHello.SessionID == "" {
-		return "", false, fmt.Errorf(
+		return "", false, false, fmt.Errorf(
 			"%w: server returned an empty session ID",
 			transport.ErrProtocol,
 		)
 	}
 	if !coll.SliceContains(serverHello.Capabilities, protocol.CapabilityJSONControl) {
-		return "", false, fmt.Errorf(
+		return "", false, false, fmt.Errorf(
 			"%w: server did not negotiate json-control capability",
 			transport.ErrProtocol,
 		)
 	}
+	// The server has already replaced a resumed identity. Every later failure
+	// must retain that identity without claiming completed initialization.
+	if serverHello.Resumed {
+		defer func() {
+			if sessionID == "" {
+				sessionID = serverHello.SessionID
+			}
+		}()
+	}
 	writer := control.NewWriter(connection)
-	if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
-		return "", false, fmt.Errorf("set proxy registration deadline: %w", err)
+	if err := connection.SetDeadline(minDeadline(time.Now().Add(controlHelloTimeout), setupDeadline)); err != nil {
+		return "", false, false, fmt.Errorf("set proxy registration deadline: %w", err)
 	}
 	var forwardRuntime *forwardManager
 	switch serverHello.ManagementMode {
@@ -165,17 +182,17 @@ func (s *Service) runControlSession(
 			len(s.configuration.Proxies),
 			len(s.configuration.Forwards),
 		); err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		if err := validateForwardCapabilities(
 			s.configuration.Forwards,
 			serverHello.Capabilities,
 		); err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		result, err := s.syncConfiguration(connection, writer)
 		if err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		if len(s.configuration.Forwards) != 0 {
 			forwardRuntime, err = newForwardManager(
@@ -188,11 +205,11 @@ func (s *Service) runControlSession(
 				s.runtimeForwardSnapshot(),
 			)
 			if err != nil {
-				return "", false, transport.Permanent(err)
+				return "", false, false, transport.Permanent(err)
 			}
 			defer func() { forwardRuntime.close() }()
 			if err := forwardRuntime.applyBindings(result.Forwards); err != nil {
-				return "", false, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
+				return "", false, false, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
 			}
 			if err := forwardRuntime.start(); err != nil {
 				forwardRuntime.close()
@@ -203,7 +220,7 @@ func (s *Service) runControlSession(
 						SessionID: serverHello.SessionID, Reason: protocol.CloseReasonClientShutdown,
 					})
 				}
-				return "", false, transport.Permanent(err)
+				return "", false, false, transport.Permanent(err)
 			}
 		}
 	case protocol.ManagementModeManaged:
@@ -212,28 +229,29 @@ func (s *Service) runControlSession(
 			len(s.configuration.Proxies),
 			len(s.configuration.Forwards),
 		); err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		forwardRuntime, err = s.receiveManagedConfiguration(
 			ctx, connection, writer, serverHello.ClientID, serverHello.SessionID, transportSession,
 		)
 		if err != nil {
-			// A resumed server session already owns the new ID, even if runtime
-			// activation fails. Retain that ID without claiming successful setup.
-			return serverHello.SessionID, false, err
+			return "", false, false, err
 		}
 		defer func() { forwardRuntime.close() }()
 	default:
-		return "", false, fmt.Errorf(
+		return "", false, false, fmt.Errorf(
 			"%w: server returned unsupported management mode %q",
 			transport.ErrProtocol,
 			serverHello.ManagementMode,
 		)
 	}
 	if err := connection.SetDeadline(time.Time{}); err != nil {
-		return "", false, fmt.Errorf("clear control hello deadline: %w", err)
+		return "", false, false, fmt.Errorf("clear control hello deadline: %w", err)
 	}
-	stopHelloContextClose()
+	if !stopHelloContextClose() {
+		return "", false, false, setupContext.Err()
+	}
+	cancelSetup()
 
 	sessionLogger := s.logger.WithFields(map[string]any{
 		"client_id":  serverHello.ClientID,
@@ -244,7 +262,8 @@ func (s *Service) runControlSession(
 		"event":   "control_session_established",
 		"resumed": serverHello.Resumed,
 	})
-	return serverHello.SessionID, true, s.runControlLoop(
+	heartbeat := newHeartbeatState(time.Now())
+	loopError := s.runControlLoop(
 		ctx,
 		connection,
 		serverHello.SessionID,
@@ -255,7 +274,9 @@ func (s *Service) runControlSession(
 		coll.SliceContains(serverHello.Capabilities, protocol.CapabilityVNetIPv4),
 		coll.SliceContains(serverHello.Capabilities, protocol.CapabilityVNetP2PQUIC),
 		forwardRuntime,
+		heartbeat,
 	)
+	return serverHello.SessionID, true, heartbeat.stable(), loopError
 }
 
 func validateLocalProxiesForManagementMode(
@@ -369,4 +390,11 @@ func classifyControlProtocolError(err error) error {
 		return fmt.Errorf("%w: %w", transport.ErrProtocol, err)
 	}
 	return err
+}
+
+func minDeadline(first, second time.Time) time.Time {
+	if first.Before(second) {
+		return first
+	}
+	return second
 }

@@ -51,6 +51,7 @@ func BenchmarkVNetPoolParallelFlows(b *testing.B) {
 
 func BenchmarkVNetRouterDispatch(b *testing.B) {
 	configuration := config.DefaultServer().VirtualNetwork
+	configuration.Enabled = true
 	configuration.PacketChannels = 4
 	configuration.Nodes = []config.VNetNodeConfig{
 		{ClientID: "source", IP: "172.20.0.2"},

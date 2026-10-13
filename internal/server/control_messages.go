@@ -28,21 +28,13 @@ func (s *Service) serveControlMessages(
 	sessionLogger *logging.Logger,
 	writer *control.Writer,
 	negotiatedCapabilities []protocol.Capability,
-	authenticationMode authentication.Mode,
+	authenticationContext authentication.Context,
 	initialProxySynchronizationRequired bool,
 	onProxySynchronizationApplied func(),
-	authenticationContexts ...authentication.Context,
 ) (gracefullyClosed bool, err error) {
-	authenticationContext := authentication.Context{
-		Mode:     authenticationMode,
-		ClientID: clientID,
-	}
-	if len(authenticationContexts) != 0 {
-		authenticationContext = authenticationContexts[0]
-	}
 	configurationSession := configurationSyncSession{
 		clientID: clientID, sessionID: sessionID, writer: writer,
-		mode: authenticationMode, authentication: authenticationContext,
+		mode: authenticationContext.Mode, authentication: authenticationContext,
 		capabilities: negotiatedCapabilities,
 	}
 	vnetNegotiated := false
@@ -61,7 +53,6 @@ func (s *Service) serveControlMessages(
 		); err != nil {
 			return err
 		}
-		s.proxyRegistry.Activate(clientID, sessionID)
 		if initialProxySynchronizationRequired {
 			if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
 				return errors.New("initialized client session is no longer current")
@@ -71,6 +62,7 @@ func (s *Service) serveControlMessages(
 			}
 			initialProxySynchronizationRequired = false
 		}
+		s.proxyRegistry.Activate(clientID, sessionID)
 		if onProxySynchronizationApplied != nil {
 			onProxySynchronizationApplied()
 		}
@@ -137,6 +129,19 @@ func (s *Service) serveControlMessages(
 				"reason",
 				closeSession.Reason,
 			)
+			// Release every old-session owner before acknowledging restart readiness.
+			if s.vnetRuntime != nil {
+				s.vnetRuntime.detach(clientID, sessionID)
+			}
+			if s.forwardRegistry != nil {
+				s.forwardRegistry.Remove(clientID, sessionID)
+			}
+			if s.proxyRegistry != nil {
+				s.proxyRegistry.Remove(clientID, sessionID)
+			}
+			if s.clientRegistry != nil {
+				s.clientRegistry.Remove(clientID, sessionID)
+			}
 			if err := writer.Write(protocol.MessageCloseAck, protocol.CloseAck{
 				SessionID: sessionID,
 			}); err != nil {
@@ -230,7 +235,7 @@ func (s *Service) serveControlMessages(
 			)
 		case protocol.MessageManagedConfigPrepared,
 			protocol.MessageManagedConfigApplied:
-			if authenticationMode != authentication.ModeManaged {
+			if authenticationContext.Mode != authentication.ModeManaged {
 				return false, errors.New("non-managed client sent managed configuration status")
 			}
 			var status protocol.ManagedConfigStatus

@@ -36,7 +36,7 @@ func withClientConnectionContext(err error, fields map[string]any) error {
 func clientConnectionLogFields(inbound transport.Inbound, err error) map[string]any {
 	fields := map[string]any{
 		"connection_role": connectionRoleName(inbound.Role),
-		"remote_address": inbound.RemoteAddress,
+		"remote_address":  inbound.RemoteAddress,
 	}
 	var connectionError *clientConnectionContextError
 	if errors.As(err, &connectionError) {
@@ -70,7 +70,6 @@ func (s *Service) monitorClients(ctx context.Context) {
 			suspendedClients, expiredClients := s.clientRegistry.Sweep(
 				now,
 				controlHeartbeatTimeout,
-				clientRecoveryWindow,
 			)
 			for _, suspended := range suspendedClients {
 				if !s.suspendClient(suspended) {

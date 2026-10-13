@@ -71,7 +71,6 @@ func TestSuspendClientPreservesProxyActivationAfterHeartbeatRecovery(t *testing.
 	suspended, _ := clientRegistry.Sweep(
 		now.Add(controlHeartbeatTimeout),
 		controlHeartbeatTimeout,
-		clientRecoveryWindow,
 	)
 	if len(suspended) != 1 {
 		t.Fatalf("expected one suspended session, got %v", suspended)

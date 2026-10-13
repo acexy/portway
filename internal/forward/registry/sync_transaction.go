@@ -16,6 +16,7 @@ type SyncTransaction struct {
 	next      map[string]*binding
 	previous  []*binding
 	results   []protocol.ForwardResult
+	retire    func()
 }
 
 // BeginSync validates and prepares a complete Forward generation without
@@ -91,6 +92,7 @@ func (transaction *SyncTransaction) Results() []protocol.ForwardResult {
 // Commit atomically publishes the prepared Forward generation if the observed
 // Session generation and current policy still match.
 func (transaction *SyncTransaction) Commit() bool {
+	defer transaction.Retire()
 	return transaction.CommitWith(nil)
 }
 
@@ -98,6 +100,8 @@ func (transaction *SyncTransaction) Commit() bool {
 // optional companion publication. The companion runs only after the Forward
 // generation and policy have been revalidated; while it runs, concurrent
 // Forward removal or policy publication cannot invalidate the transaction.
+// The companion must publish prepared memory state only. Call Retire after
+// releasing all publication locks, including the companion's outer barrier.
 func (transaction *SyncTransaction) CommitWith(companion func() bool) bool {
 	if transaction == nil || transaction.registry == nil {
 		return false
@@ -130,11 +134,22 @@ func (transaction *SyncTransaction) CommitWith(companion func() bool) bool {
 		registry.bindings[key] = current
 	}
 	transaction.registry = nil
-	registry.mutex.Unlock()
-	for _, previous := range transaction.previous {
-		registry.broker.CancelBinding(previous.bindingID)
+	transaction.retire = func() {
+		for _, previous := range transaction.previous {
+			registry.broker.CancelBinding(previous.bindingID)
+		}
 	}
+	registry.mutex.Unlock()
 	return true
+}
+
+// Retire releases resources from a successfully replaced generation, once.
+func (transaction *SyncTransaction) Retire() {
+	if transaction != nil && transaction.retire != nil {
+		retire := transaction.retire
+		transaction.retire = nil
+		retire()
+	}
 }
 
 func (transaction *SyncTransaction) matchesPreviousLocked() bool {

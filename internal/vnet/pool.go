@@ -34,32 +34,39 @@ type PoolSpec struct {
 type pendingChannel struct {
 	ticketDigest [sha256.Size]byte
 	connection   net.Conn
+	ready        bool
 }
 
 type pendingPool struct {
-	spec      PoolSpec
-	channels  []pendingChannel
-	expiresAt time.Time
-	timer     *time.Timer
-	done      chan struct{}
-	closeOnce sync.Once
+	queueCounters *packetQueueCounters
+	spec          PoolSpec
+	channels      []pendingChannel
+	expiresAt     time.Time
+	timer         *time.Timer
+	done          chan struct{}
+	closeOnce     sync.Once
 }
 
 // Pool is one atomically activated set of VNet packet channels.
 type Pool struct {
-	spec      PoolSpec
-	channels  []net.Conn
-	writers   []*PacketWriter
-	done      chan struct{}
-	closeOnce sync.Once
+	queueCounters *packetQueueCounters
+	spec          PoolSpec
+	channels      []net.Conn
+	writers       []*PacketWriter
+	done          chan struct{}
+	closeOnce     sync.Once
+	queueMutex    sync.Mutex
+	queues        []chan queuedPacket
+	writersDone   sync.WaitGroup
 }
 
 // PoolBroker owns pending and active VNet channel pool generations.
 type PoolBroker struct {
-	mutex   sync.Mutex
-	pending map[string]*pendingPool
-	active  map[string]*Pool
-	closed  bool
+	queueCounters packetQueueCounters
+	mutex         sync.Mutex
+	pending       map[string]*pendingPool
+	active        map[string]*Pool
+	closed        bool
 }
 
 // NewPoolBroker creates an empty VNet pool broker.
@@ -82,10 +89,11 @@ func (broker *PoolBroker) Prepare(spec PoolSpec, lifetime time.Duration) ([]prot
 	}
 	expiresAt := time.Now().Add(lifetime)
 	pending := &pendingPool{
-		spec:      spec,
-		channels:  make([]pendingChannel, int(spec.ChannelCount)),
-		expiresAt: expiresAt,
-		done:      make(chan struct{}),
+		queueCounters: &broker.queueCounters,
+		spec:          spec,
+		channels:      make([]pendingChannel, int(spec.ChannelCount)),
+		expiresAt:     expiresAt,
+		done:          make(chan struct{}),
 	}
 	offers := make([]protocol.OpenVNetChannel, int(spec.ChannelCount))
 	for index := range pending.channels {
@@ -123,7 +131,7 @@ func (broker *PoolBroker) Bind(
 	connection net.Conn,
 	binding protocol.BindVNetChannel,
 	authenticationContext authentication.Context,
-	onBound func(),
+	onBound func() error,
 	onActive func(*Pool),
 ) error {
 	ticket, err := base64.RawURLEncoding.DecodeString(binding.Ticket)
@@ -149,25 +157,42 @@ func (broker *PoolBroker) Bind(
 		return errors.New("invalid VNet channel binding")
 	}
 	channel.connection = connection
+	broker.mutex.Unlock()
+	// Claim the ticket before I/O, but never expose an unacknowledged channel.
+	stopCancellation := context.AfterFunc(ctx, func() {
+		broker.RemoveGeneration(binding.ClientID, binding.SessionID, binding.PoolGeneration)
+	})
+	defer stopCancellation()
+	if onBound != nil {
+		if err := onBound(); err != nil {
+			broker.RemoveGeneration(binding.ClientID, binding.SessionID, binding.PoolGeneration)
+			return err
+		}
+	}
+	broker.mutex.Lock()
+	if broker.pending[binding.ClientID] != pending || ctx.Err() != nil || !time.Now().Before(pending.expiresAt) {
+		broker.mutex.Unlock()
+		broker.RemoveGeneration(binding.ClientID, binding.SessionID, binding.PoolGeneration)
+		return net.ErrClosed
+	}
+	channel.ready = true
 	complete := true
 	for index := range pending.channels {
-		complete = complete && pending.channels[index].connection != nil
+		complete = complete && pending.channels[index].ready
 	}
 	var pool *Pool
+	var previous *Pool
 	if complete {
 		delete(broker.pending, binding.ClientID)
 		pending.timer.Stop()
 		pool = activatePendingPool(pending)
-		previous := broker.active[binding.ClientID]
+		previous = broker.active[binding.ClientID]
 		broker.active[binding.ClientID] = pool
-		if previous != nil {
-			previous.Close()
-		}
 	}
 	done := pending.done
 	broker.mutex.Unlock()
-	if onBound != nil {
-		onBound()
+	if previous != nil {
+		previous.Close()
 	}
 	if pool != nil && onActive != nil {
 		onActive(pool)
@@ -177,6 +202,9 @@ func (broker *PoolBroker) Bind(
 		broker.RemoveGeneration(binding.ClientID, binding.SessionID, binding.PoolGeneration)
 		return ctx.Err()
 	case <-done:
+		if pool != nil {
+			pool.writersDone.Wait()
+		}
 		return nil
 	}
 }
@@ -296,14 +324,27 @@ func (pool *Pool) RunReaders(handler func([]byte) error) error {
 
 // Close closes every channel in the pool exactly once.
 func (pool *Pool) Close() error {
+	err := pool.stop()
+	pool.writersDone.Wait()
+	return err
+}
+
+func (pool *Pool) stop() error {
 	var result error
 	pool.closeOnce.Do(func() {
+		pool.queueMutex.Lock()
 		close(pool.done)
+		pool.queueMutex.Unlock()
 		for _, connection := range pool.channels {
 			result = errors.Join(result, connection.Close())
 		}
 	})
 	return result
+}
+
+// MatchesSession checks the immutable owner of an outbound pool.
+func (pool *Pool) MatchesSession(sessionID string, generation uint64) bool {
+	return generation != 0 && pool.spec.SessionID == sessionID && pool.spec.PoolGeneration == generation
 }
 
 func bindingMatchesPool(
@@ -324,12 +365,18 @@ func activatePendingPool(pending *pendingPool) *Pool {
 		channels[index] = pending.channels[index].connection
 		writers[index] = NewPacketWriter(context.Background(), channels[index], pending.spec.MTU, pending.spec.WriteTimeout)
 	}
-	return &Pool{
-		spec:     pending.spec,
-		channels: channels,
-		writers:  writers,
-		done:     pending.done,
+	pool := &Pool{
+		queueCounters: pending.queueCounters,
+		spec:          pending.spec,
+		channels:      channels,
+		writers:       writers,
+		done:          pending.done,
 	}
+	if pool.queueCounters == nil {
+		pool.queueCounters = new(packetQueueCounters)
+	}
+	pool.startWriters()
+	return pool
 }
 
 func closePendingPool(pending *pendingPool) {

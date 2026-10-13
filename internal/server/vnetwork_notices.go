@@ -83,9 +83,12 @@ func (runtime *serverVNetRuntime) reportVNetStatistics() {
 		return
 	}
 	statistics := runtime.router.Statistics()
+	queues := runtime.broker.QueueStatistics()
 	fields := map[string]any{"event": "vnet_statistics", "flows": statistics.Active,
 		"capacity_rejected": statistics.CapacityRejected, "rate_rejected": statistics.RateRejected, "policy_rejected": statistics.PolicyRejected,
 		"peer_pairs": pairs, "direct_pairs": active}
+	fields["queued_packets"], fields["queue_rejected"] = queues.Queued, queues.Rejected
+	fields["queue_expired"], fields["queue_revoked"], fields["queue_write_failed"] = queues.Expired, queues.Revoked, queues.WriteFailed
 	if userspace != nil {
 		local := userspace.Statistics()
 		fields["userspace_flows"], fields["tcp_connections"], fields["udp_associations"] = local.Flows, local.TCPConnections, local.UDPAssociations

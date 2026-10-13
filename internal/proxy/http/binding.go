@@ -120,7 +120,7 @@ func NewBinding(
 	}
 	binding.proxy = &httputil.ReverseProxy{
 		Transport: routingTransport{
-			regular: binding.transport,
+			regular: connectionLimiter.track(binding.transport),
 			upgrade: binding.upgradeTransport,
 		},
 		Rewrite: func(request *httputil.ProxyRequest) {

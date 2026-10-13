@@ -19,7 +19,7 @@ func udpLimitRegistry(t *testing.T, configuration *config.UDPConfig) (*Registry,
 	broker := link.NewBroker(context.Background())
 	registry := New(broker, func(authentication.Context, protocol.ForwardDeclaration) (bool, bool) {
 		return true, true
-	}, func() config.UDPConfig { return *configuration })
+	}, func() config.UDPConfig { return *configuration }, func(string, string) bool { return true })
 	t.Cleanup(func() { registry.Close(); broker.Close() })
 	requests := make(map[string]protocol.RequestForwardLink)
 	for _, clientID := range []string{"one", "two"} {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"time"
 
@@ -25,24 +24,37 @@ func (s *Service) runControlLoop(
 	managementMode protocol.ManagementMode,
 	vnetNegotiated bool,
 	vnetPeerNegotiated bool,
-	forwardRuntimes ...*forwardManager,
+	forwardRuntime *forwardManager,
+	heartbeat *heartbeatState,
 ) error {
-	var forwardRuntime *forwardManager
-	if len(forwardRuntimes) != 0 {
-		forwardRuntime = forwardRuntimes[0]
-	}
 	sessionContext, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
 
 	// The reader remains available during the bounded graceful-close window
 	// after the process context is canceled so it can deliver close_ack.
 	readerContext, cancelReader := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancelReader()
-	// Keep one decoded control message ready so a Pong that has already arrived
-	// is not hidden behind reader scheduling when the watchdog checks liveness.
+	// Business dispatch has one bounded slot; Pong updates bypass this queue.
 	messages := make(chan protocol.Envelope, 1)
 	readErrors := make(chan error, 1)
-	go readControlMessages(readerContext, connection, messages, readErrors)
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		readControlMessages(readerContext, connection, messages, readErrors, heartbeat)
+	}()
+	defer func() { cancelReader(); _ = connection.Close(); <-readerDone }()
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		if err := runHeartbeat(sessionContext, writer, heartbeat, sessionLogger); err != nil {
+			select {
+			case readErrors <- err:
+			default:
+			}
+			cancelSession()
+			_ = connection.Close()
+		}
+	}()
+	defer func() { cancelSession(); <-heartbeatDone }()
 	linkManager := newLinkManager(
 		sessionContext,
 		sessionLogger,
@@ -66,14 +78,6 @@ func (s *Service) runControlLoop(
 		defer vnetManager.detachSession()
 	}
 
-	heartbeatTicker := time.NewTicker(heartbeatInterval)
-	defer heartbeatTicker.Stop()
-	watchdogTicker := time.NewTicker(heartbeatCheckInterval)
-	defer watchdogTicker.Stop()
-
-	lastPongAt := time.Now()
-	var sentSequence uint64
-	var acknowledgedSequence uint64
 	var pendingManagedProxies []config.ProxyConfig
 	var pendingManagedForwardRuntime *forwardManager
 	var pendingManagedStatus *protocol.ManagedConfigStatus
@@ -88,6 +92,8 @@ func (s *Service) runControlLoop(
 	for {
 		select {
 		case <-ctx.Done():
+			cancelSession()
+			<-heartbeatDone
 			if pendingManagedForwardRuntime != nil {
 				pendingManagedForwardRuntime.close()
 			}
@@ -107,6 +113,11 @@ func (s *Service) runControlLoop(
 			return err
 		case envelope, ok := <-messages:
 			if !ok {
+				select {
+				case err := <-readErrors:
+					return err
+				default:
+				}
 				return errors.New("control message reader stopped")
 			}
 			switch envelope.Type {
@@ -223,25 +234,6 @@ func (s *Service) runControlLoop(
 					return classifyControlProtocolError(err)
 				}
 				forwardRuntime.cancelLink(cancellation.LinkID)
-			case protocol.MessagePong:
-				var heartbeat protocol.Heartbeat
-				if err := protocol.DecodePayload(envelope, &heartbeat); err != nil {
-					return classifyControlProtocolError(err)
-				}
-				if heartbeat.Sequence <= acknowledgedSequence || heartbeat.Sequence > sentSequence {
-					return fmt.Errorf(
-						"%w: unexpected heartbeat sequence %d",
-						transport.ErrProtocol,
-						heartbeat.Sequence,
-					)
-				}
-				acknowledgedSequence = heartbeat.Sequence
-				lastPongAt = time.Now()
-				sessionLogger.TraceWithField(
-					"heartbeat pong received",
-					"sequence",
-					heartbeat.Sequence,
-				)
 			case protocol.MessageSessionError:
 				return decodeRemoteSessionError(envelope)
 			case protocol.MessageOpenLink:
@@ -383,27 +375,6 @@ func (s *Service) runControlLoop(
 					envelope.Type,
 				)
 			}
-		case <-heartbeatTicker.C:
-			if sentSequence == math.MaxUint64 {
-				return errors.New("heartbeat sequence exhausted")
-			}
-			sentSequence++
-			if err := writer.Write(protocol.MessagePing, protocol.Heartbeat{
-				Sequence: sentSequence,
-			}); err != nil {
-				return err
-			}
-			sessionLogger.TraceWithField("heartbeat ping sent", "sequence", sentSequence)
-		case <-watchdogTicker.C:
-			if len(messages) != 0 {
-				continue
-			}
-			if time.Since(lastPongAt) >= heartbeatTimeout {
-				return fmt.Errorf(
-					"server heartbeat timed out after %s",
-					heartbeatTimeout,
-				)
-			}
 		}
 	}
 }
@@ -444,11 +415,12 @@ func (s *Service) closeControlSession(
 	sessionLogger *logging.Logger,
 	writer *control.Writer,
 ) {
-	if err := connection.SetDeadline(time.Now().Add(gracefulCloseTimeout)); err != nil {
+	deadline := time.Now().Add(gracefulCloseTimeout)
+	if err := connection.SetDeadline(deadline); err != nil {
 		sessionLogger.Error("failed to set graceful close deadline", err)
 		return
 	}
-	if err := writer.Write(protocol.MessageCloseSession, protocol.CloseSession{
+	if err := writer.WriteUntil(deadline, protocol.MessageCloseSession, protocol.CloseSession{
 		SessionID: sessionID,
 		Reason:    protocol.CloseReasonClientShutdown,
 	}); err != nil {
@@ -457,12 +429,13 @@ func (s *Service) closeControlSession(
 	}
 	sessionLogger.Trace("close session sent")
 
-	timer := time.NewTimer(gracefulCloseTimeout)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		select {
 		case envelope, ok := <-messages:
 			if !ok {
+				sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "reader_stopped"})
 				return
 			}
 			if envelope.Type != protocol.MessageCloseAck {
@@ -480,11 +453,13 @@ func (s *Service) closeControlSession(
 				)
 				return
 			}
-			sessionLogger.Trace("close acknowledgment received")
+			sessionLogger.Info("control session close acknowledged")
 			return
 		case <-readErrors:
+			sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "read_failed"})
 			return
 		case <-timer.C:
+			sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "timeout"})
 			return
 		}
 	}
@@ -495,6 +470,7 @@ func readControlMessages(
 	connection net.Conn,
 	messages chan<- protocol.Envelope,
 	readErrors chan<- error,
+	heartbeat *heartbeatState,
 ) {
 	defer close(messages)
 
@@ -506,6 +482,16 @@ func readControlMessages(
 			case <-ctx.Done():
 			}
 			return
+		}
+		if envelope.Type == protocol.MessagePong {
+			if err := heartbeat.accept(envelope, time.Now()); err != nil {
+				select {
+				case readErrors <- err:
+				case <-ctx.Done():
+				}
+				return
+			}
+			continue
 		}
 		select {
 		case messages <- envelope:

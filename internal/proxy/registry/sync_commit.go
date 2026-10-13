@@ -36,7 +36,7 @@ type syncCommitPreparation struct {
 	declarationsByUDPPort map[uint16]protocol.ProxyDeclaration
 }
 
-func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResult {
+func (manager *Registry) publishSync(preparation syncCommitPreparation) (SyncResult, func()) {
 	clientID := preparation.clientID
 	sessionID := preparation.sessionID
 	requestID := preparation.requestID
@@ -50,16 +50,12 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 	existingHTTPProxies := preparation.existingHTTPProxies
 	reusableEndpoints := preparation.reusableEndpoints
 	reusableUDPEndpoints := preparation.reusableUDPEndpoints
-	newEndpoints := preparation.newEndpoints
-	newUDPEndpoints := preparation.newUDPEndpoints
 	nextProxies := preparation.nextProxies
 	nextUDPProxies := preparation.nextUDPProxies
 	nextHTTPProxies := preparation.nextHTTPProxies
 	declarationsByPort := preparation.declarationsByPort
 	declarationsByUDPPort := preparation.declarationsByUDPPort
 
-	manager.registrationMutex.Lock()
-	defer manager.registrationMutex.Unlock()
 	result := SyncResult{
 		Revision: request.Revision,
 		Status:   SyncStatusApplied,
@@ -69,20 +65,12 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 	state, exists := manager.clients[clientID]
 	if !exists || state.sessionID != sessionID || state.revision != baseRevision {
 		manager.mutex.Unlock()
-		rollbackSyncPreparation(
-			newEndpoints,
-			newUDPEndpoints,
-			nextUDPProxies,
-			existingUDPProxies,
-			nextHTTPProxies,
-			existingHTTPProxies,
-		)
 		return rejectedSyncResult(
 			request.Revision,
 			ErrorSessionInactive,
 			"",
 			"client session changed during registration",
-		)
+		), nil
 	}
 	if reservationRejection := manager.managedReservationRejectionLocked(
 		clientID,
@@ -90,15 +78,7 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 		request,
 	); reservationRejection != nil {
 		manager.mutex.Unlock()
-		rollbackSyncPreparation(
-			newEndpoints,
-			newUDPEndpoints,
-			nextUDPProxies,
-			existingUDPProxies,
-			nextHTTPProxies,
-			existingHTTPProxies,
-		)
-		return *reservationRejection
+		return *reservationRejection, nil
 	}
 	for port, endpoint := range reusableEndpoints {
 		group := manager.tcpMirrorGroups[port]
@@ -109,15 +89,12 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 			existingProxies[manager.endpointBindings[port].declaration.Name] == manager.endpointBindings[port]
 		if manager.endpoints[port] != endpoint || !mirrorOwned && !ordinaryOwned {
 			manager.mutex.Unlock()
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
-			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
 				ErrorPortConflict,
 				declarationsByPort[port].Name,
 				"remote port ownership changed during registration",
-			)
+			), nil
 		}
 	}
 	for port, endpoint := range reusableUDPEndpoints {
@@ -129,26 +106,19 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 			existingUDPProxies[currentBinding.declaration.Name] == currentBinding
 		if manager.udpEndpoints[port] != endpoint || !mirrorOwned && !ordinaryOwned {
 			manager.mutex.Unlock()
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
-			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
 				ErrorPortConflict,
 				declarationsByUDPPort[port].Name,
 				"UDP remote port ownership changed during registration",
-			)
+			), nil
 		}
 	}
 	for _, binding := range nextHTTPProxies {
 		owner := manager.httpDomains[binding.declaration.Domain]
 		if owner != nil && existingHTTPProxies[owner.declaration.Name] != owner {
 			manager.mutex.Unlock()
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
-			closeUDPBindings(nextUDPProxies, existingUDPProxies)
-			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
-			return rejectedSyncResult(request.Revision, ErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration")
+			return rejectedSyncResult(request.Revision, ErrorDomainConflict, binding.declaration.Name, "HTTP domain ownership changed during registration"), nil
 		}
 	}
 
@@ -255,23 +225,18 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation) SyncResul
 	state.cacheSyncRequest(requestID, request.Revision, fingerprint, result)
 	manager.mutex.Unlock()
 
-	for _, endpoint := range newEndpoints {
-		endpoint.Start()
+	return result, func() {
+		closeTCPEndpoints(removedEndpoints)
+		closeUDPEndpoints(removedUDPEndpoints)
+		for _, name := range removedProxyNames {
+			manager.linkBroker.CancelBinding(existingProxies[name].bindingID)
+		}
+		for _, binding := range removedHTTPBindings {
+			binding.close()
+		}
+		for _, binding := range removedUDPBindings {
+			manager.linkBroker.CancelBinding(binding.bindingID)
+			binding.close()
+		}
 	}
-	for _, endpoint := range newUDPEndpoints {
-		endpoint.Start()
-	}
-	closeTCPEndpoints(removedEndpoints)
-	closeUDPEndpoints(removedUDPEndpoints)
-	for _, name := range removedProxyNames {
-		manager.linkBroker.CancelBinding(existingProxies[name].bindingID)
-	}
-	for _, binding := range removedHTTPBindings {
-		binding.close()
-	}
-	for _, binding := range removedUDPBindings {
-		manager.linkBroker.CancelBinding(binding.bindingID)
-		binding.close()
-	}
-	return result
 }

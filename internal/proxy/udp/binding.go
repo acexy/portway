@@ -110,11 +110,14 @@ func (binding *Binding) HandleDatagram(source netip.AddrPort, payload []byte) {
 		return
 	}
 	association.releaseSource = releaseSource
+	binding.waitGroup.Add(1)
 	binding.associations[source] = association
 	binding.mutex.Unlock()
 
 	if !association.enqueue(payload) {
 		association.Close()
+		association.complete(true)
+		association.finish()
 		return
 	}
 	go association.start()
@@ -189,6 +192,9 @@ type association struct {
 	releaseSource   func()
 	closeOnce       sync.Once
 	finishOnce      sync.Once
+	completionMutex sync.Mutex
+	startFinished   bool
+	forwardFinished bool
 	done            chan struct{}
 	responseEnabled bool
 }
@@ -217,9 +223,10 @@ func newAssociation(
 }
 
 func (association *association) enqueue(payload []byte) bool {
-	if !association.lease.ReserveQueue(len(payload)) {
+	if len(association.queue) == cap(association.queue) || !association.lease.ReserveQueue(len(payload)) {
 		return false
 	}
+	payload = append([]byte(nil), payload...)
 	select {
 	case association.queue <- payload:
 		association.touch()
@@ -231,6 +238,7 @@ func (association *association) enqueue(payload []byte) bool {
 }
 
 func (association *association) start() {
+	defer association.complete(true)
 	err := association.binding.broker.ServeStreamContext(
 		association.context,
 		association.target,
@@ -259,13 +267,21 @@ func (association *association) forward(
 	})
 	defer stopAssociation()
 	stopBroker := context.AfterFunc(brokerContext, func() {
+		association.cancel()
 		stream.Close()
 	})
 	defer stopBroker()
 	defer association.Close()
 
 	writeErrors := make(chan error, 1)
+	writerDone := make(chan struct{})
+	defer func() {
+		association.cancel()
+		_ = stream.Close()
+		<-writerDone
+	}()
 	go func() {
+		defer close(writerDone)
 		frameBuffer := make([]byte, frameHeaderSize+association.binding.configuration.MaxDatagramSize)
 		fail := func(err error) {
 			writeErrors <- err
@@ -309,7 +325,7 @@ func (association *association) forward(
 			return errors.Join(err, receiveWriteError(writeErrors))
 		}
 		if association.responseEnabled {
-			if err := association.binding.endpoint.WriteTo(payload, association.source); err != nil {
+			if err := association.binding.endpoint.WriteTo(association.context, payload, association.source, association.binding.configuration.LinkWriteTimeout); err != nil {
 				return err
 			}
 		}
@@ -323,8 +339,27 @@ func (association *association) forward(
 }
 
 func (association *association) finish() {
+	association.complete(false)
+}
+
+// A pending cancellation can arrive while the open_link write is still in
+// progress. Neither task may release the shared lease on the other's behalf.
+func (association *association) complete(start bool) {
+	association.completionMutex.Lock()
+	if start {
+		association.startFinished = true
+	} else {
+		association.forwardFinished = true
+	}
+	finished := association.startFinished && association.forwardFinished
+	association.completionMutex.Unlock()
+	if !finished {
+		return
+	}
 	association.finishOnce.Do(func() {
+		association.lease.Close()
 		close(association.done)
+		association.binding.waitGroup.Done()
 	})
 }
 
@@ -347,6 +382,5 @@ func (association *association) Close() {
 		association.cancel()
 		association.binding.remove(association)
 		association.releaseSource()
-		association.lease.Close()
 	})
 }

@@ -132,7 +132,6 @@ func TestClientRegistryKeepsInitializingSessionOutOfHeartbeatLifecycle(t *testin
 	suspended, expired := registry.Sweep(
 		now.Add(time.Hour),
 		10*time.Second,
-		60*time.Second,
 	)
 	if len(suspended) != 0 || len(expired) != 0 {
 		t.Fatalf("initializing session entered heartbeat lifecycle: %v %v", suspended, expired)
@@ -413,7 +412,6 @@ func TestClientRegistryExpiresAfterRecoveryWindow(t *testing.T) {
 	suspendedClientIDs, expiredClients := registry.Sweep(
 		now.Add(10*time.Second),
 		10*time.Second,
-		60*time.Second,
 	)
 	if len(suspendedClientIDs) != 1 || len(expiredClients) != 0 {
 		t.Fatalf(
@@ -426,7 +424,6 @@ func TestClientRegistryExpiresAfterRecoveryWindow(t *testing.T) {
 	_, expiredClients = registry.Sweep(
 		now.Add(70*time.Second),
 		10*time.Second,
-		60*time.Second,
 	)
 	if len(expiredClients) != 1 || expiredClients[0].ClientID != "client-one" {
 		t.Fatalf("unexpected expiration result: %#v", expiredClients)

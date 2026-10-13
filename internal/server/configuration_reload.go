@@ -14,6 +14,7 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
+	forwardregistry "github.com/acexy/portway/internal/forward/registry"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
@@ -298,11 +299,12 @@ func (s *Service) applyConfigurationCandidateContext(
 			_ = revoked.Connection.Close()
 		}
 	}
+	var forwardNotifications *forwardregistry.PolicyNotifications
 	if s.forwardRegistry != nil &&
 		(!reflect.DeepEqual(current.Forwards, candidate.Forwards) ||
 			!reflect.DeepEqual(current.GovernedClients, candidate.GovernedClients) ||
 			!reflect.DeepEqual(current.ManagedClients, candidate.ManagedClients)) {
-		s.forwardRegistry.ApplyPolicy(
+		forwardNotifications = s.forwardRegistry.ApplyPolicy(
 			candidate.Generation,
 			func(context authentication.Context, declaration protocol.ForwardDeclaration) bool {
 				return forwardPolicyChanged(current, candidate, context, declaration)
@@ -312,6 +314,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	if virtualNetworkChanged && s.vnetRuntime != nil {
 		s.vnetRuntime.applyConfiguration(candidate.VirtualNetwork, candidate.Generation)
 	}
+	forwardNotifications.Deliver(ctx)
 	s.rolloutManagedConfigurations(ctx, managedChanges, candidate)
 	s.logger.WithComponent("config_reload").InfoWithFields(
 		"configuration reload applied",

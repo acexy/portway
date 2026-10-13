@@ -36,10 +36,11 @@ const (
 
 // Destination identifies the VNet endpoint and channel selected for one packet.
 type Destination struct {
-	Kind         DestinationKind
-	ClientID     string
-	VirtualIP    netip.Addr
-	ChannelIndex uint8
+	PolicyGeneration uint64
+	Kind             DestinationKind
+	ClientID         string
+	VirtualIP        netip.Addr
+	ChannelIndex     uint8
 }
 
 type endpointPolicy struct {
@@ -49,6 +50,7 @@ type endpointPolicy struct {
 }
 
 type routingPolicy struct {
+	enabled        bool
 	serverIP       netip.Addr
 	packetChannels uint8
 	byIP           map[netip.Addr]endpointPolicy
@@ -72,6 +74,7 @@ type flowState struct {
 
 // Router owns the bounded authorization state for VNet packet routing.
 type Router struct {
+	policyGeneration    uint64
 	mutex               sync.Mutex
 	admission           flowAdmission
 	capacityRejected    uint64
@@ -115,11 +118,12 @@ func (router *Router) ApplyPolicy(configuration config.VirtualNetworkConfig) err
 	router.mutex.Lock()
 	previous := router.policy
 	router.policy = policy
+	router.policyGeneration++
 	for key, state := range router.flows {
 		firstIP, secondIP := netip.AddrFrom4(key.firstIP), netip.AddrFrom4(key.secondIP)
 		first, firstExists := policy.byIP[firstIP]
 		second, secondExists := policy.byIP[secondIP]
-		if !firstExists || !secondExists ||
+		if !policy.enabled || !firstExists || !secondExists ||
 			first.clientID != previous.byIP[firstIP].clientID || second.clientID != previous.byIP[secondIP].clientID ||
 			!policy.serviceAllowed(state.serviceIP, state.protocol, state.servicePort) {
 			router.removeFlowLocked(key)
@@ -137,6 +141,7 @@ func (router *Router) RemoveClient(clientID string) {
 	if !exists {
 		return
 	}
+	router.policyGeneration++
 	address := clientIP.As4()
 	for key := range router.flows {
 		if key.firstIP == address || key.secondIP == address {
@@ -198,6 +203,10 @@ func (router *Router) RouteServerPacket(packet []byte, now time.Time) (Destinati
 }
 
 func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error) {
+	if !router.policy.enabled {
+		router.policyRejected++
+		return Destination{}, ErrFlowRejected
+	}
 	target, exists := router.policy.byIP[flow.DestinationIP]
 	if !exists {
 		router.policyRejected++
@@ -272,7 +281,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 	if err != nil {
 		return Destination{}, err
 	}
-	destination := Destination{VirtualIP: flow.DestinationIP, ChannelIndex: channelIndex}
+	destination := Destination{VirtualIP: flow.DestinationIP, ChannelIndex: channelIndex, PolicyGeneration: router.policyGeneration}
 	if flow.DestinationIP == router.policy.serverIP {
 		destination.Kind = DestinationServer
 	} else {
@@ -280,6 +289,13 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 		destination.ClientID = target.clientID
 	}
 	return destination, nil
+}
+
+// IsCurrent rejects queued packets authorized before a policy publication.
+func (router *Router) IsCurrent(destination Destination) bool {
+	router.mutex.Lock()
+	defer router.mutex.Unlock()
+	return router.policy.enabled && router.policyGeneration == destination.PolicyGeneration
 }
 
 func (router *Router) removeExpiredLocked(now time.Time, limit int) {
@@ -320,6 +336,7 @@ func buildRoutingPolicy(configuration config.VirtualNetworkConfig) (routingPolic
 		return routingPolicy{}, errors.New("invalid VNet routing configuration")
 	}
 	policy := routingPolicy{
+		enabled:        configuration.Enabled,
 		serverIP:       serverIP,
 		packetChannels: uint8(configuration.PacketChannels),
 		byIP:           make(map[netip.Addr]endpointPolicy, len(configuration.Nodes)+1),

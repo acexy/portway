@@ -207,7 +207,10 @@ func (broker *Broker) ServeStreamContext(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	linkID, err := broker.request(target, onCancel, nil, handler)
+	// The Broker owns and bounds control writers independently of association
+	// lifetime. Once admitted, either cancellation or the stream handler owns
+	// completion; a late control-write failure must not finish an active owner.
+	linkID, err := broker.ServeStreamAsync(target, onCancel, handler)
 	if err != nil {
 		return err
 	}

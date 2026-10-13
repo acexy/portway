@@ -15,7 +15,8 @@ import (
 
 const summaryInterval = time.Minute
 
-// DatagramHandler receives one validated public UDP datagram.
+// DatagramHandler borrows one validated datagram until the call returns.
+// A handler retaining the payload must copy it after reserving capacity.
 type DatagramHandler func(netip.AddrPort, []byte)
 
 // Endpoint owns one public UDP socket and its read loop.
@@ -23,6 +24,7 @@ type Endpoint struct {
 	context            context.Context
 	logger             *logging.Logger
 	connection         *net.UDPConn
+	responses          *ResponseWriter
 	filter             *ipfilter.Filter
 	maxSize            int
 	mutex              sync.RWMutex
@@ -53,6 +55,7 @@ func Listen(
 		return nil, err
 	}
 	return &Endpoint{
+		responses:  NewResponseWriter(connection),
 		context:    ctx,
 		logger:     logger,
 		connection: connection,
@@ -103,9 +106,7 @@ func (endpoint *Endpoint) readLoop() {
 		if handler == nil {
 			continue
 		}
-		payload := make([]byte, length)
-		copy(payload, buffer[:length])
-		handler(source, payload)
+		handler(source, buffer[:length])
 	}
 }
 
@@ -141,9 +142,8 @@ func (endpoint *Endpoint) summaryLoop() {
 }
 
 // WriteTo writes one response datagram to its public visitor.
-func (endpoint *Endpoint) WriteTo(payload []byte, destination netip.AddrPort) error {
-	_, err := endpoint.connection.WriteToUDPAddrPort(payload, destination)
-	return err
+func (endpoint *Endpoint) WriteTo(ctx context.Context, payload []byte, destination netip.AddrPort, timeout time.Duration) error {
+	return endpoint.responses.Write(ctx, payload, destination, timeout)
 }
 
 // Close stops the read loop and releases the UDP socket.

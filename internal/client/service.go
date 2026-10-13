@@ -41,10 +41,6 @@ var errClientDeclaredProxiesRequired = errors.New(
 	"shared and governed clients require at least one local proxy or forward",
 )
 
-var errReconnectPeriodExceeded = errors.New(
-	"control connection retry period exceeded 8 hours",
-)
-
 func (registrationError *configurationRegistrationError) Error() string {
 	return fmt.Sprintf(
 		"configuration registration rejected: kind=%q resource=%q code=%s message=%s",
@@ -61,8 +57,7 @@ func (sessionError *remoteSessionError) Error() string {
 
 // Service manages the client process lifecycle.
 //
-// It owns the control connection, reconnect lifecycle, proxy registration,
-// and session-scoped TCP links.
+// It owns control-session recovery, Proxy and Forward runtimes, and VNet resources.
 type Service struct {
 	logger          *logging.Logger
 	configuration   config.ClientConfig
@@ -89,5 +84,3 @@ func NewService(logger *logging.Logger, configuration config.ClientConfig) *Serv
 		runtimeForwards: append([]config.ForwardConfig(nil), configuration.Forwards...),
 	}
 }
-
-// Run runs the client until the parent context is canceled.

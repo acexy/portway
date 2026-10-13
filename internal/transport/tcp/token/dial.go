@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
@@ -15,7 +16,7 @@ func DialToken(ctx context.Context, address string, token string, role protocol.
 	if token == "" {
 		return nil, ErrAuthentication
 	}
-	rawConnection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	rawConnection, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("dial %q: %w", address, err)
 	}
