@@ -52,8 +52,8 @@ func TestVNetReloadPublishesPolicyBeforePeerNotices(t *testing.T) {
 	runtime := newServerVNetRuntime(context.Background(), logging.New("test"), configuration, newBlockingVNetDevice())
 	defer runtime.Close()
 	notice := &pausedPeerNotice{started: make(chan struct{}), resume: make(chan struct{})}
-	runtime.attach("client-a", "session-a", 1, authentication.Context{}, control.NewWriter(notice))
-	runtime.attach("client-b", "session-b", 1, authentication.Context{}, control.NewWriter(discardConnection{}))
+	runtime.attach("client-a", "session-a", 1, authentication.Context{}, control.NewWriter(notice), false)
+	runtime.attach("client-b", "session-b", 1, authentication.Context{}, control.NewWriter(discardConnection{}), false)
 	key, first, second := peerPairKey("client-a", "client-b")
 	runtime.peerPairs[key] = &serverVNetPeerPair{generation: 1, firstID: first, secondID: second, active: true}
 	candidate := configuration

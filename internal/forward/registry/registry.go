@@ -297,7 +297,7 @@ func (registry *Registry) ApplyPolicy(
 				BindingID: current.bindingID, Generation: generation,
 			}
 			if current.declaration.Type == protocol.ForwardTypeUDP {
-				activation.UDP = protocolUDPConfig(configuration)
+				activation.UDP = config.ForwardUDPProtocolConfig(configuration)
 			}
 			notifications.add(current.writer, protocol.MessageForwardBindingActivated, activation)
 		}
@@ -307,27 +307,6 @@ func (registry *Registry) ApplyPolicy(
 		registry.broker.CancelBinding(bindingID)
 	}
 	return notifications
-}
-
-func protocolUDPConfig(configuration config.UDPConfig) *protocol.ForwardUDPConfig {
-	return &protocol.ForwardUDPConfig{
-		AssociationIdleTimeout:                configuration.AssociationIdleTimeout,
-		LinkWriteTimeout:                      configuration.LinkWriteTimeout,
-		MaxDatagramSize:                       configuration.MaxDatagramSize,
-		MaxAssociations:                       configuration.MaxAssociations,
-		MaxAssociationsPerClient:              configuration.MaxAssociationsPerClient,
-		MaxAssociationsPerForward:             configuration.MaxAssociationsPerProxy,
-		MaxAssociationsPerSourceIP:            configuration.MaxAssociationsPerSourceIP,
-		MaxPendingAssociations:                configuration.MaxPendingAssociations,
-		MaxPendingAssociationsPerClient:       configuration.MaxPendingAssociationsPerClient,
-		MaxPendingAssociationsPerForward:      configuration.MaxPendingAssociationsPerProxy,
-		MaxNewAssociationsPerSecond:           configuration.MaxNewAssociationsPerSecond,
-		MaxNewAssociationsPerSecondPerClient:  configuration.MaxNewAssociationsPerSecondPerClient,
-		MaxNewAssociationsPerSecondPerForward: configuration.MaxNewAssociationsPerSecondPerProxy,
-		MaxQueuedDatagramsPerAssociation:      configuration.MaxQueuedDatagramsPerAssociation,
-		MaxQueuedBytesPerAssociation:          configuration.MaxQueuedBytesPerAssociation,
-		MaxQueuedBytes:                        configuration.MaxQueuedBytes,
-	}
 }
 
 // Close closes every Forward Binding.

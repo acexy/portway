@@ -6,20 +6,13 @@ import (
 	"net"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
+
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 )
-
-func containsCapability(capabilities []protocol.Capability, expected protocol.Capability) bool {
-	for _, capability := range capabilities {
-		if capability == expected {
-			return true
-		}
-	}
-	return false
-}
 
 func (s *Service) serveControlMessages(
 	connection net.Conn,
@@ -29,21 +22,15 @@ func (s *Service) serveControlMessages(
 	writer *control.Writer,
 	negotiatedCapabilities []protocol.Capability,
 	authenticationContext authentication.Context,
-	initialProxySynchronizationRequired bool,
-	onProxySynchronizationApplied func(),
+	initialConfigurationSynchronizationRequired bool,
+	onConfigurationApplied func(),
 ) (gracefullyClosed bool, err error) {
 	configurationSession := configurationSyncSession{
 		clientID: clientID, sessionID: sessionID, writer: writer,
 		mode: authenticationContext.Mode, authentication: authenticationContext,
 		capabilities: negotiatedCapabilities,
 	}
-	vnetNegotiated := false
-	for _, capability := range negotiatedCapabilities {
-		if capability == protocol.CapabilityVNetIPv4 {
-			vnetNegotiated = true
-			break
-		}
-	}
+	vnetNegotiated := coll.SliceContains(negotiatedCapabilities, protocol.CapabilityVNetIPv4)
 	defer s.clearConfigurationSync(clientID, sessionID)
 	finishConfiguration := func(requestID string, result protocol.SyncConfigurationResult) error {
 		if err := writer.WriteResponse(
@@ -53,18 +40,18 @@ func (s *Service) serveControlMessages(
 		); err != nil {
 			return err
 		}
-		if initialProxySynchronizationRequired {
+		if initialConfigurationSynchronizationRequired {
 			if !s.clientRegistry.Activate(clientID, sessionID, time.Now()) {
 				return errors.New("initialized client session is no longer current")
 			}
 			if err := connection.SetDeadline(time.Time{}); err != nil {
 				return fmt.Errorf("clear initial configuration deadline: %w", err)
 			}
-			initialProxySynchronizationRequired = false
+			initialConfigurationSynchronizationRequired = false
 		}
 		s.proxyRegistry.Activate(clientID, sessionID)
-		if onProxySynchronizationApplied != nil {
-			onProxySynchronizationApplied()
+		if onConfigurationApplied != nil {
+			onConfigurationApplied()
 		}
 		if vnetNegotiated && s.vnetRuntime != nil {
 			if err := s.vnetRuntime.assign(clientID, sessionID); err != nil {
@@ -78,7 +65,7 @@ func (s *Service) serveControlMessages(
 		if err != nil {
 			return false, err
 		}
-		if initialProxySynchronizationRequired && envelope.Type != protocol.MessageSyncConfiguration {
+		if initialConfigurationSynchronizationRequired && envelope.Type != protocol.MessageSyncConfiguration {
 			return false, fmt.Errorf(
 				"expected initial %s, got %s",
 				protocol.MessageSyncConfiguration,
@@ -166,7 +153,7 @@ func (s *Service) serveControlMessages(
 				"pool_generation":   status.PoolGeneration,
 			})
 		case protocol.MessageVNetPeerStatus:
-			if !vnetNegotiated || !containsCapability(negotiatedCapabilities, protocol.CapabilityVNetP2PQUIC) {
+			if !vnetNegotiated || !coll.SliceContains(negotiatedCapabilities, protocol.CapabilityVNetP2PQUIC) {
 				return false, errors.New("VNet peer status received without negotiated capability")
 			}
 			var status protocol.VNetPeerStatus
@@ -177,7 +164,7 @@ func (s *Service) serveControlMessages(
 				return false, fmt.Errorf("update VNet peer status: %w", err)
 			}
 		case protocol.MessageVNetPeerFlowOpen:
-			if !vnetNegotiated || !containsCapability(negotiatedCapabilities, protocol.CapabilityVNetP2PQUIC) {
+			if !vnetNegotiated || !coll.SliceContains(negotiatedCapabilities, protocol.CapabilityVNetP2PQUIC) {
 				return false, errors.New("VNet peer flow received without negotiated capability")
 			}
 			var flow protocol.VNetPeerFlowOpen

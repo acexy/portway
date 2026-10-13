@@ -271,19 +271,23 @@ func (manager *Registry) sync(
 	manager.registrationMutex.Unlock()
 	registrationLocked = false
 
-	newEndpoints, newUDPEndpoints, preparationRejection :=
-		manager.prepareSyncEndpoints(
-			request,
-			reusableEndpoints,
-			reusableUDPEndpoints,
-		)
-	if preparationRejection != nil {
-		return *preparationRejection
+	resources := &syncCandidateResources{
+		newEndpoints:        make(map[uint16]*proxytcp.Endpoint),
+		newUDPEndpoints:     make(map[uint16]*proxyudp.Endpoint),
+		nextUDPProxies:      make(map[string]*udpProxyBinding, len(request.Proxies)),
+		existingUDPProxies:  existingUDPProxies,
+		nextHTTPProxies:     make(map[string]*httpProxyBinding, len(request.Proxies)),
+		existingHTTPProxies: existingHTTPProxies,
 	}
-
+	defer resources.rollback()
+	if rejection := manager.prepareSyncEndpoints(request, reusableEndpoints, reusableUDPEndpoints, resources); rejection != nil {
+		return *rejection
+	}
+	newEndpoints := resources.newEndpoints
+	newUDPEndpoints := resources.newUDPEndpoints
+	nextUDPProxies := resources.nextUDPProxies
+	nextHTTPProxies := resources.nextHTTPProxies
 	nextProxies := make(map[string]*tcpProxyBinding, len(request.Proxies))
-	nextUDPProxies := make(map[string]*udpProxyBinding, len(request.Proxies))
-	nextHTTPProxies := make(map[string]*httpProxyBinding, len(request.Proxies))
 	results := make([]protocol.ProxyResult, 0, len(request.Proxies))
 	for _, declaration := range request.Proxies {
 		if declaration.Type != protocol.ProxyTypeTCP {
@@ -307,8 +311,6 @@ func (manager *Registry) sync(
 		}
 		bindingID, err := newBindingID()
 		if err != nil {
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
 			return rejectedSyncResult(
 				request.Revision,
 				ErrorInvalidRequest,
@@ -361,9 +363,6 @@ func (manager *Registry) sync(
 			endpoint,
 		)
 		if err != nil {
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
-			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(
 				request.Revision,
 				ErrorInvalidRequest,
@@ -392,9 +391,6 @@ func (manager *Registry) sync(
 		owner := manager.httpDomains[declaration.Domain]
 		if owner != nil && existingHTTPProxies[owner.declaration.Name] != owner {
 			manager.mutex.Unlock()
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
-			closeUDPBindings(nextUDPProxies, existingUDPProxies)
 			return rejectedSyncResult(request.Revision, ErrorDomainConflict, declaration.Name, "HTTP domain is unavailable")
 		}
 	}
@@ -417,10 +413,6 @@ func (manager *Registry) sync(
 		}
 		binding, err := manager.newHTTPBinding(clientID, sessionID, declaration)
 		if err != nil {
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
-			closeUDPBindings(nextUDPProxies, existingUDPProxies)
-			closeHTTPBindings(nextHTTPProxies, existingHTTPProxies)
 			return rejectedSyncResult(request.Revision, ErrorInvalidRequest, declaration.Name, "create HTTP proxy binding")
 		}
 		nextHTTPProxies[declaration.Name] = binding
@@ -433,12 +425,9 @@ func (manager *Registry) sync(
 		clientID: clientID, sessionID: sessionID, requestID: requestID,
 		request: request, fingerprint: fingerprint, baseRevision: baseRevision,
 		authenticationMode: authenticationMode, results: results,
-		existingProxies: existingProxies, existingUDPProxies: existingUDPProxies,
-		existingHTTPProxies: existingHTTPProxies,
-		reusableEndpoints:   reusableEndpoints, reusableUDPEndpoints: reusableUDPEndpoints,
-		newEndpoints: newEndpoints, newUDPEndpoints: newUDPEndpoints,
-		nextProxies: nextProxies, nextUDPProxies: nextUDPProxies,
-		nextHTTPProxies:       nextHTTPProxies,
+		existingProxies: existingProxies, resources: resources,
+		reusableEndpoints: reusableEndpoints, reusableUDPEndpoints: reusableUDPEndpoints,
+		nextProxies:           nextProxies,
 		declarationsByPort:    declarationsByPort,
 		declarationsByUDPPort: declarationsByUDPPort,
 	}, coordinate)

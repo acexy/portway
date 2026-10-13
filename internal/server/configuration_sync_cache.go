@@ -33,15 +33,16 @@ func (s *Service) checkConfigurationSync(
 	sessionID string,
 	requestID string,
 	request protocol.SyncConfiguration,
-) (*protocol.SyncConfigurationResult, *protocol.ConfigurationError) {
+) (*protocol.SyncConfigurationResult, [sha256.Size]byte, *protocol.ConfigurationError) {
+	var fingerprint [sha256.Size]byte
 	if err := protocol.ValidateRequestID(requestID); err != nil {
-		return nil, invalidConfigurationRequest(err.Error())
+		return nil, fingerprint, invalidConfigurationRequest(err.Error())
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {
-		return nil, invalidConfigurationRequest("encode complete configuration")
+		return nil, fingerprint, invalidConfigurationRequest("encode complete configuration")
 	}
-	fingerprint := sha256.Sum256(payload)
+	fingerprint = sha256.Sum256(payload)
 	key := configurationSyncKey(clientID, sessionID)
 
 	s.configurationSyncMutex.Lock()
@@ -51,41 +52,37 @@ func (s *Service) checkConfigurationSync(
 	}
 	state := s.configurationSyncStates[key]
 	if state == nil {
-		return nil, nil
+		return nil, fingerprint, nil
 	}
 	if cached, exists := state.requests[requestID]; exists {
 		if cached.revision == request.Revision &&
 			subtle.ConstantTimeCompare(cached.fingerprint[:], fingerprint[:]) == 1 {
 			result := cached.result
-			return &result, nil
+			return &result, fingerprint, nil
 		}
-		return nil, invalidConfigurationRequest("configuration request ID payload changed")
+		return nil, fingerprint, invalidConfigurationRequest("configuration request ID payload changed")
 	}
 	if request.Revision == 0 || request.Revision < state.revision {
-		return nil, invalidConfigurationRequest("configuration revision is stale")
+		return nil, fingerprint, invalidConfigurationRequest("configuration revision is stale")
 	}
 	if request.Revision == state.revision {
 		if subtle.ConstantTimeCompare(state.fingerprint[:], fingerprint[:]) == 1 {
 			result := state.result
-			return &result, nil
+			return &result, fingerprint, nil
 		}
-		return nil, invalidConfigurationRequest("configuration revision payload changed")
+		return nil, fingerprint, invalidConfigurationRequest("configuration revision payload changed")
 	}
-	return nil, nil
+	return nil, fingerprint, nil
 }
 
 func (s *Service) cacheConfigurationSync(
 	clientID string,
 	sessionID string,
 	requestID string,
-	request protocol.SyncConfiguration,
+	revision uint64,
+	fingerprint [sha256.Size]byte,
 	result protocol.SyncConfigurationResult,
 ) {
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return
-	}
-	fingerprint := sha256.Sum256(payload)
 	key := configurationSyncKey(clientID, sessionID)
 	s.configurationSyncMutex.Lock()
 	defer s.configurationSyncMutex.Unlock()
@@ -104,9 +101,9 @@ func (s *Service) cacheConfigurationSync(
 	}
 	state.requestOrder = append(state.requestOrder, requestID)
 	state.requests[requestID] = configurationRequestRecord{
-		revision: request.Revision, fingerprint: fingerprint, result: result,
+		revision: revision, fingerprint: fingerprint, result: result,
 	}
-	state.revision = request.Revision
+	state.revision = revision
 	state.fingerprint = fingerprint
 	state.result = result
 }

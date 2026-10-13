@@ -195,7 +195,7 @@ func (s *Service) runControlSession(
 			return "", false, false, err
 		}
 		if len(s.configuration.Forwards) != 0 {
-			forwardRuntime, err = newForwardManager(
+			forwardRuntime = newForwardManager(
 				ctx,
 				s.logger,
 				s.runtimeIdentity(),
@@ -204,9 +204,6 @@ func (s *Service) runControlSession(
 				transportSession,
 				s.runtimeForwardSnapshot(),
 			)
-			if err != nil {
-				return "", false, false, transport.Permanent(err)
-			}
 			defer func() { forwardRuntime.close() }()
 			if err := forwardRuntime.applyBindings(result.Forwards); err != nil {
 				return "", false, false, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
@@ -282,12 +279,8 @@ func (s *Service) runControlSession(
 func validateLocalProxiesForManagementMode(
 	mode protocol.ManagementMode,
 	proxyCount int,
-	forwardCounts ...int,
+	forwardCount int,
 ) error {
-	forwardCount := 0
-	if len(forwardCounts) != 0 {
-		forwardCount = forwardCounts[0]
-	}
 	switch mode {
 	case "", protocol.ManagementModeShared, protocol.ManagementModeGoverned:
 		if proxyCount == 0 && forwardCount == 0 {

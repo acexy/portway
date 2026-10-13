@@ -66,12 +66,8 @@ func (s *Service) registerManagedSession(
 	sessionID string,
 	connection net.Conn,
 	writer *control.Writer,
-	authenticationContexts ...authentication.Context,
+	authenticationContext authentication.Context,
 ) {
-	authenticationContext := authentication.Context{Mode: authentication.ModeManaged, ClientID: clientID}
-	if len(authenticationContexts) != 0 {
-		authenticationContext = authenticationContexts[0]
-	}
 	s.managed.register(clientID, &managedSession{
 		sessionID:      sessionID,
 		connection:     connection,
@@ -112,18 +108,7 @@ func managedConfigurationPayload(
 			),
 		}
 	})
-	declarations := coll.SliceCollect(clientConfiguration.Configuration.Proxies, func(proxyConfiguration config.ProxyConfig) protocol.ProxyDeclaration {
-		return protocol.ProxyDeclaration{
-			Name:       proxyConfiguration.Name,
-			Type:       proxyConfiguration.Type,
-			RemotePort: proxyConfiguration.Public.Port,
-			Domain:     proxyConfiguration.Public.Domain,
-			PublicSchemes: append(
-				[]protocol.HTTPPublicScheme(nil),
-				proxyConfiguration.Public.Schemes...,
-			),
-		}
-	})
+	declarations := coll.SliceCollect(clientConfiguration.Configuration.Proxies, config.ProxyDeclaration)
 	managedForwards := coll.SliceCollect(clientConfiguration.Configuration.Forwards, func(forward config.ForwardConfig) protocol.ManagedForward {
 		return protocol.ManagedForward{
 			Name: forward.Name, Type: forward.Type,
@@ -131,10 +116,7 @@ func managedConfigurationPayload(
 			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port,
 		}
 	})
-	forwardDeclarations := coll.SliceCollect(clientConfiguration.Configuration.Forwards, func(forward config.ForwardConfig) protocol.ForwardDeclaration {
-		return protocol.ForwardDeclaration{Name: forward.Name, Type: forward.Type,
-			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port}
-	})
+	forwardDeclarations := coll.SliceCollect(clientConfiguration.Configuration.Forwards, config.ForwardDeclaration)
 	if managedProxies == nil {
 		managedProxies = []protocol.ManagedProxy{}
 		declarations = []protocol.ProxyDeclaration{}

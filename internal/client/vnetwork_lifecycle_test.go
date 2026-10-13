@@ -71,7 +71,7 @@ func TestVNetDeviceReaderSurvivesPacketsDuringMigration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	device := &pausedMigratingVNetDevice{
 		queuedVNetDevice: queuedVNetDevice{packets: make(chan []byte), closed: make(chan struct{})},
-		started: make(chan struct{}), resume: make(chan struct{}),
+		started:          make(chan struct{}), resume: make(chan struct{}),
 	}
 	manager := &clientVNetManager{context: ctx, cancel: cancel, clientID: "managed-a",
 		assignment: lifecycleVNetAssignment(), device: device,
@@ -323,8 +323,10 @@ func TestVNetDeviceReaderUsesReplacementPool(t *testing.T) {
 	defer peer.Close()
 	stream := &observedVNetStream{Conn: connection}
 	manager.mutex.Lock()
-	manager.channels = []transport.Stream{stream}
-	manager.channelWrites = []*vnet.PacketWriter{vnet.NewPacketWriter(ctx, stream, 1280, time.Second)}
+	manager.channels = []clientVNetChannel{{
+		stream: stream,
+		writer: vnet.NewPacketWriter(ctx, stream, 1280, time.Second),
+	}}
 	manager.mutex.Unlock()
 	packet := make([]byte, 28)
 	packet[0], packet[9] = 0x45, 17
@@ -339,11 +341,96 @@ func TestVNetDeviceReaderUsesReplacementPool(t *testing.T) {
 	if received, err := vnet.ReadPacket(peer, 1280); err != nil || !bytes.Equal(received, packet) {
 		t.Fatalf("replacement pool packet = %v, error = %v", received, err)
 	}
-	manager.failPool(initial.PoolGeneration, "old_failure")
+	manager.failPool(initial.PoolGeneration, vnetFailureChannelReadFailed)
 	manager.mutex.Lock()
 	remaining := len(manager.channels)
 	manager.mutex.Unlock()
 	if remaining != 1 {
 		t.Fatal("old generation failure closed the new pool")
 	}
+}
+
+func TestVNetPoolCleanupDetachesBeforeClosingAndPreservesDevice(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(*clientVNetManager) error
+	}{
+		{name: "session detach", run: func(manager *clientVNetManager) error {
+			manager.detachSession()
+			return nil
+		}},
+		{name: "assignment replacement", run: func(manager *clientVNetManager) error {
+			assignment := manager.assignment
+			assignment.PoolGeneration++
+			return manager.applyAssignment(assignment)
+		}},
+		{name: "pool failure", run: func(manager *clientVNetManager) error {
+			manager.failPool(manager.assignment.PoolGeneration, vnetFailureChannelWriteTimeout)
+			return nil
+		}},
+		{name: "pool close", run: func(manager *clientVNetManager) error {
+			manager.closePoolRuntime()
+			return nil
+		}},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			poolContext, cancelPool := context.WithCancel(ctx)
+			defer cancelPool()
+			device := &countingVNetDevice{}
+			manager := &clientVNetManager{
+				context: ctx, cancel: cancel, clientID: "managed-a",
+				assignment: lifecycleVNetAssignment(), activated: true, device: device,
+				writer: control.NewWriter(&bytes.Buffer{}), poolCancel: cancelPool,
+			}
+			connection, peer := net.Pipe()
+			defer connection.Close()
+			defer peer.Close()
+			closeCount := 0
+			stream := &cleanupVNetStream{
+				observedVNetStream: observedVNetStream{Conn: connection},
+				onClose: func() {
+					closeCount++
+					if !manager.mutex.TryLock() {
+						t.Error("stream closed while holding manager mutex")
+						return
+					}
+					defer manager.mutex.Unlock()
+					if len(manager.channels) != 0 || manager.activated {
+						t.Error("pool remained published while closing its stream")
+					}
+				},
+			}
+			manager.channels = []clientVNetChannel{{
+				stream: stream,
+				writer: vnet.NewPacketWriter(poolContext, stream, 1280, time.Second),
+			}}
+			for range 2 {
+				if err := operation.run(manager); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if closeCount != 1 || poolContext.Err() == nil {
+				t.Fatal("pool cleanup did not cancel and close its stream exactly once")
+			}
+			if manager.device != device || device.closeCount.Load() != 0 {
+				t.Fatal("pool cleanup closed the process-owned device")
+			}
+			manager.close()
+			if device.closeCount.Load() != 1 {
+				t.Fatal("manager shutdown did not release the retained device")
+			}
+		})
+	}
+}
+
+type cleanupVNetStream struct {
+	observedVNetStream
+	onClose func()
+}
+
+func (stream *cleanupVNetStream) Close() error {
+	stream.onClose()
+	return stream.Conn.Close()
 }

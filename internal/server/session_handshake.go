@@ -90,7 +90,7 @@ func (s *Service) handleAdmittedConnection(
 	if err := protocol.DecodePayload(envelope, &clientHello); err != nil {
 		return err
 	}
-	if !coll.SliceContains(clientHello.Capabilities, "json-control") {
+	if !coll.SliceContains(clientHello.Capabilities, protocol.CapabilityJSONControl) {
 		return errors.New("client does not support json-control capability")
 	}
 	if inbound.Authentication.Mode != authentication.ModeShared &&
@@ -257,14 +257,14 @@ func (s *Service) handleAdmittedConnection(
 		}
 	}
 
-	initialProxySynchronizationRequired :=
+	initialConfigurationSynchronizationRequired :=
 		inbound.Authentication.Mode != authentication.ModeManaged
-	if initialProxySynchronizationRequired {
+	if initialConfigurationSynchronizationRequired {
 		if err := connection.SetDeadline(time.Now().Add(controlHelloTimeout)); err != nil {
 			return fmt.Errorf("set initial proxy synchronization deadline: %w", err)
 		}
 	}
-	if !initialProxySynchronizationRequired {
+	if !initialConfigurationSynchronizationRequired {
 		sessionLogger.WithComponent("session").InfoWithFields(
 			"control session established",
 			map[string]any{
@@ -281,7 +281,7 @@ func (s *Service) handleAdmittedConnection(
 		writer,
 		negotiatedCapabilities,
 		inbound.Authentication,
-		initialProxySynchronizationRequired,
+		initialConfigurationSynchronizationRequired,
 		func() {
 			recoverableSession = true
 			sessionLogger.WithComponent("session").InfoWithFields(

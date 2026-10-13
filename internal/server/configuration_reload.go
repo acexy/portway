@@ -108,97 +108,14 @@ func (s *Service) applyConfigurationCandidateContext(
 	}()
 
 	current := s.configuration.snapshot()
-	if err := config.ValidateForwardConfiguration(candidate); err != nil {
+	// Preparation stays inside the authentication barrier; it does not publish state.
+	prepared, err := s.prepareConfigurationCandidate(current, candidate)
+	if err != nil {
 		return err
 	}
-	if err := config.ValidateProxyMirrorConfiguration(candidate); err != nil {
-		return err
-	}
-	if err := s.validateVNetConfigurationTransition(current.VirtualNetwork, candidate.VirtualNetwork); err != nil {
-		return err
-	}
-
-	if serverTokenRequiresGeneration(candidate) &&
-		current.Authentication.SharedToken != nil {
-		if !current.SharedTokenGenerated {
-			return restartRequiredError{field: "authentication.shared_token"}
-		}
-		sharedToken := *current.Authentication.SharedToken
-		candidate.Authentication.SharedToken = &sharedToken
-		candidate.SharedTokenGenerated = true
-	}
-	if _, _, err := config.EnsureServerToken(&candidate); err != nil {
-		return err
-	}
-	if !reflect.DeepEqual(candidate.Transport, current.Transport) {
-		return restartRequiredError{
-			field: changedYAMLField("transport", current.Transport, candidate.Transport),
-		}
-	}
-	if candidate.Proxies.BindIP != current.Proxies.BindIP {
-		return restartRequiredError{
-			field: "proxies.bind_ip",
-		}
-	}
-	if candidate.Proxies.HTTP.ListenAddress != current.Proxies.HTTP.ListenAddress {
-		return restartRequiredError{field: "proxies.http.listen_address"}
-	}
-	if candidate.Proxies.HTTPS.ListenAddress != current.Proxies.HTTPS.ListenAddress {
-		return restartRequiredError{field: "proxies.https.listen_address"}
-	}
-	if !reflect.DeepEqual(candidate.Proxies.HTTP.HTTPConfig, current.Proxies.HTTP.HTTPConfig) {
-		return restartRequiredError{
-			field: changedYAMLField(
-				"proxies.http",
-				current.Proxies.HTTP.HTTPConfig,
-				candidate.Proxies.HTTP.HTTPConfig,
-			),
-		}
-	}
-	httpsChanged := !reflect.DeepEqual(
-		candidate.Proxies.HTTPS.Certificates,
-		current.Proxies.HTTPS.Certificates,
-	)
-	var candidateHTTPSCertificates *httpsCertificateSnapshot
-	var candidateHTTPSDigest string
-	if httpsChanged {
-		if s.httpsCertificates == nil {
-			return restartRequiredError{
-				field: "proxies.https.certificates",
-			}
-		}
-		var err error
-		candidateHTTPSCertificates, candidateHTTPSDigest, err = loadHTTPSCertificates(candidate.Proxies.HTTPS)
-		if err != nil {
-			return fmt.Errorf("reload HTTPS certificate: %w", err)
-		}
-	}
-	if !reflect.DeepEqual(candidate.Proxies.UDP, current.Proxies.UDP) {
-		return restartRequiredError{
-			field: changedYAMLField("proxies.udp", current.Proxies.UDP, candidate.Proxies.UDP),
-		}
-	}
-	if !reflect.DeepEqual(candidate.Security, current.Security) {
-		return restartRequiredError{
-			field: changedYAMLField("security", current.Security, candidate.Security),
-		}
-	}
-	if !reflect.DeepEqual(candidate.Operations, current.Operations) {
-		return restartRequiredError{
-			field: changedYAMLField("operations", current.Operations, candidate.Operations),
-		}
-	}
-	if err := validateManagedRevisionTransitions(current, candidate); err != nil {
-		return err
-	}
-	if reflect.DeepEqual(candidate.Authentication, current.Authentication) &&
-		reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) &&
-		reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients) &&
-		reflect.DeepEqual(candidate.Forwards, current.Forwards) &&
-		reflect.DeepEqual(candidate.VirtualNetwork, current.VirtualNetwork) &&
-		reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror) &&
-		!httpsChanged &&
-		candidate.LogLevel == current.LogLevel {
+	candidate = prepared.configuration
+	changes := prepared.changes
+	if !changes.any() {
 		s.configuration.updateSourceDigest(candidate.SourceDigest)
 		return nil
 	}
@@ -206,10 +123,6 @@ func (s *Service) applyConfigurationCandidateContext(
 	if err != nil {
 		return err
 	}
-	authenticationChanged :=
-		!reflect.DeepEqual(candidate.Authentication, current.Authentication) ||
-			!reflect.DeepEqual(candidate.GovernedClients, current.GovernedClients) ||
-			!reflect.DeepEqual(candidate.ManagedClients, current.ManagedClients)
 	tokensChanged := authenticationTokensChanged(current, candidate)
 
 	currentAuthenticationSnapshot := s.authenticationStore.Load()
@@ -220,8 +133,6 @@ func (s *Service) applyConfigurationCandidateContext(
 		candidate,
 	)
 	managedChanges := changedManagedClients(current, candidate)
-	mirrorChanged := !reflect.DeepEqual(candidate.Proxies.Mirror, current.Proxies.Mirror)
-	virtualNetworkChanged := !reflect.DeepEqual(candidate.VirtualNetwork, current.VirtualNetwork)
 	governedAdded, governedChanged, governedRemoved := mapChangeCounts(
 		current.GovernedClients,
 		candidate.GovernedClients,
@@ -241,7 +152,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		}
 		defer reservationTransaction.Rollback()
 	}
-	if mirrorChanged && reservationTransaction != nil {
+	if changes.mirror && reservationTransaction != nil {
 		if err := reservationTransaction.ConfigureMirrorGroups(candidate.Proxies.Mirror); err != nil {
 			return fmt.Errorf("prepare proxy mirror groups: %w", err)
 		}
@@ -249,18 +160,19 @@ func (s *Service) applyConfigurationCandidateContext(
 	// Change only the level of the initialized logger after every fallible
 	// candidate validation has succeeded. EnableConsole is startup-only and the
 	// underlying logger deliberately panics when initialized more than once.
-	if candidate.LogLevel != current.LogLevel {
+	if changes.logLevel {
 		if err := logging.SetConsoleLevel(candidate.LogLevel); err != nil {
 			return fmt.Errorf("apply log level: %w", err)
 		}
 	}
+	// Publish the prepared generation before detaching revoked session resources.
 	candidate.Generation = current.Generation + 1
 
-	if httpsChanged {
+	if changes.httpsCertificates {
 		s.httpsCertificates.publish(
 			candidate.Proxies.HTTPS,
-			candidateHTTPSCertificates,
-			candidateHTTPSDigest,
+			prepared.httpsCertificates,
+			prepared.httpsDigest,
 		)
 	}
 	s.configuration.publish(candidate)
@@ -271,7 +183,7 @@ func (s *Service) applyConfigurationCandidateContext(
 
 	var revokedSessions []session.ExpiredClient
 	cleanupCallbacks := make([]func(), 0)
-	if authenticationChanged {
+	if changes.authenticationChanged() {
 		revokedSessions = s.clientRegistry.RevokeAuthentication(revokedContexts)
 		if s.proxyRegistry != nil {
 			for _, revoked := range revokedSessions {
@@ -285,6 +197,7 @@ func (s *Service) applyConfigurationCandidateContext(
 	s.authenticationBarrier.Unlock()
 	barrierHeld = false
 
+	// Retire resources and notify clients only after releasing the barrier.
 	if s.transportServer != nil {
 		s.transportServer.RevokeAuthentication(revokedContexts)
 	}
@@ -300,10 +213,7 @@ func (s *Service) applyConfigurationCandidateContext(
 		}
 	}
 	var forwardNotifications *forwardregistry.PolicyNotifications
-	if s.forwardRegistry != nil &&
-		(!reflect.DeepEqual(current.Forwards, candidate.Forwards) ||
-			!reflect.DeepEqual(current.GovernedClients, candidate.GovernedClients) ||
-			!reflect.DeepEqual(current.ManagedClients, candidate.ManagedClients)) {
+	if s.forwardRegistry != nil && changes.forwardPolicyChanged() {
 		forwardNotifications = s.forwardRegistry.ApplyPolicy(
 			candidate.Generation,
 			func(context authentication.Context, declaration protocol.ForwardDeclaration) bool {
@@ -311,7 +221,7 @@ func (s *Service) applyConfigurationCandidateContext(
 			},
 		)
 	}
-	if virtualNetworkChanged && s.vnetRuntime != nil {
+	if changes.virtualNetwork && s.vnetRuntime != nil {
 		s.vnetRuntime.applyConfiguration(candidate.VirtualNetwork, candidate.Generation)
 	}
 	forwardNotifications.Deliver(ctx)
@@ -325,8 +235,8 @@ func (s *Service) applyConfigurationCandidateContext(
 			"managed_clients_path":      candidate.Authentication.ManagedClientsPath,
 			"old_generation":            current.Generation,
 			"new_generation":            candidate.Generation,
-			"log_level_changed":         candidate.LogLevel != current.LogLevel,
-			"https_certificate_changed": httpsChanged,
+			"log_level_changed":         changes.logLevel,
+			"https_certificate_changed": changes.httpsCertificates,
 			"shared_authentication_changed": !reflect.DeepEqual(
 				candidate.Authentication.SharedToken,
 				current.Authentication.SharedToken,
@@ -339,7 +249,7 @@ func (s *Service) applyConfigurationCandidateContext(
 			"managed_removed":          managedRemoved,
 			"managed_rollouts":         len(managedChanges),
 			"tokens_changed":           tokensChanged,
-			"virtual_network_changed":  virtualNetworkChanged,
+			"virtual_network_changed":  changes.virtualNetwork,
 			"all_clients_disconnected": len(revokedContexts) == len(currentAuthenticationSnapshot.Contexts()) && len(revokedContexts) != 0,
 			"revoked_authentications":  len(revokedContexts),
 			"revoked_sessions":         len(revokedSessions),

@@ -29,20 +29,19 @@ func (manager *Registry) commitSync(preparation syncCommitPreparation, coordinat
 	}
 	if retire != nil {
 		// Start ownership tasks before removal can close and join them.
-		for _, endpoint := range preparation.newEndpoints {
+		for _, endpoint := range preparation.resources.newEndpoints {
 			endpoint.Start()
 		}
-		for _, endpoint := range preparation.newUDPEndpoints {
+		for _, endpoint := range preparation.resources.newUDPEndpoints {
 			endpoint.Start()
 		}
+		preparation.resources.release()
 	}
 	manager.registrationMutex.Unlock()
 	if retire != nil {
 		retire()
 	} else {
-		rollbackSyncPreparation(preparation.newEndpoints, preparation.newUDPEndpoints,
-			preparation.nextUDPProxies, preparation.existingUDPProxies,
-			preparation.nextHTTPProxies, preparation.existingHTTPProxies)
+		preparation.resources.rollback()
 	}
 	return result
 }

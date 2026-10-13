@@ -71,18 +71,13 @@ func (runtime *serverVNetRuntime) migrateRuntimeDevice(
 		}
 		runtime.device = device
 		runtime.prepareUserspaceTCPLocked(configuration)
-		sessions := make([]serverVNetSession, 0, len(runtime.sessions))
-		clientIDs := make([]string, 0, len(runtime.sessions))
-		for clientID, session := range runtime.sessions {
-			clientIDs = append(clientIDs, clientID)
-			sessions = append(sessions, session)
-		}
+		sessions := runtime.sessionSnapshotsLocked()
 		runtime.mutex.Unlock()
 		if startReader {
 			runtime.waitGroup.Go(func() { runtime.readDevice(device) })
 		}
-		for index, session := range sessions {
-			_ = runtime.assign(clientIDs[index], session.sessionID)
+		for _, session := range sessions {
+			_ = runtime.assign(session.clientID, session.sessionID)
 		}
 	})
 	return true
@@ -133,16 +128,11 @@ func (runtime *serverVNetRuntime) prepareRuntimeDevice(configuration config.Virt
 		}
 		runtime.device = device
 		runtime.prepareUserspaceTCPLocked(configuration)
-		sessions := make([]serverVNetSession, 0, len(runtime.sessions))
-		clientIDs := make([]string, 0, len(runtime.sessions))
-		for clientID, session := range runtime.sessions {
-			clientIDs = append(clientIDs, clientID)
-			sessions = append(sessions, session)
-		}
+		sessions := runtime.sessionSnapshotsLocked()
 		runtime.mutex.Unlock()
 		runtime.waitGroup.Go(func() { runtime.readDevice(device) })
-		for index, session := range sessions {
-			_ = runtime.assign(clientIDs[index], session.sessionID)
+		for _, session := range sessions {
+			_ = runtime.assign(session.clientID, session.sessionID)
 		}
 	})
 }
@@ -195,20 +185,15 @@ func (runtime *serverVNetRuntime) reconcileDevice() {
 		}
 		runtime.mutex.RLock()
 		configuration := runtime.configuration
-		sessions := make([]serverVNetSession, 0, len(runtime.sessions))
-		clientIDs := make([]string, 0, len(runtime.sessions))
-		for clientID, session := range runtime.sessions {
-			clientIDs = append(clientIDs, clientID)
-			sessions = append(sessions, session)
-		}
+		sessions := runtime.sessionSnapshotsLocked()
 		runtime.mutex.RUnlock()
 		if configuration.Enabled && runtime.deviceReady() {
 			delay = time.Second
 			continue
 		}
 		if configuration.Enabled && runtime.activateInstalledDevice(configuration) {
-			for index, session := range sessions {
-				_ = runtime.assign(clientIDs[index], session.sessionID)
+			for _, session := range sessions {
+				_ = runtime.assign(session.clientID, session.sessionID)
 			}
 			delay = time.Second
 			continue

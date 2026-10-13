@@ -36,23 +36,14 @@ func (s *Service) synchronizeConfiguration(
 	if len(request.Proxies) == 0 && len(request.Forwards) == 0 {
 		return protocol.SyncConfigurationResult{}, errors.New("complete configuration must not be empty")
 	}
-	cachedResult, synchronizationError := s.checkConfigurationSync(
+	cachedResult, fingerprint, synchronizationError := s.checkConfigurationSync(
 		session.clientID,
 		session.sessionID,
 		envelope.RequestID,
 		request,
 	)
 	if synchronizationError != nil {
-		s.logConfigurationSyncRejected(session, request.Revision, synchronizationError)
-		if err := writeConfigurationRejection(
-			session.writer,
-			envelope.RequestID,
-			request.Revision,
-			synchronizationError,
-		); err != nil {
-			return protocol.SyncConfigurationResult{}, err
-		}
-		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+		return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, synchronizationError)
 	}
 	if cachedResult != nil {
 		s.logConfigurationSyncApplied(session, request, *cachedResult, true)
@@ -62,15 +53,7 @@ func (s *Service) synchronizeConfiguration(
 		request,
 		session.capabilities,
 	); rejection != nil {
-		s.logConfigurationSyncRejected(session, request.Revision, rejection.Error)
-		if err := session.writer.WriteResponse(
-			protocol.MessageSyncConfigurationResult,
-			envelope.RequestID,
-			*rejection,
-		); err != nil {
-			return protocol.SyncConfigurationResult{}, err
-		}
-		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+		return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, rejection.Error)
 	}
 	proxyRequest := proxyregistry.SyncRequest{
 		Revision: request.Revision,
@@ -79,16 +62,7 @@ func (s *Service) synchronizeConfiguration(
 	if session.mode == authentication.ModeGoverned {
 		if result := s.validateGovernedProxies(session.clientID, proxyRequest); result != nil {
 			rejection := configurationProxyError(result.Error)
-			s.logConfigurationSyncRejected(session, request.Revision, rejection)
-			if err := writeConfigurationRejection(
-				session.writer,
-				envelope.RequestID,
-				request.Revision,
-				rejection,
-			); err != nil {
-				return protocol.SyncConfigurationResult{}, err
-			}
-			return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+			return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, rejection)
 		}
 	}
 	if s.forwardRegistry == nil {
@@ -109,16 +83,7 @@ func (s *Service) synchronizeConfiguration(
 	)
 	if forwardError != nil {
 		rejection := configurationForwardError(forwardError)
-		s.logConfigurationSyncRejected(session, request.Revision, rejection)
-		if err := writeConfigurationRejection(
-			session.writer,
-			envelope.RequestID,
-			request.Revision,
-			rejection,
-		); err != nil {
-			return protocol.SyncConfigurationResult{}, err
-		}
-		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+		return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, rejection)
 	}
 	defer forwardTransaction.Retire()
 	proxyResult := s.proxyRegistry.SyncCoordinated(
@@ -128,16 +93,7 @@ func (s *Service) synchronizeConfiguration(
 	if !committed && proxyResult.Status == proxyregistry.SyncStatusRejected {
 		forwardTransaction.Rollback()
 		rejection := configurationProxyError(proxyResult.Error)
-		s.logConfigurationSyncRejected(session, request.Revision, rejection)
-		if err := writeConfigurationRejection(
-			session.writer,
-			envelope.RequestID,
-			request.Revision,
-			rejection,
-		); err != nil {
-			return protocol.SyncConfigurationResult{}, err
-		}
-		return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
+		return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, rejection)
 	}
 	if !committed {
 		forwardTransaction.Rollback()
@@ -149,7 +105,7 @@ func (s *Service) synchronizeConfiguration(
 		Proxies:  proxyResult.Proxies,
 		Forwards: append([]protocol.ForwardResult(nil), forwardTransaction.Results()...),
 	}
-	s.cacheConfigurationSync(session.clientID, session.sessionID, envelope.RequestID, request, result)
+	s.cacheConfigurationSync(session.clientID, session.sessionID, envelope.RequestID, request.Revision, fingerprint, result)
 	s.logConfigurationSyncApplied(session, request, result, false)
 	return result, nil
 }
@@ -253,13 +209,14 @@ func validateConfigurationCapabilities(
 	return nil
 }
 
-func writeConfigurationRejection(
-	writer *control.Writer,
+func (s *Service) rejectConfigurationSync(
+	session configurationSyncSession,
 	requestID string,
 	revision uint64,
 	rejection *protocol.ConfigurationError,
-) error {
-	return writer.WriteResponse(
+) (protocol.SyncConfigurationResult, error) {
+	s.logConfigurationSyncRejected(session, revision, rejection)
+	if err := session.writer.WriteResponse(
 		protocol.MessageSyncConfigurationResult,
 		requestID,
 		protocol.SyncConfigurationResult{
@@ -267,7 +224,10 @@ func writeConfigurationRejection(
 			Status:   protocol.ConfigurationSyncStatusRejected,
 			Error:    rejection,
 		},
-	)
+	); err != nil {
+		return protocol.SyncConfigurationResult{}, err
+	}
+	return protocol.SyncConfigurationResult{}, errProxyRegistrationRejected
 }
 
 func configurationProxyError(source *proxyregistry.Error) *protocol.ConfigurationError {
