@@ -196,7 +196,6 @@ type association struct {
 	startFinished   bool
 	forwardFinished bool
 	done            chan struct{}
-	responseEnabled bool
 }
 
 func newAssociation(
@@ -207,16 +206,15 @@ func newAssociation(
 ) *association {
 	ctx, cancel := context.WithCancel(binding.context)
 	candidate := &association{
-		binding:         binding,
-		source:          source,
-		target:          target,
-		lease:           lease,
-		context:         ctx,
-		cancel:          cancel,
-		queue:           make(chan []byte, binding.configuration.MaxQueuedDatagramsPerAssociation),
-		releaseSource:   func() {},
-		done:            make(chan struct{}),
-		responseEnabled: binding.responseEnabled.Load(),
+		binding:       binding,
+		source:        source,
+		target:        target,
+		lease:         lease,
+		context:       ctx,
+		cancel:        cancel,
+		queue:         make(chan []byte, binding.configuration.MaxQueuedDatagramsPerAssociation),
+		releaseSource: func() {},
+		done:          make(chan struct{}),
 	}
 	candidate.touch()
 	return candidate
@@ -324,7 +322,7 @@ func (association *association) forward(
 		if err != nil {
 			return errors.Join(err, receiveWriteError(writeErrors))
 		}
-		if association.responseEnabled {
+		if association.binding.responseEnabled.Load() {
 			if err := association.binding.endpoint.WriteTo(association.context, payload, association.source, association.binding.configuration.LinkWriteTimeout); err != nil {
 				return err
 			}

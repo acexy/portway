@@ -240,21 +240,42 @@ func TestTCPMirrorLocalServiceRecovery(t *testing.T) {
 				observed, stop := startRecoveryTCPService(t, addresses[recoveringIndex].String(), recoveringIndex == 0)
 				exchangeRecoveryTCP(t, visitor, observed, 'B')
 				stop()
-				waitMirrorRecovery(t, "failed member link was not released", func() bool {
-					return server.linkBroker.SnapshotStats().Active == 1
-				})
-				if _, err := visitor.Write([]byte{'C'}); err != nil {
-					t.Fatal(err)
-				}
-				waitMirrorRecovery(t, "healthy member stopped during restart", func() bool {
-					select {
-					case value := <-stable:
-						return value == 'C'
-					default:
-						return false
+				if recoveringIndex == 0 {
+					// A graceful Primary EOF is a response boundary, not a failed
+					// link to splice into the same visitor. Finish both directions
+					// before establishing a fresh application connection.
+					_ = visitor.SetReadDeadline(time.Now().Add(5 * time.Second))
+					if _, err := io.Copy(io.Discard, visitor); err != nil {
+						t.Fatalf("Primary EOF did not reach visitor: %v", err)
 					}
-				})
-				observed, _ = startRecoveryTCPService(t, addresses[recoveringIndex].String(), recoveringIndex == 0)
+					if err := visitor.(*net.TCPConn).CloseWrite(); err != nil {
+						t.Fatal(err)
+					}
+					_ = visitor.Close()
+					waitMirrorRecovery(t, "finished Primary retained links", func() bool {
+						stats := server.linkBroker.SnapshotStats()
+						return stats.Active == 0 && stats.Pending == 0
+					})
+					observed, _ = startRecoveryTCPService(t, addresses[recoveringIndex].String(), true)
+					visitor = dialWithRetry(t, publicAddress, 5*time.Second)
+					defer visitor.Close()
+				} else {
+					waitMirrorRecovery(t, "failed member link was not released", func() bool {
+						return server.linkBroker.SnapshotStats().Active == 1
+					})
+					if _, err := visitor.Write([]byte{'C'}); err != nil {
+						t.Fatal(err)
+					}
+					waitMirrorRecovery(t, "healthy member stopped during restart", func() bool {
+						select {
+						case value := <-stable:
+							return value == 'C'
+						default:
+							return false
+						}
+					})
+					observed, _ = startRecoveryTCPService(t, addresses[recoveringIndex].String(), false)
+				}
 				exchangeRecoveryTCP(t, visitor, observed, 'D')
 				if err := visitor.(*net.TCPConn).CloseWrite(); err != nil {
 					t.Fatal(err)

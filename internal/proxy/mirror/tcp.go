@@ -3,6 +3,8 @@ package mirror
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -16,8 +18,8 @@ const (
 	mirrorTCPQueueDepth       = 32
 	mirrorTCPRetryInterval    = time.Second
 	mirrorTCPMaxRetryInterval = 5 * time.Second
-	mirrorTCPWriteTimeout     = 5 * time.Second
-	mirrorTCPCloseGracePeriod = 5 * time.Second
+	mirrorTCPWriteTimeout     = 15 * time.Second
+	mirrorTCPCloseGracePeriod = 15 * time.Second
 )
 
 // Each worker owns at most one pending or active link for a member generation.
@@ -42,10 +44,15 @@ type TCPSession struct {
 	members         map[string]*tcpMember
 	workers         map[string]*tcpWorker
 	inputDone       chan struct{}
+	inputContext    context.Context
+	inputCancel     context.CancelFunc
 	memberReady     chan struct{}
 	memberReadyOnce sync.Once
 	waitGroup       sync.WaitGroup
-	responseMutex   sync.Mutex
+	responseGate    chan struct{}
+	responseWriter  *tcpMember
+	responseClosed  bool
+	primaryChanged  chan struct{}
 	primaryClientID atomic.Pointer[string]
 }
 
@@ -65,12 +72,16 @@ type OpenStream func(context.Context, link.Target) (net.Conn, error)
 // snapshot, then call Serve exactly once; AddTarget may run concurrently.
 func NewTCPSession(ctx context.Context, visitor net.Conn, guard TargetGuard, open OpenStream) *TCPSession {
 	sessionContext, cancel := context.WithCancel(ctx)
+	inputContext, inputCancel := context.WithCancel(sessionContext)
 	return &TCPSession{
 		context: sessionContext, cancel: cancel, visitor: visitor,
+		inputContext: inputContext, inputCancel: inputCancel,
 		guard: guard, open: open,
 		members: make(map[string]*tcpMember), workers: make(map[string]*tcpWorker),
-		inputDone:   make(chan struct{}),
-		memberReady: make(chan struct{}),
+		inputDone:      make(chan struct{}),
+		memberReady:    make(chan struct{}),
+		primaryChanged: make(chan struct{}),
+		responseGate:   make(chan struct{}, 1),
 	}
 }
 
@@ -78,9 +89,36 @@ func NewTCPSession(ctx context.Context, visitor net.Conn, guard TargetGuard, ope
 func (session *TCPSession) Cancel() { session.cancel() }
 
 // SetPrimary changes response eligibility without waiting for a blocked writer.
-func (session *TCPSession) SetPrimary(clientID string) { session.primaryClientID.Store(&clientID) }
+func (session *TCPSession) SetPrimary(clientID string) {
+	session.mutex.Lock()
+	defer session.mutex.Unlock()
+	previous := session.primaryClientID.Load()
+	if previous != nil && *previous == clientID {
+		return
+	}
+	session.primaryClientID.Store(&clientID)
+	close(session.primaryChanged)
+	session.primaryChanged = make(chan struct{})
+	for _, member := range session.members {
+		session.updateMemberRoleLocked(member)
+	}
+	// A previously admitted response write may finish, but cannot block a
+	// responder switch forever. Its failure cancels the complete visitor.
+	if session.responseWriter != nil {
+		deadline := time.Time{}
+		if session.responseWriter.target.ClientID != clientID {
+			deadline = time.Now().Add(mirrorTCPWriteTimeout)
+		}
+		if err := session.visitor.SetWriteDeadline(deadline); err != nil {
+			session.cancel()
+		}
+	}
+	if session.responseClosed {
+		session.cancel()
+	}
+}
 
-// Serve consumes visitor input and owns the bounded response-drain window.
+// Serve consumes visitor input and drains the Primary independently of replicas.
 func (session *TCPSession) Serve(targets []link.Target) {
 	visitor := session.visitor
 	ctx := session.context
@@ -119,14 +157,13 @@ waitInitial:
 				payload = append([]byte(nil), buffer[:length]...)
 			}
 			for _, member := range members {
-				select {
-				case member.queue <- payload:
-				default:
-					member.close()
-				}
+				session.enqueue(member, payload)
 			}
 		}
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				return
+			}
 			break
 		}
 	}
@@ -139,11 +176,8 @@ waitInitial:
 		session.waitGroup.Wait()
 		close(finished)
 	}()
-	timer := time.NewTimer(mirrorTCPCloseGracePeriod)
-	defer timer.Stop()
 	select {
 	case <-finished:
-	case <-timer.C:
 	case <-ctx.Done():
 	}
 }
@@ -224,7 +258,11 @@ func (session *TCPSession) runWorker(worker, previous *tcpWorker) {
 			return
 		default:
 		}
-		connection, err := session.open(worker.context, worker.target)
+		openContext, cancelOpen := context.WithCancel(worker.context)
+		stopInputCancel := context.AfterFunc(session.inputContext, cancelOpen)
+		connection, err := session.open(openContext, worker.target)
+		stopInputCancel()
+		cancelOpen()
 		var member *tcpMember
 		if err == nil {
 			session.guard.Lock()
@@ -244,16 +282,32 @@ func (session *TCPSession) runWorker(worker, previous *tcpWorker) {
 			case <-member.stopped:
 			case <-worker.context.Done():
 			case <-session.inputDone:
-				<-member.done
-				// Primary may change while this link remains alive. The session's
-				// bounded drain window owns termination of every response reader.
-				<-member.responseDone
+				select {
+				case <-member.done:
+					select {
+					case <-member.responseDone:
+					case <-member.stopped:
+					case <-worker.context.Done():
+					}
+				case <-member.stopped:
+				case <-worker.context.Done():
+				}
 			}
 			member.close()
+			session.mutex.Lock()
+			// A failed member cannot retain an unbounded visitor write while
+			// its owner waits for cleanup or starts a replacement generation.
+			if session.responseWriter == member {
+				session.cancel()
+			}
+			session.mutex.Unlock()
 			stopClose()
 			<-member.done
 			<-member.responseDone
 			session.mutex.Lock()
+			if member.drainTimer != nil {
+				member.drainTimer.Stop()
+			}
 			if session.members[worker.target.ClientID] == member {
 				delete(session.members, worker.target.ClientID)
 			}
@@ -291,9 +345,79 @@ func (session *TCPSession) closeInput() []*tcpMember {
 	}
 	session.closed = true
 	close(session.inputDone)
+	session.inputCancel()
 	members := make([]*tcpMember, 0, len(session.members))
 	for _, member := range session.members {
+		session.updateMemberRoleLocked(member)
 		members = append(members, member)
 	}
 	return members
+}
+
+// enqueue keeps one bounded input block while a healthy Primary applies backpressure.
+func (session *TCPSession) enqueue(member *tcpMember, payload []byte) {
+	for {
+		session.mutex.Lock()
+		primary := session.isPrimary(member)
+		changed := session.primaryChanged
+		if !primary {
+			select {
+			case member.queue <- payload:
+			default:
+				member.close()
+			}
+			session.mutex.Unlock()
+			return
+		}
+		session.mutex.Unlock()
+		select {
+		case member.queue <- payload:
+			return
+		case <-member.stopped:
+			return
+		case <-session.context.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+func (session *TCPSession) isPrimary(member *tcpMember) bool {
+	primary := session.primaryClientID.Load()
+	return primary != nil && member.target.ClientID == *primary
+}
+
+// The session mutex serializes role changes with deadline and drain ownership.
+func (session *TCPSession) updateMemberRoleLocked(member *tcpMember) {
+	deadline := time.Time{}
+	if !session.isPrimary(member) {
+		deadline = time.Now().Add(mirrorTCPWriteTimeout)
+	}
+	if err := member.connection.SetWriteDeadline(deadline); err != nil {
+		member.close()
+	}
+	if member.drainTimer != nil {
+		member.drainTimer.Stop()
+		member.drainTimer = nil
+	}
+	if session.closed && !session.isPrimary(member) {
+		var timer *time.Timer
+		timer = time.AfterFunc(mirrorTCPCloseGracePeriod, func() {
+			session.mutex.Lock()
+			defer session.mutex.Unlock()
+			if member.drainTimer == timer && !session.isPrimary(member) {
+				member.close()
+			}
+		})
+		member.drainTimer = timer
+	}
+}
+
+func (session *TCPSession) acquireResponse() bool {
+	select {
+	case session.responseGate <- struct{}{}:
+		return true
+	case <-session.context.Done():
+		return false
+	}
 }
