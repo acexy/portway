@@ -175,7 +175,10 @@ by the operating system when the owning process closes the descriptor.
 The Windows amd64 release archive bundles the official signed `wintun.dll`; it
 is not a separate installer. Commands that may need Windows VNet privileges
 request administrator authorization through UAC and continue in a relaunched
-elevated process after approval. Because a client learns whether VNet is enabled
+elevated process after approval. The command keeps the original console, standard
+stream redirection, and exit code; Ctrl+C stops the elevated command gracefully.
+A hidden bootstrap connects the console before starting the command. The UAC
+prompt remains visible. Because a client learns whether VNet is enabled
 only after authentication, `portway run` requests authorization before startup;
 `portwayd run` does so only when `virtual_network.enabled` is true. Portway loads
 Wintun and creates its temporary `portway0` adapter only when VNet is actually
