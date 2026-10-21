@@ -18,23 +18,59 @@ func TestPortOwnershipFailureReleasesHTTPPreparation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	existing, err := manager.newHTTPBinding("client", "session", protocol.ProxyDeclaration{
+		Name: "existing", Type: protocol.ProxyTypeHTTP, Domain: "existing.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer existing.close()
 	// Observe the actual pool registrations without expanding the runtime API
 	// solely for a cross-package rollback assertion. No pool mutations run here.
 	poolCount := func() int { return reflect.ValueOf(manager.httpConnectionLimiter).Elem().FieldByName("pools").Len() }
-	if poolCount() != 1 {
+	if poolCount() != 2 {
 		t.Fatal("HTTP preparation did not register its transport")
 	}
 	result := manager.commitSync(syncCommitPreparation{
 		clientID: "client", sessionID: "session", request: SyncRequest{Revision: 1},
 		reusableEndpoints: map[uint16]*proxytcp.Endpoint{12345: {}},
-		nextHTTPProxies:   map[string]*httpProxyBinding{"web": binding},
+		resources: &syncCandidateResources{
+			nextHTTPProxies:     map[string]*httpProxyBinding{"web": binding, "existing": existing},
+			existingHTTPProxies: map[string]*httpProxyBinding{"existing": existing},
+		},
 	}, nil)
 	if result.Status != SyncStatusRejected {
 		t.Fatal("changed port owner was accepted")
 	}
-	if poolCount() != 0 {
-		t.Fatal("rejected candidate retained an HTTP transport registration")
+	if poolCount() != 1 {
+		t.Fatal("rollback retained a candidate transport or closed the reused transport")
 	}
+}
+
+func TestEndpointPreparationFailureReleasesPreparedTCPListener(t *testing.T) {
+	manager := newTestTCPProxyManager(t)
+	manager.Attach("client", "session", nil)
+	occupied, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	tcpAddress := reserveTCPAddress(t)
+	result := manager.Sync("client", "session", "request", SyncRequest{
+		Revision: 1,
+		Proxies: []protocol.ProxyDeclaration{
+			tcpProxyDeclaration("tcp", uint16(tcpAddress.Port)),
+			udpProxyDeclaration("udp", uint16(occupied.LocalAddr().(*net.UDPAddr).Port)),
+		},
+	})
+	if result.Status != SyncStatusRejected || result.Error == nil || result.Error.ProxyName != "udp" {
+		t.Fatalf("expected UDP preparation rejection, got %+v", result)
+	}
+	listener, err := net.ListenTCP("tcp", tcpAddress)
+	if err != nil {
+		t.Fatalf("failed preparation retained the earlier TCP listener: %v", err)
+	}
+	listener.Close()
 }
 
 func TestCoordinatedSyncPreparesBeforePublicationAndRollsBack(t *testing.T) {

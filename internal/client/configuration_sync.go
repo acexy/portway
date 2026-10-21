@@ -20,19 +20,8 @@ func (s *Service) syncConfiguration(
 	if err != nil {
 		return protocol.SyncConfigurationResult{}, err
 	}
-	proxies := coll.SliceCollect(s.runtimeProxySnapshot(), func(proxy config.ProxyConfig) protocol.ProxyDeclaration {
-		return protocol.ProxyDeclaration{
-			Name: proxy.Name, Type: proxy.Type,
-			RemotePort: proxy.Public.Port, Domain: proxy.Public.Domain,
-			PublicSchemes: append([]protocol.HTTPPublicScheme(nil), proxy.Public.Schemes...),
-		}
-	})
-	forwards := coll.SliceCollect(s.runtimeForwardSnapshot(), func(forward config.ForwardConfig) protocol.ForwardDeclaration {
-		return protocol.ForwardDeclaration{
-			Name: forward.Name, Type: forward.Type,
-			TargetIP: forward.Target.IP, TargetPort: forward.Target.Port,
-		}
-	})
+	proxies := coll.SliceCollect(s.runtimeProxySnapshot(), config.ProxyDeclaration)
+	forwards := coll.SliceCollect(s.runtimeForwardSnapshot(), config.ForwardDeclaration)
 	if proxies == nil {
 		proxies = []protocol.ProxyDeclaration{}
 	}

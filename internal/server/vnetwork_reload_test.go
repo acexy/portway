@@ -30,7 +30,7 @@ func TestVNetPolicyOnlyReloadKeepsAssignmentGenerationValid(t *testing.T) {
 	defer runtime.Close()
 	runtime.attach("managed-a", "session-a", transport.Generation(1), authentication.Context{
 		Mode: authentication.ModeManaged, ClientID: "managed-a",
-	}, control.NewWriter(discardConnection{}))
+	}, control.NewWriter(discardConnection{}), false)
 	if err := runtime.assign("managed-a", "session-a"); err != nil {
 		t.Fatalf("assign VNet: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestValidateVNetConfigurationTransitionAllowsAddressMigration(t *testing.T)
 	defer runtime.Close()
 	runtime.attach("managed-a", "session-a", transport.Generation(1), authentication.Context{
 		Mode: authentication.ModeManaged, ClientID: "managed-a",
-	}, control.NewWriter(discardConnection{}))
+	}, control.NewWriter(discardConnection{}), false)
 	service := &Service{vnetRuntime: runtime}
 
 	testCases := []struct {
@@ -222,7 +222,7 @@ func TestVNetNodeAddressMigrationPreservesServerDeviceAndSession(t *testing.T) {
 	var messages bytes.Buffer
 	runtime.attach("managed-a", "session-a", 1, authentication.Context{
 		Mode: authentication.ModeManaged, ClientID: "managed-a",
-	}, control.NewWriter(&messages))
+	}, control.NewWriter(&messages), false)
 	candidate := configuration
 	candidate.Nodes = []config.VNetNodeConfig{{ClientID: "managed-a", IP: "172.20.0.3"}}
 	runtime.applyConfiguration(candidate, 2)

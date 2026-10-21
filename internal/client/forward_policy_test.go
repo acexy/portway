@@ -25,13 +25,10 @@ func TestForwardManagerKeepsDormantConfigurationAndRestoresListener(t *testing.T
 		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(address.Port)},
 		Target: config.EndpointConfig{IP: "127.0.0.1", Port: 5432},
 	}
-	manager, err := newForwardManager(
+	manager := newForwardManager(
 		context.Background(), logging.New("test"), "client", "session", nil, nil,
 		[]config.ForwardConfig{configuration},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer manager.close()
 	if err := manager.applyBindings([]protocol.ForwardResult{{
 		Name: configuration.Name, Type: configuration.Type, BindingID: "binding", Active: false,
@@ -62,13 +59,10 @@ func TestForwardManagerRejectsMissingUDPServerLimits(t *testing.T) {
 		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: 1053},
 		Target: config.EndpointConfig{IP: "127.0.0.1", Port: 53},
 	}
-	manager, err := newForwardManager(
+	manager := newForwardManager(
 		context.Background(), logging.New("test"), "client", "session", nil, nil,
 		[]config.ForwardConfig{configuration},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer manager.close()
 	if err := manager.applyBindings([]protocol.ForwardResult{{
 		Name: configuration.Name, Type: configuration.Type, BindingID: "binding", Active: true,
@@ -89,13 +83,10 @@ func TestReplaceManagedForwardRuntimeRebindsUnchangedAddress(t *testing.T) {
 		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: uint16(address.Port)},
 		Target: config.EndpointConfig{IP: "127.0.0.1", Port: 5432},
 	}
-	current, err := newForwardManager(
+	current := newForwardManager(
 		context.Background(), logging.New("test"), "client", "session", nil, nil,
 		[]config.ForwardConfig{configuration},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := current.applyBindings([]protocol.ForwardResult{{
 		Name: configuration.Name, Type: configuration.Type,
 		BindingID: "old-binding", Active: true,
@@ -105,14 +96,10 @@ func TestReplaceManagedForwardRuntimeRebindsUnchangedAddress(t *testing.T) {
 	if err := current.start(); err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := newForwardManager(
+	candidate := newForwardManager(
 		context.Background(), logging.New("test"), "client", "session", nil, nil,
 		[]config.ForwardConfig{configuration},
 	)
-	if err != nil {
-		current.close()
-		t.Fatal(err)
-	}
 	next, err := replaceManagedForwardRuntime(
 		current,
 		candidate,
@@ -130,14 +117,11 @@ func TestReplaceManagedForwardRuntimeRebindsUnchangedAddress(t *testing.T) {
 }
 
 func TestReplaceManagedForwardRuntimeKeepsCurrentOnInvalidCandidate(t *testing.T) {
-	current, err := newForwardManager(
+	current := newForwardManager(
 		context.Background(), logging.New("test"), "client", "session", nil, nil, nil,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer current.close()
-	candidate, err := newForwardManager(
+	candidate := newForwardManager(
 		context.Background(), logging.New("test"), "client", "session", nil, nil,
 		[]config.ForwardConfig{{
 			Name: "database", Type: protocol.ForwardTypeTCP,
@@ -145,9 +129,6 @@ func TestReplaceManagedForwardRuntimeKeepsCurrentOnInvalidCandidate(t *testing.T
 			Target: config.EndpointConfig{IP: "127.0.0.1", Port: 5432},
 		}},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer candidate.close()
 	next, err := replaceManagedForwardRuntime(current, candidate, nil)
 	if err == nil {
@@ -186,10 +167,7 @@ func TestManagedForwardBindingFailureRetriesAfterPortRelease(t *testing.T) {
 	configuration := config.ForwardConfig{Name: "database", Type: protocol.ForwardTypeTCP,
 		Listen: config.EndpointConfig{IP: "127.0.0.1", Port: port}, Target: config.EndpointConfig{IP: "127.0.0.1", Port: 5432}}
 	create := func() *forwardManager {
-		runtime, err := newForwardManager(context.Background(), logging.New("test"), "client", "session", nil, nil, []config.ForwardConfig{configuration})
-		if err != nil {
-			t.Fatal(err)
-		}
+		runtime := newForwardManager(context.Background(), logging.New("test"), "client", "session", nil, nil, []config.ForwardConfig{configuration})
 		return runtime
 	}
 	bindings := []protocol.ForwardResult{{Name: "database", Type: protocol.ForwardTypeTCP, BindingID: "binding", Active: true}}

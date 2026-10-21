@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -25,7 +26,7 @@ func TestSynchronizeConfigurationReplaysCompleteResultBeforeRegistryWork(t *test
 		Revision: 1, Status: protocol.ConfigurationSyncStatusApplied,
 		Forwards: []protocol.ForwardResult{{Name: "database"}},
 	}
-	service.cacheConfigurationSync("client", "session", "request_one", request, expected)
+	service.cacheConfigurationSync("client", "session", "request_one", request.Revision, configurationTestFingerprint(t, request), expected)
 	payload, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
@@ -99,9 +100,9 @@ func TestConfigurationSyncCacheReplaysCompleteResult(t *testing.T) {
 		}},
 		Forwards: []protocol.ForwardResult{},
 	}
-	service.cacheConfigurationSync("client", "session", "request_one", request, result)
+	service.cacheConfigurationSync("client", "session", "request_one", request.Revision, configurationTestFingerprint(t, request), result)
 
-	replayed, rejection := service.checkConfigurationSync(
+	replayed, _, rejection := service.checkConfigurationSync(
 		"client", "session", "request_two", request,
 	)
 	if rejection != nil || replayed == nil || replayed.Status != result.Status ||
@@ -123,15 +124,84 @@ func TestConfigurationSyncCacheRejectsChangedRequestIDPayload(t *testing.T) {
 		"client",
 		"session",
 		"request_one",
-		request,
+		request.Revision,
+		configurationTestFingerprint(t, request),
 		protocol.SyncConfigurationResult{
 			Revision: 1, Status: protocol.ConfigurationSyncStatusApplied,
 		},
 	)
 	request.Forwards[0].TargetPort = 5433
-	if replayed, rejection := service.checkConfigurationSync(
+	if replayed, _, rejection := service.checkConfigurationSync(
 		"client", "session", "request_one", request,
 	); replayed != nil || rejection == nil || rejection.Code != "invalid_request" {
 		t.Fatalf("changed payload was not rejected: result=%+v rejection=%+v", replayed, rejection)
+	}
+}
+
+func configurationTestFingerprint(t *testing.T, request protocol.SyncConfiguration) [sha256.Size]byte {
+	t.Helper()
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha256.Sum256(payload)
+}
+
+func TestConfigurationSyncFingerprintPreservesJSONRepresentation(t *testing.T) {
+	service := &Service{}
+	request := protocol.SyncConfiguration{Revision: 1}
+	_, fingerprint, rejection := service.checkConfigurationSync("client", "session", "request_one", request)
+	if rejection != nil || fingerprint != configurationTestFingerprint(t, request) {
+		t.Fatalf("unexpected fingerprint or rejection: %v", rejection)
+	}
+	service.cacheConfigurationSync("client", "session", "request_one", request.Revision, fingerprint,
+		protocol.SyncConfigurationResult{Revision: 1, Status: protocol.ConfigurationSyncStatusApplied})
+	request.Proxies = []protocol.ProxyDeclaration{}
+	_, changedFingerprint, rejection := service.checkConfigurationSync("client", "session", "request_two", request)
+	if changedFingerprint != configurationTestFingerprint(t, request) {
+		t.Fatal("fingerprint differs from JSON representation")
+	}
+	// Empty collections must retain the protocol's existing JSON encoding semantics.
+	if (changedFingerprint == fingerprint) != (rejection == nil) {
+		t.Fatalf("JSON equality and replay validation disagree: %v", rejection)
+	}
+}
+
+type configurationRejectionFailWriter struct{ err error }
+
+func (writer configurationRejectionFailWriter) Write([]byte) (int, error) { return 0, writer.err }
+
+func TestConfigurationRejectionPreservesWriteFailure(t *testing.T) {
+	writeError := errors.New("response write failed")
+	service := &Service{}
+	_, err := service.rejectConfigurationSync(configurationSyncSession{
+		writer: control.NewWriter(configurationRejectionFailWriter{err: writeError}),
+	}, "request_one", 7, invalidConfigurationRequest("rejected"))
+	if !errors.Is(err, writeError) {
+		t.Fatalf("write failure replaced: %v", err)
+	}
+}
+
+func TestConfigurationRejectionPreservesResponse(t *testing.T) {
+	var output bytes.Buffer
+	service := &Service{}
+	rejection := invalidConfigurationRequest("rejected")
+	_, err := service.rejectConfigurationSync(configurationSyncSession{
+		writer: control.NewWriter(&output),
+	}, "request_one", 7, rejection)
+	if !errors.Is(err, errProxyRegistrationRejected) {
+		t.Fatalf("unexpected rejection error: %v", err)
+	}
+	envelope, err := protocol.ReadControl(&output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result protocol.SyncConfigurationResult
+	if err := protocol.DecodePayload(envelope, &result); err != nil {
+		t.Fatal(err)
+	}
+	expected := protocol.SyncConfigurationResult{Revision: 7, Status: protocol.ConfigurationSyncStatusRejected, Error: rejection}
+	if envelope.Type != protocol.MessageSyncConfigurationResult || envelope.RequestID != "request_one" || !reflect.DeepEqual(result, expected) {
+		t.Fatalf("unexpected rejection response: %+v, %+v", envelope, result)
 	}
 }

@@ -15,12 +15,9 @@ func (manager *Registry) prepareSyncEndpoints(
 	request SyncRequest,
 	reusableEndpoints map[uint16]*proxytcp.Endpoint,
 	reusableUDPEndpoints map[uint16]*proxyudp.Endpoint,
-) (
-	map[uint16]*proxytcp.Endpoint,
-	map[uint16]*proxyudp.Endpoint,
-	*SyncResult,
-) {
-	newEndpoints := make(map[uint16]*proxytcp.Endpoint)
+	resources *syncCandidateResources,
+) *SyncResult {
+	newEndpoints := resources.newEndpoints
 	for _, declaration := range request.Proxies {
 		if declaration.Type != protocol.ProxyTypeTCP ||
 			reusableEndpoints[declaration.RemotePort] != nil {
@@ -37,19 +34,18 @@ func (manager *Registry) prepareSyncEndpoints(
 			manager.sourceFilter,
 		)
 		if err != nil {
-			closeTCPEndpoints(newEndpoints)
 			result := rejectedSyncResult(
 				request.Revision,
 				ErrorPortConflict,
 				declaration.Name,
 				"remote port is unavailable",
 			)
-			return nil, nil, &result
+			return &result
 		}
 		newEndpoints[declaration.RemotePort] = endpoint
 	}
 
-	newUDPEndpoints := make(map[uint16]*proxyudp.Endpoint)
+	newUDPEndpoints := resources.newUDPEndpoints
 	for _, declaration := range request.Proxies {
 		if declaration.Type != protocol.ProxyTypeUDP ||
 			reusableUDPEndpoints[declaration.RemotePort] != nil {
@@ -67,19 +63,17 @@ func (manager *Registry) prepareSyncEndpoints(
 			manager.udpConfiguration.MaxDatagramSize,
 		)
 		if err != nil {
-			closeTCPEndpoints(newEndpoints)
-			closeUDPEndpoints(newUDPEndpoints)
 			result := rejectedSyncResult(
 				request.Revision,
 				ErrorPortConflict,
 				declaration.Name,
 				"UDP remote port is unavailable",
 			)
-			return nil, nil, &result
+			return &result
 		}
 		newUDPEndpoints[declaration.RemotePort] = endpoint
 	}
-	return newEndpoints, newUDPEndpoints, nil
+	return nil
 }
 func newBindingID() (string, error) {
 	randomBytes := make([]byte, 16)

@@ -18,6 +18,8 @@ type tcpMember struct {
 	responseDone chan struct{}
 	closeOnce    sync.Once
 	stopped      chan struct{}
+	session      *TCPSession
+	drainTimer   *time.Timer
 }
 
 func (session *TCPSession) addConnection(
@@ -25,7 +27,7 @@ func (session *TCPSession) addConnection(
 	connection net.Conn,
 ) *tcpMember {
 	member := &tcpMember{
-		target: target, connection: connection,
+		target: target, connection: connection, session: session,
 		queue:        make(chan []byte, mirrorTCPQueueDepth),
 		done:         make(chan struct{}),
 		responseDone: make(chan struct{}),
@@ -46,67 +48,78 @@ func (session *TCPSession) addConnection(
 	go member.writeLoop(session.context)
 	go func() {
 		defer close(member.responseDone)
-		defer func() {
-			session.mutex.Lock()
-			closed := session.closed
-			session.mutex.Unlock()
-			if !closed {
-				member.close()
-			}
-		}()
-		if session.visitor != nil {
-			session.copyResponse(member)
+		if session.visitor != nil && session.copyResponse(member) {
+			// A clean Primary EOF ends only its response direction. Keep the
+			// request writer alive until Visitor EOF or cancellation.
 			return
 		}
-		_, _ = io.Copy(io.Discard, connection)
+		member.close()
 	}()
 	return member
 }
 
-// A failed local Primary must not irreversibly half-close the visitor. Only
-// visitor input EOF ends recovery; responses from successive links are serialized.
-func (session *TCPSession) copyResponse(member *tcpMember) {
+// copyResponse returns true only after forwarding a clean Primary half-close.
+// Replica readers never wait for the Primary's potentially blocked visitor write.
+func (session *TCPSession) copyResponse(member *tcpMember) bool {
 	buffer := make([]byte, mirrorTCPChunkSize)
 	for {
 		length, readError := member.connection.Read(buffer)
-		if length != 0 {
-			session.responseMutex.Lock()
-			if !session.currentMember(member) {
-				session.responseMutex.Unlock()
-				return
+		if length != 0 && session.isPrimary(member) {
+			if !session.acquireResponse() {
+				return false
 			}
-			primary := session.primaryClientID.Load()
-			if primary == nil || member.target.ClientID != *primary {
-				session.responseMutex.Unlock()
-				if readError != nil {
-					return
+			session.mutex.Lock()
+			eligible := session.responseEligibleLocked(member)
+			var err error
+			if eligible {
+				if session.responseClosed {
+					err = io.ErrClosedPipe
+				} else {
+					session.responseWriter = member
+					err = session.visitor.SetWriteDeadline(time.Time{})
 				}
-				continue
 			}
-			err := session.visitor.SetWriteDeadline(time.Now().Add(mirrorTCPWriteTimeout))
-			if err == nil {
+			session.mutex.Unlock()
+			if eligible && err == nil {
 				var written int
 				written, err = session.visitor.Write(buffer[:length])
 				if err == nil && written != length {
 					err = io.ErrShortWrite
 				}
 			}
-			session.responseMutex.Unlock()
+			session.mutex.Lock()
+			session.responseWriter = nil
 			if err != nil {
 				session.cancel()
-				return
+			}
+			session.mutex.Unlock()
+			<-session.responseGate
+			if err != nil {
+				return false
 			}
 		}
 		if readError != nil {
-			return
+			if readError == io.EOF && session.isPrimary(member) {
+				if !session.acquireResponse() {
+					return false
+				}
+				session.mutex.Lock()
+				eligible := session.responseEligibleLocked(member)
+				if eligible {
+					session.responseClosed = true
+				}
+				session.mutex.Unlock()
+				if eligible {
+					if err := closeWrite(session.visitor); err != nil {
+						session.cancel()
+					}
+				}
+				<-session.responseGate
+				return eligible
+			}
+			return false
 		}
 	}
-}
-
-func (session *TCPSession) currentMember(member *tcpMember) bool {
-	session.mutex.Lock()
-	defer session.mutex.Unlock()
-	return session.members[member.target.ClientID] == member
 }
 
 func (member *tcpMember) writeLoop(ctx context.Context) {
@@ -120,10 +133,12 @@ func (member *tcpMember) writeLoop(ctx context.Context) {
 			return
 		case payload, open := <-member.queue:
 			if !open {
-				closeWrite(member.connection)
+				if err := closeWrite(member.connection); err != nil {
+					member.close()
+				}
 				return
 			}
-			if err := member.connection.SetWriteDeadline(time.Now().Add(mirrorTCPWriteTimeout)); err != nil {
+			if err := member.setWriteDeadline(); err != nil {
 				member.close()
 				return
 			}
@@ -142,9 +157,35 @@ func (member *tcpMember) close() {
 	})
 }
 
-func closeWrite(connection net.Conn) {
+func (member *tcpMember) setWriteDeadline() error {
+	deadline := time.Now().Add(mirrorTCPWriteTimeout)
+	if member.session != nil {
+		member.session.mutex.Lock()
+		defer member.session.mutex.Unlock()
+		if member.session.isPrimary(member) {
+			deadline = time.Time{}
+		}
+	}
+	return member.connection.SetWriteDeadline(deadline)
+}
+
+func closeWrite(connection net.Conn) error {
 	type closeWriter interface{ CloseWrite() error }
 	if candidate, ok := connection.(closeWriter); ok {
-		_ = candidate.CloseWrite()
+		return candidate.CloseWrite()
+	}
+	return io.ErrClosedPipe
+}
+
+// The session mutex protects generation and responder eligibility checks.
+func (session *TCPSession) responseEligibleLocked(member *tcpMember) bool {
+	if session.context.Err() != nil || session.members[member.target.ClientID] != member || !session.isPrimary(member) {
+		return false
+	}
+	select {
+	case <-member.stopped:
+		return false
+	default:
+		return true
 	}
 }

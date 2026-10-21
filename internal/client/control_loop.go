@@ -7,7 +7,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
@@ -24,7 +23,7 @@ func (s *Service) runControlLoop(
 	managementMode protocol.ManagementMode,
 	vnetNegotiated bool,
 	vnetPeerNegotiated bool,
-	forwardRuntime *forwardManager,
+	activeForwardManager *forwardManager,
 	heartbeat *heartbeatState,
 ) error {
 	sessionContext, cancelSession := context.WithCancel(ctx)
@@ -78,15 +77,13 @@ func (s *Service) runControlLoop(
 		defer vnetManager.detachSession()
 	}
 
-	var pendingManagedProxies []config.ProxyConfig
-	var pendingManagedForwardRuntime *forwardManager
-	var pendingManagedStatus *protocol.ManagedConfigStatus
+	var pendingManaged *pendingManagedConfiguration
 	defer func() {
-		if pendingManagedForwardRuntime != nil && pendingManagedForwardRuntime != forwardRuntime {
-			pendingManagedForwardRuntime.close()
+		if pendingManaged != nil {
+			pendingManaged.close()
 		}
-		if forwardRuntime != nil {
-			forwardRuntime.close()
+		if activeForwardManager != nil {
+			activeForwardManager.close()
 		}
 	}()
 	for {
@@ -94,8 +91,8 @@ func (s *Service) runControlLoop(
 		case <-ctx.Done():
 			cancelSession()
 			<-heartbeatDone
-			if pendingManagedForwardRuntime != nil {
-				pendingManagedForwardRuntime.close()
+			if pendingManaged != nil {
+				pendingManaged.close()
 			}
 			linkManager.close()
 			s.closeControlSession(
@@ -122,14 +119,14 @@ func (s *Service) runControlLoop(
 			}
 			switch envelope.Type {
 			case protocol.MessageForwardLinkOffer:
-				if forwardRuntime == nil {
+				if activeForwardManager == nil {
 					return fmt.Errorf("%w: unexpected Forward Link offer", transport.ErrProtocol)
 				}
 				var offer protocol.ForwardLinkOffer
 				if err := protocol.DecodePayload(envelope, &offer); err != nil {
 					return classifyControlProtocolError(err)
 				}
-				forwardRuntime.deliverOffer(offer)
+				activeForwardManager.deliverOffer(offer)
 			case protocol.MessageVNetAssignment:
 				if vnetManager == nil {
 					return fmt.Errorf("%w: unexpected VNet assignment", transport.ErrProtocol)
@@ -206,34 +203,34 @@ func (s *Service) runControlLoop(
 				}
 				vnetManager.peerRevoke(revocation)
 			case protocol.MessageForwardBindingRevoked:
-				if forwardRuntime == nil {
+				if activeForwardManager == nil {
 					return fmt.Errorf("%w: unexpected Forward revocation", transport.ErrProtocol)
 				}
 				var revocation protocol.ForwardBindingRevoked
 				if err := protocol.DecodePayload(envelope, &revocation); err != nil {
 					return classifyControlProtocolError(err)
 				}
-				forwardRuntime.revoke(revocation)
+				activeForwardManager.revoke(revocation)
 			case protocol.MessageForwardBindingActivated:
-				if forwardRuntime == nil {
+				if activeForwardManager == nil {
 					return fmt.Errorf("%w: unexpected Forward activation", transport.ErrProtocol)
 				}
 				var activation protocol.ForwardBindingActivated
 				if err := protocol.DecodePayload(envelope, &activation); err != nil {
 					return classifyControlProtocolError(err)
 				}
-				if err := forwardRuntime.activate(activation); err != nil {
+				if err := activeForwardManager.activate(activation); err != nil {
 					return fmt.Errorf("activate Forward: %w", err)
 				}
 			case protocol.MessageCancelForwardLink:
-				if forwardRuntime == nil {
+				if activeForwardManager == nil {
 					return fmt.Errorf("%w: unexpected Forward cancellation", transport.ErrProtocol)
 				}
 				var cancellation protocol.CancelForwardLink
 				if err := protocol.DecodePayload(envelope, &cancellation); err != nil {
 					return classifyControlProtocolError(err)
 				}
-				forwardRuntime.cancelLink(cancellation.LinkID)
+				activeForwardManager.cancelLink(cancellation.LinkID)
 			case protocol.MessageSessionError:
 				return decodeRemoteSessionError(envelope)
 			case protocol.MessageOpenLink:
@@ -262,53 +259,15 @@ func (s *Service) runControlLoop(
 				if err := protocol.DecodePayload(envelope, &preparation); err != nil {
 					return classifyControlProtocolError(err)
 				}
-				proxies, status, err := validateManagedPreparation(preparation)
-				if err != nil {
-					return err
-				}
-				forwards, err := managedForwardConfigurations(preparation.Forwards)
-				if err != nil {
-					return err
-				}
-				if pendingManagedStatus != nil {
-					if status != *pendingManagedStatus {
-						return fmt.Errorf(
-							"%w: conflicting managed configuration rollout is pending",
-							transport.ErrProtocol,
-						)
-					}
-					if err := writer.Write(
-						protocol.MessageManagedConfigPrepared,
-						status,
-					); err != nil {
-						return err
-					}
-					continue
-				}
-				s.managedMutex.RLock()
-				currentStatus := s.managedStatus
-				s.managedMutex.RUnlock()
-				if status.Revision < currentStatus.Revision ||
-					(status.Revision == currentStatus.Revision &&
-						status.Digest != currentStatus.Digest) {
-					return fmt.Errorf(
-						"%w: stale or conflicting managed configuration revision",
-						transport.ErrProtocol,
-					)
-				}
-				pendingManagedProxies = proxies
-				pendingManagedForwardRuntime, err = newForwardManager(
-					sessionContext, sessionLogger, s.runtimeIdentity(), sessionID,
-					writer, transportSession, forwards,
+				candidate, err := s.prepareManagedConfiguration(
+					sessionContext, sessionLogger, sessionID, writer, transportSession,
+					preparation, pendingManaged,
 				)
 				if err != nil {
-					return transport.Permanent(err)
+					return err
 				}
-				pendingManagedStatus = &status
-				if err := writer.Write(
-					protocol.MessageManagedConfigPrepared,
-					status,
-				); err != nil {
+				pendingManaged = candidate
+				if err := writer.Write(protocol.MessageManagedConfigPrepared, candidate.status); err != nil {
 					return err
 				}
 			case protocol.MessageManagedConfigActivate:
@@ -316,7 +275,7 @@ func (s *Service) runControlLoop(
 				if err := protocol.DecodePayload(envelope, &activation); err != nil {
 					return classifyControlProtocolError(err)
 				}
-				if pendingManagedStatus == nil {
+				if pendingManaged == nil {
 					s.managedMutex.RLock()
 					currentStatus := s.managedStatus
 					s.managedMutex.RUnlock()
@@ -334,35 +293,15 @@ func (s *Service) runControlLoop(
 					}
 					continue
 				}
-				if activation.Revision != pendingManagedStatus.Revision || activation.Digest != pendingManagedStatus.Digest {
-					return fmt.Errorf(
-						"%w: managed configuration activation mismatch",
-						transport.ErrProtocol,
-					)
-				}
-				nextForwardRuntime, err := replaceManagedForwardRuntime(
-					forwardRuntime,
-					pendingManagedForwardRuntime,
-					activation.Forwards,
-				)
+				nextForwardManager, err := pendingManaged.activate(s, activeForwardManager, linkManager, activation)
+				activeForwardManager = nextForwardManager
 				if err != nil {
 					return err
 				}
-				forwardRuntime = nextForwardRuntime
-				s.setRuntimeProxies(pendingManagedProxies)
-				linkManager.updateProxies(pendingManagedProxies)
-				s.managedMutex.Lock()
-				s.managedStatus = protocol.ManagedConfigStatus{Revision: activation.Revision, Digest: activation.Digest}
-				s.managedMutex.Unlock()
-				if err := writer.Write(
-					protocol.MessageManagedConfigApplied,
-					s.managedStatus,
-				); err != nil {
+				if err := writer.Write(protocol.MessageManagedConfigApplied, pendingManaged.status); err != nil {
 					return err
 				}
-				pendingManagedProxies = nil
-				pendingManagedForwardRuntime = nil
-				pendingManagedStatus = nil
+				pendingManaged = nil
 				sessionLogger.InfoWithField(
 					"managed configuration applied",
 					"revision",
@@ -384,27 +323,6 @@ func vnetFailures(manager *clientVNetManager) <-chan error {
 		return nil
 	}
 	return manager.failures
-}
-
-func replaceManagedForwardRuntime(
-	current *forwardManager,
-	candidate *forwardManager,
-	bindings []protocol.ForwardResult,
-) (*forwardManager, error) {
-	if err := candidate.applyBindings(bindings); err != nil {
-		return current, fmt.Errorf("%w: %v", transport.ErrProtocol, err)
-	}
-	// The old listeners must release unchanged addresses before the candidate
-	// generation can bind them. From this point, failures are fail-closed and
-	// the control session reconnects to converge on the desired generation.
-	if current != nil {
-		current.close()
-	}
-	if err := candidate.start(); err != nil {
-		candidate.close()
-		return nil, err
-	}
-	return candidate, nil
 }
 
 func (s *Service) closeControlSession(

@@ -210,35 +210,16 @@ func (s *Service) Run(ctx context.Context) error {
 		httpProtocols := new(http.Protocols)
 		httpProtocols.SetHTTP1(true)
 		httpProtocols.SetUnencryptedHTTP2(true)
-		httpServer := &http.Server{
-			Handler: ipfilter.HTTPHandler(
-				sourceFilter,
-				configuration.Security.HTTPClientIPHeader,
-				s.proxyRegistry,
-				"http_header",
-			),
-			ReadHeaderTimeout: configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout,
-			IdleTimeout:       configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout,
-			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
-			Protocols:         httpProtocols,
-			ConnContext:       ipfilter.HTTPConnectionContext,
-			BaseContext:       publicHTTPBaseContext(sessionContext),
-		}
+		httpServer := newPublicHTTPServer(
+			sessionContext,
+			configuration.Proxies.HTTP.HTTPConfig,
+			ipfilter.HTTPHandler(sourceFilter, configuration.Security.HTTPClientIPHeader, s.proxyRegistry, "http_header"),
+		)
+		httpServer.Protocols = httpProtocols
 		sessions.Go(func() {
-			serveError := httpServer.Serve(publicAdmission.wrap(httpListener, nil))
-			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
-				listenerErrors <- serveError
-				transportServer.Close()
-			}
+			s.servePublicHTTP(httpServer, publicAdmission.wrap(httpListener, nil), listenerErrors)
 		})
-		defer func() {
-			shutdownContext, cancel := context.WithTimeout(
-				context.Background(),
-				configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout,
-			)
-			defer cancel()
-			_ = httpServer.Shutdown(shutdownContext)
-		}()
+		defer shutdownPublicHTTP(httpServer, configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout)
 	}
 	if configuration.Proxies.HTTPS.ListenAddress != "" {
 		s.httpsCertificates, err = newHTTPSCertificateManager(
@@ -282,36 +263,17 @@ func (s *Service) Run(ctx context.Context) error {
 		httpsProtocols := new(http.Protocols)
 		httpsProtocols.SetHTTP1(true)
 		httpsProtocols.SetHTTP2(true)
-		httpsServer := &http.Server{
-			Handler: ipfilter.HTTPHandler(
-				sourceFilter,
-				configuration.Security.HTTPClientIPHeader,
-				s.proxyRegistry,
-				"https_header",
-			),
-			ReadHeaderTimeout: configuration.Proxies.HTTP.HTTPConfig.ReadHeaderTimeout,
-			IdleTimeout:       configuration.Proxies.HTTP.HTTPConfig.PublicIdleTimeout,
-			MaxHeaderBytes:    configuration.Proxies.HTTP.HTTPConfig.MaxHeaderBytes,
-			Protocols:         httpsProtocols,
-			ConnContext:       ipfilter.HTTPConnectionContext,
-			BaseContext:       publicHTTPBaseContext(sessionContext),
-			TLSConfig:         tlsConfiguration,
-		}
+		httpsServer := newPublicHTTPServer(
+			sessionContext,
+			configuration.Proxies.HTTP.HTTPConfig,
+			ipfilter.HTTPHandler(sourceFilter, configuration.Security.HTTPClientIPHeader, s.proxyRegistry, "https_header"),
+		)
+		httpsServer.Protocols = httpsProtocols
+		httpsServer.TLSConfig = tlsConfiguration
 		sessions.Go(func() {
-			serveError := httpsServer.Serve(publicAdmission.wrap(httpsListener, tlsConfiguration))
-			if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
-				listenerErrors <- serveError
-				transportServer.Close()
-			}
+			s.servePublicHTTP(httpsServer, publicAdmission.wrap(httpsListener, tlsConfiguration), listenerErrors)
 		})
-		defer func() {
-			shutdownContext, cancel := context.WithTimeout(
-				context.Background(),
-				configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout,
-			)
-			defer cancel()
-			_ = httpsServer.Shutdown(shutdownContext)
-		}()
+		defer shutdownPublicHTTP(httpsServer, configuration.Proxies.HTTP.HTTPConfig.GracefulShutdownTimeout)
 		sessions.Go(func() {
 			s.watchHTTPSCertificate(sessionContext)
 		})

@@ -83,6 +83,7 @@ func TestManagedConfigurationRolloutCompletesOnActiveSession(t *testing.T) {
 		"session-one",
 		serverConnection,
 		writer,
+		authentication.Context{Mode: authentication.ModeManaged, ClientID: "managed-client"},
 	)
 	defer service.unregisterManagedSession("managed-client", "session-one")
 
@@ -204,6 +205,7 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 		"session-one",
 		serverConnection,
 		writer,
+		authentication.Context{Mode: authentication.ModeManaged, ClientID: "managed-client"},
 	)
 	defer service.unregisterManagedSession("managed-client", "session-one")
 

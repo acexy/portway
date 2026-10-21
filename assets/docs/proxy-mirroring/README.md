@@ -43,7 +43,7 @@ When a member becomes active, it joins both current and future visitor traffic:
 5. If the Primary is offline, other online members still receive input, but no
    response is sent to the visitor and no replacement Primary is elected.
 
-TCP isolates a slow or failed member from the other members. A member added to a live
+TCP isolates slow or failed replicas; a slow Primary applies backpressure to visitor input. A member added to a live
 TCP connection can begin at any byte offset: Portway does not detect protocol
 or message boundaries and does not replay a handshake or request prefix. Its
 local service must tolerate incomplete stream context. UDP preserves datagram
@@ -60,10 +60,27 @@ including the Primary, automatically retry failed links with backoff and resume
 forwarding subsequent bytes when the local service starts or restarts. Traffic
 lost during the outage and queued on a failed link is not replayed. The visitor's
 response direction remains open while the Primary recovers. Visitor input EOF
-ends retries, half-closes current member links, and allows up to five seconds for
-draining and Primary responses. UDP removes failed associations and retries on
-subsequent datagrams; sockets that report no error continue sending normally.
+ends retries and cancels pending link attempts. The Primary request queue drains
+before its write half-close, and its complete response is forwarded without a
+fixed total drain deadline. A clean Primary response EOF reaches the visitor
+while the request direction remains usable. Clean EOF does not rebuild the link,
+even when caused by a graceful service restart. UDP removes failed associations
+and retries on subsequent datagrams; sockets that report no error continue sending normally.
 Neither protocol requires a Portway client restart to recover the local service.
+
+While the Primary link is healthy, a full bounded queue pauses further visitor
+reads instead of dropping requests. Primary request and response writes have no
+fixed short timeout. Replicas have queues of at most 32 blocks of 32 KiB and a
+15-second write timeout. Queue overflow or timeout may discard and retry a copy
+without affecting the Primary. After visitor input EOF, replicas have at most
+15 seconds to drain and finish. This does not guarantee buffering 15 seconds of
+traffic: capacity can be exhausted sooner. UDP can still lose datagrams through
+network or capacity limits and does not provide reliable delivery.
+
+Visitors should set application request timeouts. Actual failures, revoked
+authorization, and shutdown can still interrupt in-flight data. If a failed
+member retains a blocked visitor response write, the visitor session is closed
+to release its resources.
 
 Only the configured Primary has reply authority; every non-Primary response is
 discarded even while that member joins or leaves an active flow.
@@ -128,8 +145,11 @@ Mirror groups, membership, and Primary selection support fail-closed server
 configuration reload. An invalid candidate leaves the previous effective state
 unchanged. Existing TCP visitors and unaffected groups remain connected during
 a same-port membership or Primary update. Reply authority switches atomically;
-a write authorized before the switch may finish within its existing five-second
-deadline before the new Primary writes. A same-port update reuses the public endpoint; removed members stop
+an already authorized old Primary response write has at most 15 seconds from
+the switch to finish before the new Primary writes. Failure closes that visitor
+session. A session whose response direction has already half-closed is closed
+on a Primary switch. Existing UDP associations also use current reply authority
+instead of the Primary identity at creation; previously admitted writes may finish. A same-port update reuses the public endpoint; removed members stop
 receiving traffic. Newly active members begin receiving subsequent traffic on
 both current and new TCP connections or UDP associations, subject to the
 no-replay and TCP-boundary limitations above.

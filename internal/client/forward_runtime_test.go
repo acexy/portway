@@ -66,11 +66,9 @@ func TestForwardCapacityBoundsPendingAndActive(t *testing.T) {
 }
 
 func TestForwardTCPAdmissionRejectsBeforeCreatingOffer(t *testing.T) {
-	manager, err := newForwardManager(context.Background(), logging.New("test"), "client", "session", nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	manager := newForwardManager(context.Background(), logging.New("test"), "client", "session", nil, nil, nil)
 	runtime := &forwardRuntime{context: manager.context, cancel: func() {}, configuration: config.ForwardConfig{Name: "tcp"}}
+	var err error
 	runtime.tcp, err = forwardtcp.Listen(manager.context, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +108,7 @@ func (session forwardTestSession) OpenDataStream(ctx context.Context) (transport
 func TestForwardCancellationBetweenOfferAndBind(t *testing.T) {
 	for _, kind := range []protocol.ForwardType{protocol.ForwardTypeTCP, protocol.ForwardTypeUDP} {
 		t.Run(string(kind), func(t *testing.T) {
-			manager, _ := newForwardManager(context.Background(), logging.New("test"), "client", "session",
+			manager := newForwardManager(context.Background(), logging.New("test"), "client", "session",
 				control.NewWriter(io.Discard), nil, nil)
 			defer manager.close()
 			runtime := &forwardRuntime{bindingID: "binding", configuration: config.ForwardConfig{Name: "forward", Type: kind}}
@@ -131,7 +129,7 @@ func TestForwardCancellationBetweenOfferAndBind(t *testing.T) {
 func TestForwardCancellationInterruptsBind(t *testing.T) {
 	for _, kind := range []protocol.ForwardType{protocol.ForwardTypeTCP, protocol.ForwardTypeUDP} {
 		t.Run(string(kind), func(t *testing.T) {
-			manager, _ := newForwardManager(context.Background(), logging.New("test"), "client", "session",
+			manager := newForwardManager(context.Background(), logging.New("test"), "client", "session",
 				control.NewWriter(io.Discard), nil, nil)
 			defer manager.close()
 			connection, peer := net.Pipe()
@@ -168,7 +166,7 @@ func TestForwardCancellationInterruptsBind(t *testing.T) {
 }
 
 func TestForwardOfferExpiryBoundsDataStreamOpening(t *testing.T) {
-	manager, _ := newForwardManager(context.Background(), logging.New("test"), "client", "session",
+	manager := newForwardManager(context.Background(), logging.New("test"), "client", "session",
 		control.NewWriter(io.Discard), nil, nil)
 	defer manager.close()
 	manager.transport = forwardTestSession{open: func(ctx context.Context) (transport.Stream, error) {

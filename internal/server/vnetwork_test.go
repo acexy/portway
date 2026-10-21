@@ -47,7 +47,7 @@ func TestVNetOffersAreIssuedOnlyAfterClientReadiness(t *testing.T) {
 	defer clientConnection.Close()
 	runtime.attach("managed-a", "session-a", transport.Generation(1), authentication.Context{
 		Mode: authentication.ModeManaged, ClientID: "managed-a",
-	}, control.NewWriter(serverConnection))
+	}, control.NewWriter(serverConnection), false)
 
 	assigned := make(chan error, 1)
 	go func() { assigned <- runtime.assign("managed-a", "session-a") }()
@@ -105,7 +105,7 @@ func TestVNetFailedPoolReceivesFreshAssignment(t *testing.T) {
 	defer clientConnection.Close()
 	runtime.attach("managed-a", "session-a", transport.Generation(1), authentication.Context{
 		Mode: authentication.ModeManaged, ClientID: "managed-a",
-	}, control.NewWriter(serverConnection))
+	}, control.NewWriter(serverConnection), false)
 
 	first := assignAndReadVNetAssignment(t, runtime, clientConnection)
 	ready := make(chan error, 1)
@@ -161,7 +161,7 @@ func TestVNetReconcileDoesNotReplaceAssignmentWhileDeviceIsReady(t *testing.T) {
 	defer clientConnection.Close()
 	runtime.attach("managed-a", "session-a", transport.Generation(1), authentication.Context{
 		Mode: authentication.ModeManaged, ClientID: "managed-a",
-	}, control.NewWriter(serverConnection))
+	}, control.NewWriter(serverConnection), false)
 
 	first := assignAndReadVNetAssignment(t, runtime, clientConnection)
 	if err := clientConnection.SetReadDeadline(time.Now().Add(1200 * time.Millisecond)); err != nil {
@@ -221,4 +221,29 @@ func (device *blockingVNetDevice) Close() error {
 		close(device.closed)
 	}
 	return nil
+}
+
+func TestVNetSessionSnapshotsKeepIdentityAndWriterPaired(t *testing.T) {
+	firstWriter := control.NewWriter(io.Discard)
+	secondWriter := control.NewWriter(io.Discard)
+	runtime := &serverVNetRuntime{sessions: map[string]serverVNetSession{
+		"first":  {sessionID: "first_session", writer: firstWriter},
+		"second": {sessionID: "second_session", writer: secondWriter},
+	}}
+	runtime.mutex.RLock()
+	snapshots := runtime.sessionSnapshotsLocked()
+	runtime.mutex.RUnlock()
+	runtime.sessions["first"] = serverVNetSession{sessionID: "replacement", writer: secondWriter}
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshot count = %d", len(snapshots))
+	}
+	for _, snapshot := range snapshots {
+		expectedWriter := firstWriter
+		if snapshot.clientID == "second" {
+			expectedWriter = secondWriter
+		}
+		if snapshot.sessionID != snapshot.clientID+"_session" || snapshot.writer != expectedWriter {
+			t.Fatalf("snapshot lost original session pairing: %+v", snapshot)
+		}
+	}
 }

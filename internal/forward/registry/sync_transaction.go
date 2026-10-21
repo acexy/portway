@@ -2,6 +2,7 @@ package registry
 
 import (
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
@@ -73,7 +74,7 @@ func (registry *Registry) BeginSync(
 			Name: declaration.Name, Type: declaration.Type, BindingID: bindingID, Active: active,
 		}
 		if declaration.Type == protocol.ForwardTypeUDP {
-			result.UDP = protocolUDPConfig(registry.udpConfig())
+			result.UDP = config.ForwardUDPProtocolConfig(registry.udpConfig())
 		}
 		transaction.results = append(transaction.results, result)
 	}

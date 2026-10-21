@@ -4,6 +4,7 @@ package logging
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -175,12 +176,8 @@ func (l *Logger) WithField(field string, value any) *Logger {
 // WithFields creates a logger that includes additional stable fields.
 func (l *Logger) WithFields(fields map[string]any) *Logger {
 	combinedFields := make(map[string]any, len(l.fields)+len(fields))
-	for field, value := range l.fields {
-		combinedFields[field] = value
-	}
-	for field, value := range fields {
-		combinedFields[field] = value
-	}
+	maps.Copy(combinedFields, l.fields)
+	maps.Copy(combinedFields, fields)
 	return &Logger{
 		component: l.component,
 		fields:    combinedFields,

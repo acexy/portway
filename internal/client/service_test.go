@@ -130,10 +130,11 @@ func TestManagedLocalProxyConfigurationIsPermanent(t *testing.T) {
 
 func TestLocalProxyRequirementsFollowAuthenticatedManagementMode(t *testing.T) {
 	testCases := []struct {
-		name       string
-		mode       protocol.ManagementMode
-		proxyCount int
-		wantError  error
+		name         string
+		mode         protocol.ManagementMode
+		proxyCount   int
+		forwardCount int
+		wantError    error
 	}{
 		{name: "shared empty", mode: "shared_token", wantError: errClientDeclaredProxiesRequired},
 		{name: "governed empty", mode: "governed", wantError: errClientDeclaredProxiesRequired},
@@ -141,10 +142,13 @@ func TestLocalProxyRequirementsFollowAuthenticatedManagementMode(t *testing.T) {
 		{name: "governed configured", mode: "governed", proxyCount: 1},
 		{name: "managed empty", mode: "managed"},
 		{name: "managed configured", mode: "managed", proxyCount: 1, wantError: errManagedLocalProxies},
+		{name: "shared forward only", mode: "shared_token", forwardCount: 1},
+		{name: "governed forward only", mode: "governed", forwardCount: 1},
+		{name: "managed forward configured", mode: "managed", forwardCount: 1, wantError: errManagedLocalProxies},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			err := validateLocalProxiesForManagementMode(testCase.mode, testCase.proxyCount)
+			err := validateLocalProxiesForManagementMode(testCase.mode, testCase.proxyCount, testCase.forwardCount)
 			if testCase.wantError == nil {
 				if err != nil {
 					t.Fatalf("valid mode configuration was rejected: %v", err)

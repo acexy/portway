@@ -14,6 +14,7 @@ import (
 )
 
 type syncCommitPreparation struct {
+	resources             *syncCandidateResources
 	clientID              string
 	sessionID             string
 	requestID             string
@@ -23,15 +24,9 @@ type syncCommitPreparation struct {
 	authenticationMode    authentication.Mode
 	results               []protocol.ProxyResult
 	existingProxies       map[string]*tcpProxyBinding
-	existingUDPProxies    map[string]*udpProxyBinding
-	existingHTTPProxies   map[string]*httpProxyBinding
 	reusableEndpoints     map[uint16]*proxytcp.Endpoint
 	reusableUDPEndpoints  map[uint16]*proxyudp.Endpoint
-	newEndpoints          map[uint16]*proxytcp.Endpoint
-	newUDPEndpoints       map[uint16]*proxyudp.Endpoint
 	nextProxies           map[string]*tcpProxyBinding
-	nextUDPProxies        map[string]*udpProxyBinding
-	nextHTTPProxies       map[string]*httpProxyBinding
 	declarationsByPort    map[uint16]protocol.ProxyDeclaration
 	declarationsByUDPPort map[uint16]protocol.ProxyDeclaration
 }
@@ -46,13 +41,13 @@ func (manager *Registry) publishSync(preparation syncCommitPreparation) (SyncRes
 	authenticationMode := preparation.authenticationMode
 	results := preparation.results
 	existingProxies := preparation.existingProxies
-	existingUDPProxies := preparation.existingUDPProxies
-	existingHTTPProxies := preparation.existingHTTPProxies
+	existingUDPProxies := preparation.resources.existingUDPProxies
+	existingHTTPProxies := preparation.resources.existingHTTPProxies
 	reusableEndpoints := preparation.reusableEndpoints
 	reusableUDPEndpoints := preparation.reusableUDPEndpoints
 	nextProxies := preparation.nextProxies
-	nextUDPProxies := preparation.nextUDPProxies
-	nextHTTPProxies := preparation.nextHTTPProxies
+	nextUDPProxies := preparation.resources.nextUDPProxies
+	nextHTTPProxies := preparation.resources.nextHTTPProxies
 	declarationsByPort := preparation.declarationsByPort
 	declarationsByUDPPort := preparation.declarationsByUDPPort
 

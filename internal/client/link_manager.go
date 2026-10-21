@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -132,74 +131,12 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 		return
 	}
 
-	type dialResult struct {
-		dataConnection  transport.Stream
-		localConnection net.Conn
-		kind            linkDialKind
-		err             error
-	}
-	results := make(chan dialResult, 2)
-	dialContext, cancelDial := context.WithCancel(ctx)
-	defer cancelDial()
-
-	go func() {
-		connection, err := manager.transport.OpenDataStream(dialContext)
-		results <- dialResult{
-			dataConnection: connection,
-			kind:           linkDialTransport,
-			err:            err,
-		}
-	}()
-	go func() {
-		localDialContext, cancelLocalDial := context.WithTimeout(
-			dialContext,
-			localDialTimeout,
-		)
-		defer cancelLocalDial()
-		address := net.JoinHostPort(
-			proxyConfiguration.Local.IP,
-			fmt.Sprintf("%d", proxyConfiguration.Local.Port),
-		)
-		connection, err := (&net.Dialer{}).DialContext(localDialContext, "tcp", address)
-		results <- dialResult{
-			localConnection: connection,
-			kind:            linkDialLocal,
-			err:             err,
-		}
-	}()
-
-	var dataConnection transport.Stream
-	var localConnection net.Conn
-	var transportDialError error
-	var localDialError error
-	for range 2 {
-		result := <-results
-		if result.err != nil {
-			if result.kind == linkDialTransport {
-				transportDialError = result.err
-			} else {
-				localDialError = result.err
-			}
-			cancelDial()
-		}
-		if result.dataConnection != nil {
-			dataConnection = result.dataConnection
-		}
-		if result.localConnection != nil {
-			localConnection = result.localConnection
-		}
-	}
-	if transportDialError != nil || localDialError != nil ||
-		dataConnection == nil || localConnection == nil {
-		if dataConnection != nil {
-			dataConnection.Close()
-		}
-		if localConnection != nil {
-			localConnection.Close()
-		}
-		failureCode := classifyLinkDialFailure(ctx, transportDialError, localDialError)
+	dialResult := manager.dialProxyConnections(ctx, protocol.ProxyTypeTCP, proxyConfiguration.Local)
+	defer dialResult.cancel()
+	if dialResult.failure != "" {
+		failureCode := dialResult.failure
 		manager.reportFailure(request.LinkID, failureCode)
-		manager.warnLinkFailure(logger, "dial", failureCode, errors.Join(transportDialError, localDialError))
+		manager.warnLinkFailureSummary()
 		logger.DebugWithFields(
 			"proxy link dial failed",
 			map[string]any{
@@ -208,17 +145,18 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 				"reason":      "dial_failed",
 				"error_code":  failureCode,
 				"duration_ms": time.Since(startedAt).Milliseconds(),
-				"error":       errors.Join(transportDialError, localDialError),
+				"error":       errors.Join(dialResult.transportError, dialResult.localError),
 			},
 		)
 		return
 	}
+	dataConnection, localConnection := dialResult.dataConnection, dialResult.localConnection
 	defer dataConnection.Close()
 	defer localConnection.Close()
 
 	if failure := manager.bindDataStream(dataConnection, request); failure != "" {
 		manager.reportFailure(request.LinkID, failure)
-		manager.warnLinkFailure(logger, "bind", failure, nil)
+		manager.warnLinkFailureSummary()
 		logger.DebugWithFields("proxy link bind failed", map[string]any{
 			"event":       "proxy_link_failed",
 			"result":      "failed",
@@ -257,12 +195,7 @@ func (manager *linkManager) run(ctx context.Context, request protocol.OpenLink) 
 	}
 }
 
-func (manager *linkManager) warnLinkFailure(
-	logger *logging.Logger,
-	stage string,
-	errorCode protocol.LinkErrorCode,
-	err error,
-) {
+func (manager *linkManager) warnLinkFailureSummary() {
 	count, emit := manager.failureLogs.Record(time.Now())
 	if !emit {
 		return
@@ -302,21 +235,7 @@ func (manager *linkManager) bindDataStream(
 	if envelope.Type != protocol.MessageBindResult {
 		return protocol.LinkErrorInvalidBinding
 	}
-	var result protocol.BindResult
-	if err := protocol.DecodePayload(envelope, &result); err != nil ||
-		result.LinkID != request.LinkID {
-		return protocol.LinkErrorInvalidBinding
-	}
-	if result.Status != protocol.LinkStatusAccepted {
-		if result.Error != nil {
-			return *result.Error
-		}
-		return protocol.LinkErrorInvalidBinding
-	}
-	if err := dataConnection.SetDeadline(time.Time{}); err != nil {
-		return protocol.LinkErrorTransportFailed
-	}
-	return ""
+	return completeLinkBinding(dataConnection, envelope, request.LinkID)
 }
 
 func (manager *linkManager) runUDP(
@@ -330,79 +249,13 @@ func (manager *linkManager) runUDP(
 		manager.reportFailure(request.LinkID, protocol.LinkErrorInvalidBinding)
 		return
 	}
-	address := net.JoinHostPort(
-		proxyConfiguration.Local.IP,
-		fmt.Sprintf("%d", proxyConfiguration.Local.Port),
-	)
-	type udpDialResult struct {
-		dataConnection  transport.Stream
-		localConnection net.Conn
-		kind            linkDialKind
-		err             error
-	}
-	results := make(chan udpDialResult, 2)
-	dialContext, cancelDial := context.WithCancel(ctx)
-	defer cancelDial()
-	go func() {
-		connection, err := manager.transport.OpenDataStream(dialContext)
-		results <- udpDialResult{
-			dataConnection: connection,
-			kind:           linkDialTransport,
-			err:            err,
-		}
-	}()
-	go func() {
-		localContext, cancelLocal := context.WithTimeout(
-			dialContext,
-			localDialTimeout,
-		)
-		defer cancelLocal()
-		connection, err := (&net.Dialer{}).DialContext(
-			localContext,
-			"udp",
-			address,
-		)
-		results <- udpDialResult{
-			localConnection: connection,
-			kind:            linkDialLocal,
-			err:             err,
-		}
-	}()
-	var dataConnection transport.Stream
-	var localConnection net.Conn
-	var transportError error
-	var localError error
-	for range 2 {
-		result := <-results
-		if result.err != nil {
-			cancelDial()
-			if result.kind == linkDialTransport {
-				transportError = result.err
-			} else {
-				localError = result.err
-			}
-		}
-		if result.dataConnection != nil {
-			dataConnection = result.dataConnection
-		}
-		if result.localConnection != nil {
-			localConnection = result.localConnection
-		}
-	}
-	if transportError != nil || localError != nil ||
-		dataConnection == nil || localConnection == nil {
-		if dataConnection != nil {
-			dataConnection.Close()
-		}
-		if localConnection != nil {
-			localConnection.Close()
-		}
-		manager.reportFailure(
-			request.LinkID,
-			classifyLinkDialFailure(ctx, transportError, localError),
-		)
+	dialResult := manager.dialProxyConnections(ctx, protocol.ProxyTypeUDP, proxyConfiguration.Local)
+	defer dialResult.cancel()
+	if dialResult.failure != "" {
+		manager.reportFailure(request.LinkID, dialResult.failure)
 		return
 	}
+	dataConnection, localConnection := dialResult.dataConnection, dialResult.localConnection
 	defer dataConnection.Close()
 	defer localConnection.Close()
 	if failure := manager.bindDataStream(dataConnection, request); failure != "" {

@@ -48,6 +48,27 @@ type serverVNetSession struct {
 	peerNegotiated         bool
 }
 
+// serverVNetSessionSnapshot carries only the identity and writer needed by
+// lock-free notification work. Mutations still revalidate the SessionID.
+type serverVNetSessionSnapshot struct {
+	clientID  string
+	sessionID string
+	writer    *control.Writer
+}
+
+// sessionSnapshotsLocked requires runtime.mutex to be held for reading or writing.
+func (runtime *serverVNetRuntime) sessionSnapshotsLocked() []serverVNetSessionSnapshot {
+	sessions := make([]serverVNetSessionSnapshot, 0, len(runtime.sessions))
+	for clientID, session := range runtime.sessions {
+		sessions = append(sessions, serverVNetSessionSnapshot{
+			clientID:  clientID,
+			sessionID: session.sessionID,
+			writer:    session.writer,
+		})
+	}
+	return sessions
+}
+
 type serverVNetRuntime struct {
 	context           context.Context
 	cancel            context.CancelFunc
@@ -143,9 +164,8 @@ func (runtime *serverVNetRuntime) attach(
 	generation transport.Generation,
 	authenticationContext authentication.Context,
 	writer *control.Writer,
-	peerNegotiatedValues ...bool,
+	peerNegotiated bool,
 ) {
-	peerNegotiated := len(peerNegotiatedValues) != 0 && peerNegotiatedValues[0]
 	runtime.mutex.Lock()
 	if previous, exists := runtime.sessions[clientID]; exists && previous.peerNotifier != nil {
 		previous.peerNotifier.abort()
@@ -386,23 +406,20 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 		// Publish the relay policy before any potentially blocking peer notices.
 		_ = runtime.router.ApplyPolicy(configuration)
 	}
-	sessions := make([]serverVNetSession, 0, len(runtime.sessions))
-	clientIDs := make([]string, 0, len(runtime.sessions))
-	for clientID, session := range runtime.sessions {
-		if vnetAssignmentChanged(previous, configuration, clientID) {
-			current := session
+	sessions := runtime.sessionSnapshotsLocked()
+	for _, session := range sessions {
+		if vnetAssignmentChanged(previous, configuration, session.clientID) {
+			current := runtime.sessions[session.clientID]
 			current.poolGeneration = 0
 			current.channelsOffered = false
-			runtime.sessions[clientID] = current
+			runtime.sessions[session.clientID] = current
 		}
-		clientIDs = append(clientIDs, clientID)
-		sessions = append(sessions, session)
 	}
 	runtime.mutex.Unlock()
 	// Invalidate every local pool before attempting any control-plane delivery.
-	for index, session := range sessions {
-		if vnetAssignmentChanged(previous, configuration, clientIDs[index]) {
-			runtime.broker.Remove(clientIDs[index], session.sessionID)
+	for _, session := range sessions {
+		if vnetAssignmentChanged(previous, configuration, session.clientID) {
+			runtime.broker.Remove(session.clientID, session.sessionID)
 		}
 	}
 	if previous.Enabled && !configuration.Enabled {
@@ -421,10 +438,9 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 		_ = userspaceTCP.Close()
 	}
 	var notifications sync.WaitGroup
-	for index, session := range sessions {
-		clientID := clientIDs[index]
+	for _, session := range sessions {
 		notifications.Go(func() {
-			runtime.updateSessionConfiguration(clientID, session, previous, configuration, generation, networkChanged)
+			runtime.updateSessionConfiguration(session, previous, configuration, generation, networkChanged)
 		})
 	}
 	notifications.Wait()
@@ -449,12 +465,12 @@ func vnetAssignmentChanged(previous, configuration config.VirtualNetworkConfig, 
 }
 
 func (runtime *serverVNetRuntime) updateSessionConfiguration(
-	clientID string,
-	session serverVNetSession,
+	session serverVNetSessionSnapshot,
 	previous, configuration config.VirtualNetworkConfig,
 	generation uint64,
 	networkChanged bool,
 ) {
+	clientID := session.clientID
 	unlock := runtime.lockSession(clientID, session.sessionID)
 	defer unlock()
 	oldNode, oldExists := config.VNetNode(previous, clientID)
