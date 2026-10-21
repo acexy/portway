@@ -4,6 +4,8 @@ package vnet
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"golang.org/x/net/route"
+	"golang.org/x/sys/unix"
 )
 
 func TestDarwinAuthorizationNoticeWithoutTerminalColor(t *testing.T) {
@@ -70,5 +73,51 @@ func TestValidateDarwinHelperSocket(t *testing.T) {
 	}
 	if err := validateDarwinHelperSocket(path, os.Getuid()); err != nil {
 		t.Fatalf("validate helper socket: %v", err)
+	}
+}
+
+func TestDarwinHelperPreservesNetworkConflict(t *testing.T) {
+	response := darwinHelperResponse{Error: "route conflict", ForeignResource: true}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded darwinHelperResponse
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(decoded.networkError(), ErrForeignResource) {
+		t.Fatalf("lost conflict category: %v", decoded.networkError())
+	}
+	response.ForeignResource = false
+	if errors.Is(response.networkError(), ErrForeignResource) {
+		t.Fatal("ordinary helper failure classified as conflict")
+	}
+}
+
+func TestDarwinManagedDeviceWaitsAfterClose(t *testing.T) {
+	descriptors, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(descriptors[1])
+	device, err := newDarwinDevice(descriptors[0], "test-utun")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer device.Close()
+	checks := 0
+	managed := &darwinManagedDevice{Device: device, removed: func() (bool, error) {
+		checks++
+		if _, err := device.WritePacket([]byte{1}); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("checked removal before closing FD: %v", err)
+		}
+		return checks == 2, nil
+	}}
+	if err := managed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := managed.Close(); err != nil || checks != 2 {
+		t.Fatalf("close not idempotent: checks=%d err=%v", checks, err)
 	}
 }

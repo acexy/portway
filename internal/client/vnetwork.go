@@ -300,6 +300,11 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 	if err != nil {
 		if errors.Is(err, vnet.ErrForeignResource) || errors.Is(err, vnet.ErrStateMismatch) {
 			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "network_conflict")
+			if !manager.exitOnConflict {
+				manager.logger.WarnWithFields("VNet network conflicts with existing resources", err, map[string]any{
+					"event": "vnet_network_conflict", "vnet_cidr": assignment.CIDR,
+				})
+			}
 			if manager.exitOnConflict {
 				manager.logger.WarnWithFields(
 					"VNet network conflict requires operator action; client is exiting. Stop other Portway processes, run 'portway vnetwork uninstall' as administrator, resolve any address or route overlap with the assigned VNet CIDR, then restart the client",
@@ -729,7 +734,9 @@ func (manager *clientVNetManager) closeRuntime() {
 		_ = userspaceTCP.Close()
 	}
 	if device != nil {
-		device.Close()
+		if err := device.Close(); err != nil {
+			manager.logger.Warn("failed to finish VNet device cleanup", err)
+		}
 	}
 	if migratingDevice != nil && migratingDevice != device {
 		_ = migratingDevice.Close()

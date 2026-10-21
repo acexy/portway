@@ -434,3 +434,28 @@ func (stream *cleanupVNetStream) Close() error {
 	stream.onClose()
 	return stream.Conn.Close()
 }
+
+func TestVNetNetworkConflictReportsFailureWithoutStoppingClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var status bytes.Buffer
+	manager := &clientVNetManager{
+		context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
+		writer: control.NewWriter(&status), failures: make(chan error, 1),
+		prepareNetwork: func(context.Context, vnet.NetworkSpec) (vnet.Device, error) {
+			return nil, fmt.Errorf("%w: route conflict", vnet.ErrForeignResource)
+		},
+	}
+	defer manager.close()
+	assignment := lifecycleVNetAssignment()
+	manager.assignment = assignment
+	manager.prepareDevice(ctx, assignment)
+	if !bytes.Contains(status.Bytes(), []byte("network_conflict")) ||
+		bytes.Contains(status.Bytes(), []byte("device_unavailable")) {
+		t.Fatalf("incorrect conflict status: %q", status.String())
+	}
+	select {
+	case err := <-manager.failures:
+		t.Fatalf("conflict stopped the client: %v", err)
+	default:
+	}
+}

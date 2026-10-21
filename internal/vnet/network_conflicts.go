@@ -41,12 +41,12 @@ func checkNetworkConflictsExcluding(spec NetworkSpec, routes []netip.Prefix, own
 func validateNetworkConflicts(candidate netip.Prefix, addresses, routes []netip.Prefix) error {
 	for _, prefix := range addresses {
 		if candidate.Overlaps(prefix) {
-			return fmt.Errorf("%w: VNet CIDR overlaps an existing interface address", ErrForeignResource)
+			return fmt.Errorf("%w: VNet CIDR %s overlaps existing interface address %s", ErrForeignResource, candidate, prefix)
 		}
 	}
 	for _, prefix := range routes {
 		if prefix.Bits() != 0 && candidate.Overlaps(prefix) {
-			return fmt.Errorf("%w: VNet CIDR overlaps an existing route", ErrForeignResource)
+			return fmt.Errorf("%w: VNet CIDR %s overlaps existing route %s", ErrForeignResource, candidate, prefix)
 		}
 	}
 	return nil

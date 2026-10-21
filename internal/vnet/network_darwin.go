@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,9 +28,10 @@ import (
 const darwinHelperCommand = "__vnetwork_darwin_helper"
 
 type darwinHelperResponse struct {
-	Nonce         string `json:"nonce"`
-	InterfaceName string `json:"interface_name,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Nonce           string `json:"nonce"`
+	InterfaceName   string `json:"interface_name,omitempty"`
+	Error           string `json:"error,omitempty"`
+	ForeignResource bool   `json:"foreign_resource,omitempty"`
 }
 
 type darwinHelperAccept struct {
@@ -38,21 +40,82 @@ type darwinHelperAccept struct {
 }
 
 func preparePlatformNetwork(ctx context.Context, spec NetworkSpec) (Device, error) {
+	var device Device
+	var err error
 	if os.Geteuid() == 0 {
-		return configureDarwinDevice(ctx, spec)
+		device, err = configureDarwinDevice(ctx, spec)
+	} else {
+		device, err = requestDarwinHelper(ctx, spec)
 	}
-	return requestDarwinHelper(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	deviceInterface, err := net.InterfaceByName(device.Name())
+	if err != nil {
+		_ = device.Close()
+		return nil, fmt.Errorf("inspect prepared macOS VNet interface: %w", err)
+	}
+	// Only the final owner waits for removal. The helper closes its duplicate
+	// after transferring the FD while the receiving process still owns it.
+	return &darwinManagedDevice{Device: device, removed: func() (bool, error) {
+		return darwinInterfaceRemoved(deviceInterface.Index)
+	}}, nil
+}
+
+type darwinManagedDevice struct {
+	Device
+	removed    func() (bool, error)
+	closeOnce  sync.Once
+	closeError error
+}
+
+func (device *darwinManagedDevice) Close() error {
+	device.closeOnce.Do(func() {
+		device.closeError = device.Device.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
+		defer cancel()
+		err := waitForNetworkCondition(ctx, device.removed)
+		if err != nil {
+			device.closeError = errors.Join(device.closeError,
+				fmt.Errorf("wait for macOS VNet interface %s cleanup: %w", device.Name(), err))
+		}
+	})
+	return device.closeError
+}
+
+func darwinInterfaceRemoved(index int) (bool, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return false, err
+	}
+	for _, device := range interfaces {
+		if device.Index == index {
+			return false, nil
+		}
+	}
+	messages, err := darwinRouteMessages()
+	if err != nil {
+		return false, err
+	}
+	for _, message := range messages {
+		if entry, ok := message.(*route.RouteMessage); ok && entry.Index == index {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func configureDarwinDevice(ctx context.Context, spec NetworkSpec) (Device, error) {
 	if err := cleanupDarwinLegacyManifest(); err != nil {
 		return nil, err
 	}
-	routes, err := darwinNetworkRoutes()
-	if err != nil {
-		return nil, err
-	}
-	if err := checkNetworkConflicts(spec, routes); err != nil {
+	if err := waitForNetworkConflicts(ctx, func(context.Context) error {
+		routes, err := darwinNetworkRoutes()
+		if err != nil {
+			return err
+		}
+		return checkNetworkConflicts(spec, routes)
+	}); err != nil {
 		return nil, err
 	}
 	device, err := OpenDevice()
@@ -232,7 +295,7 @@ func receiveDarwinDevice(connection *net.UnixConn, nonce string) (Device, error)
 		return nil, errors.New("invalid macOS VNet helper response")
 	}
 	if response.Error != "" {
-		return nil, errors.New(response.Error)
+		return nil, response.networkError()
 	}
 	messages, err := unix.ParseSocketControlMessage(control[:controlLength])
 	if err != nil || len(messages) != 1 {
@@ -293,6 +356,7 @@ func runPlatformHelper(arguments []string) (bool, error) {
 	var rights []byte
 	if configureError != nil {
 		response.Error = configureError.Error()
+		response.ForeignResource = errors.Is(configureError, ErrForeignResource)
 	} else {
 		response.InterfaceName = device.Name()
 		rights = unix.UnixRights(device.(*darwinDevice).fileDescriptor)
@@ -334,7 +398,7 @@ func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
 }
 func platformRootGroup() string              { return "wheel" }
 func manualNetworkManagementSupported() bool { return false }
-func networkUninstallSupported() bool         { return false }
+func networkUninstallSupported() bool        { return false }
 func runtimeHelperSupported() bool           { return true }
 func platformSupported() bool                { return true }
 func runtimeReprepareSupported() bool        { return false }
@@ -357,12 +421,16 @@ func platformIdentityMatches(ownershipManifest) bool { return false }
 
 func uninstallEphemeralNetwork() (string, bool, error) { return "", false, nil }
 
-func darwinNetworkRoutes() ([]netip.Prefix, error) {
+func darwinRouteMessages() ([]route.Message, error) {
 	data, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)
 	if err != nil {
 		return nil, fmt.Errorf("inspect macOS VNet routes: %w", err)
 	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, data)
+	return route.ParseRIB(route.RIBTypeRoute, data)
+}
+
+func darwinNetworkRoutes() ([]netip.Prefix, error) {
+	messages, err := darwinRouteMessages()
 	if err != nil {
 		return nil, err
 	}
@@ -398,4 +466,14 @@ func parseDarwinNetworkRoutes(messages []route.Message) ([]netip.Prefix, error) 
 		prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom4(destination.IP), bits))
 	}
 	return prefixes, nil
+}
+
+func (response darwinHelperResponse) networkError() error {
+	if response.Error == "" {
+		return nil
+	}
+	if response.ForeignResource {
+		return fmt.Errorf("%w: %s", ErrForeignResource, response.Error)
+	}
+	return errors.New(response.Error)
 }

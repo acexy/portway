@@ -66,11 +66,13 @@ func prepareWindowsNetwork(ctx context.Context, spec NetworkSpec, dllPath string
 			return nil, err
 		}
 	}
-	routes, err := windowsNetworkRoutes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkNetworkConflicts(spec, routes); err != nil {
+	if err := waitForNetworkConflicts(ctx, func(waitContext context.Context) error {
+		routes, err := windowsNetworkRoutes(waitContext)
+		if err != nil {
+			return err
+		}
+		return checkNetworkConflicts(spec, routes)
+	}); err != nil {
 		return nil, err
 	}
 	device, err := createWindowsDeviceWithLock(dllPath, networkLock)
@@ -466,12 +468,12 @@ func repairPlatformNetwork(spec NetworkSpec) (Device, error) {
 	return preparePlatformNetwork(context.Background(), spec)
 }
 
-func platformRootGroup() string                      { return "" }
-func manualNetworkManagementSupported() bool         { return false }
-func networkUninstallSupported() bool                 { return true }
-func runtimeHelperSupported() bool                   { return false }
-func platformSupported() bool                        { return true }
-func runtimeReprepareSupported() bool                { return windowsProcessElevated() }
+func platformRootGroup() string              { return "" }
+func manualNetworkManagementSupported() bool { return false }
+func networkUninstallSupported() bool        { return true }
+func runtimeHelperSupported() bool           { return false }
+func platformSupported() bool                { return true }
+func runtimeReprepareSupported() bool        { return windowsProcessElevated() }
 func runPlatformHelper(arguments []string) (bool, error) {
 	return runWindowsElevationHelper(arguments)
 }
