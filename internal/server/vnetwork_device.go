@@ -5,19 +5,19 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
-func serverNetworkSpec(configuration config.VirtualNetworkConfig) vnet.NetworkSpec {
-	return vnet.NetworkSpec{
-		Role: vnet.NetworkRoleServer, CIDR: configuration.CIDR,
+func serverNetworkSpec(configuration config.VirtualNetworkConfig) system.NetworkSpec {
+	return system.NetworkSpec{
+		Role: system.NetworkRoleServer, CIDR: configuration.CIDR,
 		LocalIP: configuration.ServerIP, ServerIP: configuration.ServerIP,
 		MTU: vnetMTU, OwnerUID: -1,
 	}
 }
 
 func (runtime *serverVNetRuntime) migrateRuntimeDevice(
-	device vnet.Device,
+	device system.Device,
 	previous, configuration config.VirtualNetworkConfig,
 ) bool {
 	if !runtime.preparingDevice.CompareAndSwap(false, true) {
@@ -40,7 +40,7 @@ func (runtime *serverVNetRuntime) migrateRuntimeDevice(
 				runtime.prepareRuntimeDevice(latest)
 			}
 		}()
-		err := vnet.MigrateNetworkContext(
+		err := system.MigrateNetworkContext(
 			ctx,
 			device,
 			serverNetworkSpec(previous),
@@ -147,11 +147,11 @@ func (runtime *serverVNetRuntime) activateInstalledDevice(configuration config.V
 	if ready {
 		return true
 	}
-	status, err := vnet.InspectNetwork()
+	status, err := system.InspectNetwork()
 	if err != nil || !status.Installed || status.CIDR != configuration.CIDR || status.LocalIP != configuration.ServerIP {
 		return false
 	}
-	device, err := vnet.OpenInstalledNetwork()
+	device, err := system.OpenInstalledNetwork()
 	if err != nil {
 		return false
 	}
@@ -198,7 +198,7 @@ func (runtime *serverVNetRuntime) reconcileDevice() {
 			delay = time.Second
 			continue
 		}
-		if configuration.Enabled && vnet.RuntimeReprepareSupported() {
+		if configuration.Enabled && system.RuntimeReprepareSupported() {
 			runtime.prepareRuntimeDevice(configuration)
 		}
 		if delay < 30*time.Second {

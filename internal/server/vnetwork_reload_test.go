@@ -14,7 +14,7 @@ import (
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func TestVNetPolicyOnlyReloadKeepsAssignmentGenerationValid(t *testing.T) {
@@ -24,7 +24,7 @@ func TestVNetPolicyOnlyReloadKeepsAssignmentGenerationValid(t *testing.T) {
 	configuration.ServerPorts.TCP.PortRanges = []config.PortRange{{Start: 22, End: 22}}
 	configuration.Nodes = []config.VNetNodeConfig{{ClientID: "managed-a", IP: "172.20.0.2"}}
 	runtime := newServerVNetRuntime(context.Background(), logging.New("test"), configuration, nil)
-	runtime.prepareNetwork = func(context.Context, vnet.NetworkSpec) (vnet.Device, error) {
+	runtime.prepareNetwork = func(context.Context, system.NetworkSpec) (system.Device, error) {
 		return nil, errors.New("test network is not installed")
 	}
 	defer runtime.Close()
@@ -107,13 +107,13 @@ type notifyingVNetDevice struct {
 
 type migratingServerVNetDevice struct {
 	*blockingVNetDevice
-	migrations chan vnet.NetworkSpec
+	migrations chan system.NetworkSpec
 }
 
 func (device *migratingServerVNetDevice) MigrateNetwork(
 	_ context.Context,
-	_ vnet.NetworkSpec,
-	next vnet.NetworkSpec,
+	_ system.NetworkSpec,
+	next system.NetworkSpec,
 ) error {
 	device.migrations <- next
 	return nil
@@ -124,7 +124,7 @@ func TestVNetMigrationPreservesSupportedServerDevice(t *testing.T) {
 	configuration.Enabled = true
 	device := &migratingServerVNetDevice{
 		blockingVNetDevice: newBlockingVNetDevice(),
-		migrations:         make(chan vnet.NetworkSpec, 1),
+		migrations:         make(chan system.NetworkSpec, 1),
 	}
 	runtime := newServerVNetRuntime(context.Background(), logging.New("test"), configuration, device)
 	defer runtime.Close()
@@ -168,9 +168,9 @@ func TestVNetMigrationInstallsLatestConfiguration(t *testing.T) {
 	oldDevice := newBlockingVNetDevice()
 	runtime := newServerVNetRuntime(context.Background(), logging.New("test"), configuration, oldDevice)
 	defer runtime.Close()
-	attempts := make(chan vnet.NetworkSpec, 2)
+	attempts := make(chan system.NetworkSpec, 2)
 	latestDevice := &notifyingVNetDevice{blockingVNetDevice: newBlockingVNetDevice(), started: make(chan struct{})}
-	runtime.prepareNetwork = func(ctx context.Context, spec vnet.NetworkSpec) (vnet.Device, error) {
+	runtime.prepareNetwork = func(ctx context.Context, spec system.NetworkSpec) (system.Device, error) {
 		attempts <- spec
 		if spec.CIDR == "172.21.0.0/16" {
 			<-ctx.Done()

@@ -5,14 +5,15 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/protocol"
-	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
+	"github.com/acexy/portway/internal/vnet/peer"
 )
 
 func (manager *clientVNetManager) preparePeerEndpoint(assignment protocol.VNetAssignment) error {
 	manager.mutex.Lock()
 	existing := manager.peerEndpoint
 	previous := manager.assignment
-	var stale *vnet.PeerEndpoint
+	var stale *peer.PeerEndpoint
 	if existing != nil && (previous.ClientIP != assignment.ClientIP || previous.MTU != assignment.MTU) {
 		stale = existing
 		manager.peerEndpoint = nil
@@ -23,11 +24,11 @@ func (manager *clientVNetManager) preparePeerEndpoint(assignment protocol.VNetAs
 		_ = stale.Close()
 	}
 	if existing == nil {
-		bindAddress, err := vnet.PeerUDPAddress(manager.serverAddress, true)
+		bindAddress, err := peer.PeerUDPAddress(manager.serverAddress, true)
 		if err != nil {
 			return err
 		}
-		newEndpoint := vnet.NewPeerEndpoint
+		newEndpoint := peer.NewPeerEndpoint
 		if manager.peerRuntime != nil {
 			newEndpoint = manager.peerRuntime.newEndpoint
 		}
@@ -51,7 +52,7 @@ func (manager *clientVNetManager) preparePeerEndpoint(assignment protocol.VNetAs
 		if err != nil {
 			return err
 		}
-		endpoint.SetFlowOpener(func(generation uint64, peerClientID string, flow vnet.Flow) error {
+		endpoint.SetFlowOpener(func(generation uint64, peerClientID string, flow packetdata.Flow) error {
 			return manager.writePeerControl(protocol.MessageVNetPeerFlowOpen, protocol.VNetPeerFlowOpen{
 				PeerGeneration: generation, PeerClientID: peerClientID, Protocol: flow.Protocol,
 				SourceIP: flow.SourceIP.String(), SourcePort: flow.SourcePort,
@@ -71,7 +72,7 @@ func (manager *clientVNetManager) preparePeerEndpoint(assignment protocol.VNetAs
 			_ = endpoint.Close()
 		}
 	}
-	serverAddress, err := vnet.PeerUDPAddress(manager.serverAddress, false)
+	serverAddress, err := peer.PeerUDPAddress(manager.serverAddress, false)
 	if err != nil {
 		return err
 	}

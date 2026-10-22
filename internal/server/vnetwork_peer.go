@@ -12,6 +12,8 @@ import (
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
+	"github.com/acexy/portway/internal/vnet/peer"
 )
 
 const (
@@ -38,7 +40,7 @@ func (runtime *serverVNetRuntime) configurePeerCoordinator(address string) {
 }
 
 func (runtime *serverVNetRuntime) startPeerCoordinator(address string) error {
-	peerAddress, err := vnet.PeerUDPAddress(address, false)
+	peerAddress, err := peer.PeerUDPAddress(address, false)
 	if err != nil {
 		return err
 	}
@@ -83,14 +85,14 @@ func (runtime *serverVNetRuntime) readPeerRegistrations(connection *net.UDPConn)
 			return
 		}
 		data := append([]byte(nil), buffer[:length]...)
-		signal, err := vnet.ParsePeerSignal(data)
-		if err != nil || signal.Kind != vnet.PeerSignalRegister || signal.SessionID == "" || signal.Fingerprint == "" {
+		signal, err := peer.ParsePeerSignal(data)
+		if err != nil || signal.Kind != peer.PeerSignalRegister || signal.SessionID == "" || signal.Fingerprint == "" {
 			continue
 		}
 		runtime.mutex.Lock()
 		session, exists := runtime.sessions[signal.ClientID]
 		if !exists || session.sessionID != signal.SessionID ||
-			vnet.VerifyPeerSignal(data, session.peerRegistrationSecret) != nil {
+			peer.VerifyPeerSignal(data, session.peerRegistrationSecret) != nil {
 			runtime.mutex.Unlock()
 			continue
 		}
@@ -102,7 +104,7 @@ func (runtime *serverVNetRuntime) readPeerRegistrations(connection *net.UDPConn)
 		runtime.mutex.Lock()
 		session, exists = runtime.sessions[signal.ClientID]
 		if !exists || session.sessionID != signal.SessionID ||
-			vnet.VerifyPeerSignal(data, session.peerRegistrationSecret) != nil {
+			peer.VerifyPeerSignal(data, session.peerRegistrationSecret) != nil {
 			runtime.mutex.Unlock()
 			continue
 		}
@@ -292,14 +294,14 @@ func (runtime *serverVNetRuntime) openPeerFlow(
 	sourceIP, sourceError := netip.ParseAddr(request.SourceIP)
 	destinationIP, destinationError := netip.ParseAddr(request.DestinationIP)
 	if sourceError != nil || destinationError != nil {
-		return vnet.ErrInvalidPacket
+		return packetdata.ErrInvalidPacket
 	}
 	configuration := runtime.configuration
 	target, configured := config.VNetNode(configuration, request.PeerClientID)
 	if !configured || target.IP != request.DestinationIP {
 		return vnet.ErrTargetUnavailable
 	}
-	destination, err := runtime.router.AuthorizePeerFlow(clientID, vnet.Flow{
+	destination, err := runtime.router.AuthorizePeerFlow(clientID, packetdata.Flow{
 		Protocol: request.Protocol, SourceIP: sourceIP, SourcePort: request.SourcePort,
 		DestinationIP: destinationIP, DestinationPort: request.DestinationPort,
 		TCPFlags: request.TCPFlags,

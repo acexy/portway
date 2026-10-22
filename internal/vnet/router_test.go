@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/vnet/internal/flowcontrol"
+	"github.com/acexy/portway/internal/vnet/internal/testpacket"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func TestRouterPairQuotaAndRevocationRelease(t *testing.T) {
@@ -15,14 +18,14 @@ func TestRouterPairQuotaAndRevocationRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Unix(100, 0)
-	for index := 0; index < maximumPairFlows; index++ {
+	for index := 0; index < flowcontrol.MaximumPairFlows; index++ {
 		now = now.Add(10 * time.Millisecond)
-		packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, uint16(10000+index), [4]byte{172, 20, 0, 3}, 8080)
+		packet := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, uint16(10000+index), [4]byte{172, 20, 0, 3}, 8080)
 		if _, err := router.RouteClientPacket("client-a", packet, now); err != nil {
 			t.Fatal(err)
 		}
 	}
-	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	packet := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", packet, now); !errors.Is(err, ErrFlowCapacity) {
 		t.Fatalf("node exceeded its quota: %v", err)
 	}
@@ -45,7 +48,7 @@ func TestRouterPairQuotaAndRevocationRelease(t *testing.T) {
 func TestRouterAuthorizesRequestAndReply(t *testing.T) {
 	router := testRouter(t)
 	now := time.Unix(1, 0)
-	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	request := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	destination, err := router.RouteClientPacket("client-a", request, now)
 	if err != nil {
 		t.Fatalf("route request: %v", err)
@@ -53,7 +56,7 @@ func TestRouterAuthorizesRequestAndReply(t *testing.T) {
 	if destination.Kind != DestinationClient || destination.ClientID != "client-b" {
 		t.Fatalf("unexpected request destination: %+v", destination)
 	}
-	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
 	reply[33] = 0x10
 	destination, err = router.RouteClientPacket("client-b", reply, now.Add(time.Millisecond))
 	if err != nil {
@@ -67,11 +70,11 @@ func TestRouterAuthorizesRequestAndReply(t *testing.T) {
 func TestRouterRejectsSpoofingAndUnsolicitedReply(t *testing.T) {
 	router := testRouter(t)
 	now := time.Unix(1, 0)
-	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 9}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	packet := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 9}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", packet, now); !errors.Is(err, ErrSourceRejected) {
 		t.Fatalf("expected spoofing rejection, got %v", err)
 	}
-	packet = testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	packet = testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
 	packet[33] = 0x10
 	if _, err := router.RouteClientPacket("client-b", packet, now); !errors.Is(err, ErrFlowRejected) {
 		t.Fatalf("expected unsolicited reply rejection, got %v", err)
@@ -81,8 +84,8 @@ func TestRouterRejectsSpoofingAndUnsolicitedReply(t *testing.T) {
 func TestRouterAuthorizesDirectFlowForRelayFallback(t *testing.T) {
 	router := testRouter(t)
 	now := time.Unix(1, 0)
-	destination, err := router.AuthorizePeerFlow("client-a", Flow{
-		Protocol: protocolTCP,
+	destination, err := router.AuthorizePeerFlow("client-a", packetdata.Flow{
+		Protocol: packetdata.ProtocolTCP,
 		SourceIP: netip.MustParseAddr("172.20.0.2"), SourcePort: 50000,
 		DestinationIP: netip.MustParseAddr("172.20.0.3"), DestinationPort: 8080,
 		TCPFlags: 0x02,
@@ -90,7 +93,7 @@ func TestRouterAuthorizesDirectFlowForRelayFallback(t *testing.T) {
 	if err != nil || destination.Kind != DestinationClient || destination.ClientID != "client-b" {
 		t.Fatalf("authorize direct flow: destination=%+v err=%v", destination, err)
 	}
-	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
 	reply[33] = 0x10
 	destination, err = router.RouteClientPacket("client-b", reply, now.Add(time.Millisecond))
 	if err != nil || destination.ClientID != "client-a" {
@@ -101,7 +104,7 @@ func TestRouterAuthorizesDirectFlowForRelayFallback(t *testing.T) {
 func TestRouterPolicyReloadRevokesFlow(t *testing.T) {
 	router := testRouter(t)
 	now := time.Unix(1, 0)
-	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	request := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
 		t.Fatalf("route request: %v", err)
 	}
@@ -110,7 +113,7 @@ func TestRouterPolicyReloadRevokesFlow(t *testing.T) {
 	if err := router.ApplyPolicy(configuration); err != nil {
 		t.Fatalf("apply policy: %v", err)
 	}
-	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
 	reply[33] = 0x10
 	if _, err := router.RouteClientPacket("client-b", reply, now.Add(time.Millisecond)); !errors.Is(err, ErrFlowRejected) {
 		t.Fatalf("expected revoked flow rejection, got %v", err)
@@ -120,7 +123,7 @@ func TestRouterPolicyReloadRevokesFlow(t *testing.T) {
 func TestRouterPolicyReloadRevokesDeletedClientFlows(t *testing.T) {
 	router := testRouter(t)
 	now := time.Unix(1, 0)
-	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 1}, 22)
+	request := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 1}, 22)
 	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
 		t.Fatalf("route request: %v", err)
 	}
@@ -129,7 +132,7 @@ func TestRouterPolicyReloadRevokesDeletedClientFlows(t *testing.T) {
 	if err := router.ApplyPolicy(configuration); err != nil {
 		t.Fatalf("apply policy: %v", err)
 	}
-	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 1}, 22, [4]byte{172, 20, 0, 2}, 50000)
+	reply := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 1}, 22, [4]byte{172, 20, 0, 2}, 50000)
 	reply[33] = 0x10
 	if _, err := router.RouteServerPacket(reply, now.Add(time.Millisecond)); !errors.Is(err, ErrTargetUnavailable) {
 		t.Fatalf("expected deleted client flow to be revoked, got %v", err)
@@ -139,12 +142,12 @@ func TestRouterPolicyReloadRevokesDeletedClientFlows(t *testing.T) {
 func TestRouterRemoveClientRevokesRelatedFlows(t *testing.T) {
 	router := testRouter(t)
 	now := time.Unix(1, 0)
-	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	request := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
 		t.Fatalf("route request: %v", err)
 	}
 	router.RemoveClient("client-a")
-	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
 	reply[33] = 0x10
 	if _, err := router.RouteClientPacket("client-b", reply, now.Add(time.Millisecond)); !errors.Is(err, ErrFlowRejected) {
 		t.Fatalf("expected disconnected client flow to be revoked, got %v", err)
@@ -154,7 +157,7 @@ func TestRouterRemoveClientRevokesRelatedFlows(t *testing.T) {
 func TestRouterReassignedIPDoesNotInheritPreviousFlows(t *testing.T) {
 	router := testRouter(t)
 	now := time.Now()
-	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	request := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +166,7 @@ func TestRouterReassignedIPDoesNotInheritPreviousFlows(t *testing.T) {
 	if err := router.ApplyPolicy(configuration); err != nil {
 		t.Fatal(err)
 	}
-	reply := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
+	reply := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 3}, 8080, [4]byte{172, 20, 0, 2}, 50000)
 	reply[33] = 0x10
 	if _, err := router.RouteClientPacket("replacement-client", reply, now); !errors.Is(err, ErrFlowRejected) {
 		t.Fatalf("new IP owner inherited old flow authorization: %v", err)
@@ -183,11 +186,11 @@ func TestRouterCapacityCleanupIsRateLimited(t *testing.T) {
 	router := testRouter(t)
 	router.maxFlows = 1
 	now := time.Unix(1, 0)
-	request := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	request := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", request, now); err != nil {
 		t.Fatal(err)
 	}
-	other := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50001, [4]byte{172, 20, 0, 3}, 8080)
+	other := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50001, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", other, now); !errors.Is(err, ErrFlowCapacity) {
 		t.Fatalf("full router = %v", err)
 	}

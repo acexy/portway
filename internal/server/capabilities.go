@@ -6,7 +6,7 @@ import (
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func (s *Service) negotiateCapabilities(
@@ -30,7 +30,7 @@ func (s *Service) negotiateCapabilities(
 	}
 	virtualNetwork := s.configuration.snapshot().VirtualNetwork
 	networkMode := config.EffectiveVNetNetworkMode(virtualNetwork)
-	if vnet.PlatformSupported() && authenticationContext.Mode == authentication.ModeManaged {
+	if system.PlatformSupported() && authenticationContext.Mode == authentication.ModeManaged {
 		if _, configured := config.VNetNode(virtualNetwork, authenticationContext.ClientID); configured {
 			loopbackSupported := coll.SliceContains(
 				clientCapabilities,

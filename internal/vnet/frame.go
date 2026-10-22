@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 const (
@@ -14,7 +16,7 @@ const (
 // WritePacket writes one bounded packet record to a VNet channel.
 func WritePacket(writer io.Writer, packet []byte, mtu uint16) error {
 	if len(packet) == 0 || len(packet) > int(mtu) {
-		return fmt.Errorf("%w: packet length exceeds MTU", ErrInvalidPacket)
+		return fmt.Errorf("%w: packet length exceeds MTU", packetdata.ErrInvalidPacket)
 	}
 	header := [packetFrameHeaderSize]byte{packetFrameVersion}
 	binary.BigEndian.PutUint16(header[2:], uint16(len(packet)))
@@ -34,11 +36,11 @@ func ReadPacket(reader io.Reader, mtu uint16) ([]byte, error) {
 		return nil, err
 	}
 	if header[0] != packetFrameVersion || header[1] != 0 {
-		return nil, fmt.Errorf("%w: unsupported packet frame", ErrInvalidPacket)
+		return nil, fmt.Errorf("%w: unsupported packet frame", packetdata.ErrInvalidPacket)
 	}
 	length := binary.BigEndian.Uint16(header[2:])
 	if length == 0 || length > mtu {
-		return nil, fmt.Errorf("%w: packet length exceeds MTU", ErrInvalidPacket)
+		return nil, fmt.Errorf("%w: packet length exceeds MTU", packetdata.ErrInvalidPacket)
 	}
 	packet := make([]byte, int(length))
 	if _, err := io.ReadFull(reader, packet); err != nil {

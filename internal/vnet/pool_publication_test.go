@@ -9,6 +9,8 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/vnet/internal/testpacket"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func TestPoolPublicationWaitsForEveryAcknowledgement(t *testing.T) {
@@ -88,7 +90,7 @@ func TestDisabledRouterClearsAndRejectsFlows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	packet := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", packet, time.Now()); err != nil {
 		t.Fatal(err)
 	}

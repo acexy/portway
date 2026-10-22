@@ -12,11 +12,11 @@ import (
 	"github.com/acexy/portway/internal/config/gen"
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func main() {
-	if handled, err := vnet.RunPlatformHelper(os.Args[1:]); handled {
+	if handled, err := system.RunPlatformHelper(os.Args[1:]); handled {
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "portway VNet helper: %v\n", err)
 			os.Exit(1)
@@ -49,14 +49,14 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 			}},
 		},
 	}
-	if vnet.NetworkStatusSupported() || vnet.NetworkUninstallSupported() {
+	if system.NetworkStatusSupported() || system.NetworkUninstallSupported() {
 		subcommands := make([]cli.Command, 0, 2)
-		if vnet.NetworkStatusSupported() {
+		if system.NetworkStatusSupported() {
 			subcommands = append(subcommands, cli.Command{
 				Name: "status", Summary: "Inspect the owned portway0 network", Execute: runClientVNetworkStatus,
 			})
 		}
-		if vnet.NetworkUninstallSupported() {
+		if system.NetworkUninstallSupported() {
 			subcommands = append(subcommands, cli.Command{
 				Name: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runUninstallVNetwork,
 			})
@@ -77,7 +77,7 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runClientVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.NetworkStatusSupported() {
+	if !system.NetworkStatusSupported() {
 		_, _ = io.WriteString(stderr, "portway vnetwork: status is unavailable on this platform\n")
 		return 1
 	}
@@ -85,7 +85,7 @@ func runClientVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Wri
 		_, _ = io.WriteString(stderr, "portway vnetwork status: no arguments are allowed\n")
 		return 2
 	}
-	status, err := vnet.InspectNetwork()
+	status, err := system.InspectNetwork()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portway vnetwork status: %v\n", err)
 		return 1
@@ -95,7 +95,7 @@ func runClientVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Wri
 }
 
 func runUninstallVNetwork(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.NetworkUninstallSupported() {
+	if !system.NetworkUninstallSupported() {
 		_, _ = io.WriteString(stderr, "portway vnetwork: manual management is unavailable on this platform; VNet is managed automatically during run\n")
 		return 1
 	}
@@ -103,7 +103,7 @@ func runUninstallVNetwork(arguments []string, stdout io.Writer, stderr io.Writer
 		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: no arguments are allowed\n")
 		return 2
 	}
-	result, err := vnet.UninstallNetworkAuthorized()
+	result, err := system.UninstallNetworkAuthorized()
 	if err != nil {
 		_, _ = io.WriteString(stderr, "portway vnetwork uninstall: "+result+": "+err.Error()+"\n")
 		return 1
@@ -149,7 +149,7 @@ func runClientCommand(
 		log.Error("failed to load client configuration", err)
 		return 1
 	}
-	if exitCode, relaunched, err := vnet.ElevateCurrentProcess(); err != nil {
+	if exitCode, relaunched, err := system.ElevateCurrentProcess(); err != nil {
 		log.Error("failed to obtain Windows administrator authorization", err)
 		return 1
 	} else if relaunched {

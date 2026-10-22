@@ -15,6 +15,10 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
+	"github.com/acexy/portway/internal/vnet/peer"
+	"github.com/acexy/portway/internal/vnet/system"
+	"github.com/acexy/portway/internal/vnet/userspace"
 )
 
 const clientVNetChannelWriteTimeout = 5 * time.Second
@@ -49,10 +53,10 @@ type clientVNetManager struct {
 	serverAddress   string
 	mutex           sync.Mutex
 	assignment      protocol.VNetAssignment
-	device          vnet.Device
-	migratingDevice vnet.Device
-	userspaceTCP    *vnet.UserspaceTCP
-	peerEndpoint    *vnet.PeerEndpoint
+	device          system.Device
+	migratingDevice system.Device
+	userspaceTCP    *userspace.UserspaceTCP
+	peerEndpoint    *peer.PeerEndpoint
 	peerRuntime     *clientVNetPeerRuntime
 	offers          map[uint8]protocol.OpenVNetChannel
 	activated       bool
@@ -62,7 +66,7 @@ type clientVNetManager struct {
 	prepareMutex    sync.Mutex
 	prepareCancel   context.CancelFunc
 	poolCancel      context.CancelFunc
-	prepareNetwork  func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
+	prepareNetwork  func(context.Context, system.NetworkSpec) (system.Device, error)
 	failures        chan error
 	exitOnConflict  bool
 	poolFailures    uint64
@@ -95,7 +99,7 @@ func newClientVNetManager(
 		sessionCancel:  sessionCancel,
 		serverAddress:  serverAddress,
 		offers:         make(map[uint8]protocol.OpenVNetChannel),
-		prepareNetwork: vnet.PrepareNetworkContext,
+		prepareNetwork: system.PrepareNetworkContext,
 		failures:       make(chan error, 1),
 		exitOnConflict: runtime.GOOS == "windows",
 	}
@@ -214,11 +218,11 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 	if !preserveDevice {
 		manager.device = nil
 		manager.userspaceTCP = nil
-		if device != nil && vnet.NetworkMigrationSupported(device) {
+		if device != nil && system.NetworkMigrationSupported(device) {
 			manager.migratingDevice = device
 		}
 	}
-	var peerEndpoint *vnet.PeerEndpoint
+	var peerEndpoint *peer.PeerEndpoint
 	if !preservePeer {
 		peerEndpoint = manager.peerEndpoint
 		manager.peerEndpoint = nil
@@ -254,12 +258,12 @@ func (manager *clientVNetManager) applyAssignment(assignment protocol.VNetAssign
 		defer manager.prepareMutex.Unlock()
 		if device != nil && previous.State == protocol.VNetStateEnabled &&
 			assignment.State == protocol.VNetStateEnabled && previous.NetworkMode == assignment.NetworkMode &&
-			vnet.NetworkMigrationSupported(device) {
+			system.NetworkMigrationSupported(device) {
 			if userspaceTCP != nil {
 				_ = userspaceTCP.Close()
 				userspaceTCP = nil
 			}
-			migrationError := vnet.MigrateNetworkContext(
+			migrationError := system.MigrateNetworkContext(
 				ctx,
 				device,
 				clientNetworkSpec(previous),
@@ -298,7 +302,7 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 		return
 	}
 	if err != nil {
-		if errors.Is(err, vnet.ErrForeignResource) || errors.Is(err, vnet.ErrStateMismatch) {
+		if errors.Is(err, system.ErrForeignResource) || errors.Is(err, system.ErrStateMismatch) {
 			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "network_conflict")
 			if !manager.exitOnConflict {
 				manager.logger.WarnWithFields("VNet network conflicts with existing resources", err, map[string]any{
@@ -330,9 +334,9 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 	manager.activatePreparedDevice(ctx, assignment, preparedDevice, true)
 }
 
-func clientNetworkSpec(assignment protocol.VNetAssignment) vnet.NetworkSpec {
-	return vnet.NetworkSpec{
-		Role: vnet.NetworkRoleClient, CIDR: assignment.CIDR, LocalIP: assignment.ClientIP,
+func clientNetworkSpec(assignment protocol.VNetAssignment) system.NetworkSpec {
+	return system.NetworkSpec{
+		Role: system.NetworkRoleClient, CIDR: assignment.CIDR, LocalIP: assignment.ClientIP,
 		ServerIP: assignment.ServerIP, MTU: assignment.MTU, OwnerUID: -1,
 	}
 }
@@ -340,14 +344,14 @@ func clientNetworkSpec(assignment protocol.VNetAssignment) vnet.NetworkSpec {
 func (manager *clientVNetManager) activatePreparedDevice(
 	ctx context.Context,
 	assignment protocol.VNetAssignment,
-	device vnet.Device,
+	device system.Device,
 	startReader bool,
 ) {
-	var userspaceTCP *vnet.UserspaceTCP
+	var userspaceTCP *userspace.UserspaceTCP
 	if assignment.NetworkMode == protocol.VNetNetworkModeLoopback {
 		prefix, _ := netip.ParsePrefix(assignment.CIDR)
 		var userspaceError error
-		userspaceTCP, userspaceError = vnet.NewUserspaceTCP(
+		userspaceTCP, userspaceError = userspace.NewUserspaceTCP(
 			manager.context, netip.MustParseAddr(assignment.ClientIP), prefix.Bits(), assignment.MTU,
 			manager.sendUserspaceTCPPacket,
 		)
@@ -521,7 +525,7 @@ func (manager *clientVNetManager) openPool(assignment protocol.VNetAssignment) {
 }
 
 func (manager *clientVNetManager) readDevice(
-	device vnet.Device,
+	device system.Device,
 	assignment protocol.VNetAssignment,
 ) {
 	buffer := make([]byte, int(assignment.MTU))
@@ -562,7 +566,7 @@ func (manager *clientVNetManager) readDevice(
 		current := manager.assignment
 		userspaceTCP := manager.userspaceTCP
 		manager.mutex.Unlock()
-		flow, err := vnet.ParseIPv4(packet)
+		flow, err := packetdata.ParseIPv4(packet)
 		if err != nil || flow.SourceIP.String() != current.ClientIP {
 			continue
 		}
@@ -574,7 +578,7 @@ func (manager *clientVNetManager) readDevice(
 }
 
 func (manager *clientVNetManager) readChannel(
-	device vnet.Device,
+	device system.Device,
 	assignment protocol.VNetAssignment,
 	channel transport.Stream,
 ) {
@@ -584,7 +588,7 @@ func (manager *clientVNetManager) readChannel(
 			manager.failPool(assignment.PoolGeneration, vnetFailureChannelReadFailed)
 			return
 		}
-		flow, err := vnet.ParseIPv4(packet)
+		flow, err := packetdata.ParseIPv4(packet)
 		if err != nil || flow.DestinationIP.String() != assignment.ClientIP {
 			continue
 		}
@@ -613,7 +617,7 @@ func (manager *clientVNetManager) readChannel(
 }
 
 func (manager *clientVNetManager) sendUserspaceTCPPacket(packet []byte) error {
-	flow, err := vnet.ParseIPv4(packet)
+	flow, err := packetdata.ParseIPv4(packet)
 	if err != nil {
 		return err
 	}
@@ -629,7 +633,7 @@ func (manager *clientVNetManager) sendUserspaceTCPPacket(packet []byte) error {
 		}
 		peerEndpoint.MarkRelay(flow, time.Now())
 	}
-	index, err := vnet.ChannelIndex(flow, assignment.PacketChannels)
+	index, err := packetdata.ChannelIndex(flow, assignment.PacketChannels)
 	if err != nil || int(index) >= len(channels) {
 		return errors.New("VNet userspace stack pool is unavailable")
 	}

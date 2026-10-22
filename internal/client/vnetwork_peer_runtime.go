@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"github.com/acexy/portway/internal/protocol"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/peer"
 )
 
 // clientVNetPeerRuntime belongs to Service.Run, not a control session.
@@ -13,11 +13,11 @@ import (
 type clientVNetPeerRuntime struct {
 	mutex       sync.Mutex
 	bindAddress string
-	socket      *vnet.PeerSocket
+	socket      *peer.PeerSocket
 }
 
 func (runtime *clientVNetPeerRuntime) newEndpoint(ctx context.Context, bindAddress, clientID, sessionID, virtualIP string, mtu uint16,
-	status func(protocol.VNetPeerStatus) error, receive func([]byte) error) (*vnet.PeerEndpoint, error) {
+	status func(protocol.VNetPeerStatus) error, receive func([]byte) error) (*peer.PeerEndpoint, error) {
 	runtime.mutex.Lock()
 	defer runtime.mutex.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -28,7 +28,7 @@ func (runtime *clientVNetPeerRuntime) newEndpoint(ctx context.Context, bindAddre
 		runtime.socket = nil
 	}
 	if runtime.socket == nil {
-		socket, err := vnet.NewPeerSocket(bindAddress)
+		socket, err := peer.NewPeerSocket(bindAddress)
 		if err != nil {
 			return nil, err
 		}

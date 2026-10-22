@@ -12,6 +12,7 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport/quic"
 	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func TestVNetPacketPoolOverQUICEndToEnd(t *testing.T) {
@@ -133,11 +134,11 @@ func testVNetPacketPoolOverQUIC(t *testing.T, packetProtocol uint8) {
 	}
 
 	packet := vnetTestPacket(packetProtocol)
-	flow, err := vnet.ParseIPv4(packet)
+	flow, err := packetdata.ParseIPv4(packet)
 	if err != nil {
 		t.Fatal(err)
 	}
-	channelIndex, err := vnet.ChannelIndex(flow, spec.ChannelCount)
+	channelIndex, err := packetdata.ChannelIndex(flow, spec.ChannelCount)
 	if err != nil {
 		t.Fatal(err)
 	}

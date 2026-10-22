@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync/atomic"
 	"time"
+
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 // Each pool reserves at most 64 queued packets, divided across stable channels.
@@ -96,7 +98,7 @@ func (pool *Pool) Enqueue(packet []byte, index uint8, authorized func() bool) er
 	default:
 	}
 	if int(index) >= len(pool.queues) || len(packet) > int(pool.spec.MTU) {
-		return ErrInvalidPacket
+		return packetdata.ErrInvalidPacket
 	}
 	queue := pool.queues[index]
 	if len(queue) == cap(queue) {

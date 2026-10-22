@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/vnet/internal/testpacket"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func TestPoolStatisticsExcludeUnpublishedChannels(t *testing.T) {
@@ -19,7 +21,7 @@ func TestPoolStatisticsExcludeUnpublishedChannels(t *testing.T) {
 
 func TestRouterStatisticsRetainRejectionsAcrossPolicyAndCleanup(t *testing.T) {
 	router := testRouter(t)
-	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 9}, 50000, [4]byte{172, 20, 0, 3}, 8080)
+	packet := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 9}, 50000, [4]byte{172, 20, 0, 3}, 8080)
 	if _, err := router.RouteClientPacket("client-a", packet, time.Now()); err == nil {
 		t.Fatal("spoofed packet was accepted")
 	}

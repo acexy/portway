@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func TestRunWithoutArgumentsPrintsClientHelp(t *testing.T) {
@@ -50,11 +50,11 @@ func TestRunShowsOnlySupportedClientVNetworkCommands(t *testing.T) {
 		t.Fatalf("run() exit code = %d", exitCode)
 	}
 	hasVNetwork := strings.Contains(stdout.String(), "vnetwork uninstall")
-	if hasVNetwork != vnet.NetworkUninstallSupported() {
+	if hasVNetwork != system.NetworkUninstallSupported() {
 		t.Fatalf("stdout = %q, vnetwork visibility = %t", stdout.String(), hasVNetwork)
 	}
 	hasStatus := strings.Contains(stdout.String(), "vnetwork status")
-	if hasStatus != vnet.NetworkStatusSupported() {
+	if hasStatus != system.NetworkStatusSupported() {
 		t.Fatalf("stdout = %q, status visibility = %t", stdout.String(), hasStatus)
 	}
 	if strings.Contains(stdout.String(), "vnetwork install") || strings.Contains(stdout.String(), "vnetwork repair") {

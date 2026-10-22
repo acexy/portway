@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func TestRunWithoutArgumentsPrintsServerHelp(t *testing.T) {
@@ -54,16 +54,16 @@ func TestRunShowsOnlySupportedServerVNetworkCommands(t *testing.T) {
 		"vnetwork repair [FILE]",
 	} {
 		hasUsage := strings.Contains(stdout.String(), usage)
-		if hasUsage != vnet.ManualNetworkManagementSupported() {
+		if hasUsage != system.ManualNetworkManagementSupported() {
 			t.Fatalf("stdout = %q, %q visibility = %t", stdout.String(), usage, hasUsage)
 		}
 	}
 	hasStatus := strings.Contains(stdout.String(), "vnetwork status")
-	if hasStatus != (vnet.ManualNetworkManagementSupported() || vnet.NetworkStatusSupported()) {
+	if hasStatus != (system.ManualNetworkManagementSupported() || system.NetworkStatusSupported()) {
 		t.Fatalf("stdout = %q, status visibility = %t", stdout.String(), hasStatus)
 	}
 	hasUninstall := strings.Contains(stdout.String(), "vnetwork uninstall")
-	if hasUninstall != vnet.NetworkUninstallSupported() {
+	if hasUninstall != system.NetworkUninstallSupported() {
 		t.Fatalf("stdout = %q, uninstall visibility = %t", stdout.String(), hasUninstall)
 	}
 	if stderr.Len() != 0 {

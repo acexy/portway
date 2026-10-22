@@ -15,11 +15,11 @@ import (
 	"github.com/acexy/portway/internal/lifecycle"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/server"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func main() {
-	if handled, err := vnet.RunPlatformHelper(os.Args[1:]); handled {
+	if handled, err := system.RunPlatformHelper(os.Args[1:]); handled {
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "portwayd VNet helper: %v\n", err)
 			os.Exit(1)
@@ -65,7 +65,7 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 			},
 		},
 	}
-	if vnet.ManualNetworkManagementSupported() {
+	if system.ManualNetworkManagementSupported() {
 		commands = append(commands, cli.Command{
 			Name: "vnetwork", Summary: "Manage the Portway virtual network",
 			Subcommands: []cli.Command{
@@ -75,14 +75,14 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 				{Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network", Execute: runServerVNetworkUninstall},
 			},
 		})
-	} else if vnet.NetworkStatusSupported() || vnet.NetworkUninstallSupported() {
+	} else if system.NetworkStatusSupported() || system.NetworkUninstallSupported() {
 		subcommands := make([]cli.Command, 0, 2)
-		if vnet.NetworkStatusSupported() {
+		if system.NetworkStatusSupported() {
 			subcommands = append(subcommands, cli.Command{
 				Name: "status", Usage: "status", Summary: "Inspect the owned portway0 network", Execute: runVNetworkStatus,
 			})
 		}
-		if vnet.NetworkUninstallSupported() {
+		if system.NetworkUninstallSupported() {
 			subcommands = append(subcommands, cli.Command{
 				Name: "uninstall", Usage: "uninstall", Summary: "Safely remove the owned portway0 network",
 				Execute: runServerVNetworkUninstall,
@@ -104,14 +104,14 @@ func run(arguments []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runVNetworkStatus(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.ManualNetworkManagementSupported() && !vnet.NetworkStatusSupported() {
+	if !system.ManualNetworkManagementSupported() && !system.NetworkStatusSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
 	if len(arguments) != 0 {
 		_, _ = io.WriteString(stderr, "portwayd vnetwork status: no arguments are allowed\n")
 		return 2
 	}
-	status, err := vnet.InspectNetwork()
+	status, err := system.InspectNetwork()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork status: %v\n", err)
 		return 1
@@ -129,7 +129,7 @@ func runVNetworkRepair(arguments []string, stdout io.Writer, stderr io.Writer) i
 }
 
 func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer, repair bool) int {
-	if !vnet.ManualNetworkManagementSupported() {
+	if !system.ManualNetworkManagementSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
 	operation, successResult := vnetworkConfigureResult(repair)
@@ -147,13 +147,13 @@ func runVNetworkConfigure(arguments []string, stdout io.Writer, stderr io.Writer
 		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: virtual_network is disabled\n", operation)
 		return 1
 	}
-	spec := vnet.NetworkSpec{Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
+	spec := system.NetworkSpec{Role: system.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
 		LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP, MTU: 1280, OwnerUID: -1}
-	var device vnet.Device
+	var device system.Device
 	if repair {
-		device, err = vnet.RepairNetwork(spec)
+		device, err = system.RepairNetwork(spec)
 	} else {
-		device, err = vnet.PrepareNetwork(spec)
+		device, err = system.PrepareNetwork(spec)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork %s: %v\n", operation, err)
@@ -175,14 +175,14 @@ func vnetworkConfigureResult(repair bool) (operation string, successResult strin
 }
 
 func runServerVNetworkUninstall(arguments []string, stdout io.Writer, stderr io.Writer) int {
-	if !vnet.ManualNetworkManagementSupported() {
+	if !system.ManualNetworkManagementSupported() {
 		return reportUnsupportedVNetworkManagement(stderr)
 	}
 	if len(arguments) != 0 {
 		_, _ = io.WriteString(stderr, "portwayd vnetwork uninstall: no arguments are allowed\n")
 		return 2
 	}
-	result, err := vnet.UninstallNetworkAuthorized()
+	result, err := system.UninstallNetworkAuthorized()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portwayd vnetwork uninstall: %s: %v\n", result, err)
 		return 1
@@ -246,7 +246,7 @@ func runServerCommand(
 		return 1
 	}
 	if configuration.VirtualNetwork.Enabled {
-		if exitCode, relaunched, err := vnet.ElevateCurrentProcess(); err != nil {
+		if exitCode, relaunched, err := system.ElevateCurrentProcess(); err != nil {
 			log.Error("failed to obtain Windows administrator authorization", err)
 			return 1
 		} else if relaunched {

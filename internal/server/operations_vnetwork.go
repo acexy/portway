@@ -1,6 +1,9 @@
 package server
 
-import "github.com/acexy/portway/internal/vnet"
+import (
+	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/userspace"
+)
 
 // Each owner is sampled separately; no business lock is held during HTTP writes.
 type operationsVNetStats struct {
@@ -15,7 +18,7 @@ type operationsVNetStats struct {
 	pools       vnet.PoolStatistics
 	flows       vnet.FlowStatistics
 	queues      vnet.PacketQueueStatistics
-	userspace   vnet.UserspaceStatistics
+	userspace   userspace.UserspaceStatistics
 }
 
 func (runtime *serverVNetRuntime) operationsStats() operationsVNetStats {
