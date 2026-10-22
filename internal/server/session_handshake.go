@@ -297,6 +297,9 @@ func (s *Service) handleAdmittedConnection(
 		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)
 		s.clientRegistry.Remove(clientHello.ClientID, sessionID)
 		sessionLogger.Info("control session closed by client")
+		if err == nil {
+			err = finishControlSession(connection)
+		}
 	}
 	if errors.Is(err, errProxyRegistrationRejected) {
 		s.proxyRegistry.Remove(clientHello.ClientID, sessionID)
