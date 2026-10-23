@@ -672,9 +672,6 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	session, exists := runtime.sessions[clientID]
 	if exists && session.sessionID == sessionID {
 		delete(runtime.sessions, clientID)
-		if session.peerNotifier != nil {
-			session.peerNotifier.abort()
-		}
 		if runtime.router != nil {
 			runtime.router.RemoveClient(clientID)
 		}
@@ -682,6 +679,10 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	runtime.mutex.Unlock()
 	if !exists || session.sessionID != sessionID {
 		return
+	}
+	// Wait outside the runtime lock so other sessions can continue routing.
+	if session.peerNotifier != nil {
+		session.peerNotifier.stop()
 	}
 	runtime.revokeClientPeers(clientID, "session_closed")
 	runtime.broker.Remove(clientID, sessionID)

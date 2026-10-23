@@ -4,6 +4,7 @@ package system
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -12,6 +13,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 
 	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
@@ -136,5 +139,71 @@ func TestWindowsVNetLive(t *testing.T) {
 	}
 	if _, err := net.InterfaceByName(LogicalInterfaceName); err == nil {
 		t.Fatal("temporary Windows VNet adapter remained after close")
+	}
+}
+
+func TestWindowsNetworkLockCrossThreadCleanup(t *testing.T) {
+	// Pin the creator so cleanup is guaranteed to execute on another OS thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	name := fmt.Sprintf("Local\\Portway-test-%d-%d", os.Getpid(), time.Now().UnixNano())
+	handle, inUse, err := acquireNamedWindowsNetworkLock(name)
+	if err != nil || inUse {
+		t.Fatalf("create lock: inUse=%t error=%v", inUse, err)
+	}
+	defer func() {
+		if handle != 0 {
+			_ = windows.CloseHandle(handle)
+		}
+	}()
+	if err := windows.ReleaseMutex(handle); !errors.Is(err, windows.ERROR_NOT_OWNER) {
+		t.Fatalf("existence lease unexpectedly acquired thread ownership: %v", err)
+	}
+	other, inUse, err := acquireNamedWindowsNetworkLock(name)
+	if other != 0 {
+		_ = windows.CloseHandle(other)
+	}
+	if err != nil || !inUse {
+		t.Fatalf("duplicate lock: inUse=%t error=%v", inUse, err)
+	}
+	closed := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		closed <- windows.CloseHandle(handle)
+	}()
+	if err := <-closed; err != nil {
+		t.Fatalf("cross-thread cleanup: %v", err)
+	}
+	handle = 0
+	replacement, inUse, err := acquireNamedWindowsNetworkLock(name)
+	if replacement != 0 {
+		defer windows.CloseHandle(replacement)
+	}
+	if err != nil || inUse {
+		t.Fatalf("reacquire after cleanup: inUse=%t error=%v", inUse, err)
+	}
+}
+
+func TestWindowsNetworkLockRecognizesLegacyOwner(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	name := fmt.Sprintf("Local\\Portway-legacy-test-%d-%d", os.Getpid(), time.Now().UnixNano())
+	pointer, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := windows.CreateMutex(nil, true, pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(legacy)
+	defer windows.ReleaseMutex(legacy)
+	handle, inUse, err := acquireNamedWindowsNetworkLock(name)
+	if handle != 0 {
+		defer windows.CloseHandle(handle)
+	}
+	if err != nil || !inUse {
+		t.Fatalf("legacy lock ignored: inUse=%t error=%v", inUse, err)
 	}
 }

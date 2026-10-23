@@ -50,7 +50,6 @@ func prepareWindowsNetwork(ctx context.Context, spec NetworkSpec, dllPath string
 	releaseNetworkLock := true
 	defer func() {
 		if releaseNetworkLock {
-			_ = windows.ReleaseMutex(networkLock)
 			_ = windows.CloseHandle(networkLock)
 		}
 	}()
@@ -299,11 +298,18 @@ func parseWindowsNetworkRoutes(data []byte) ([]netip.Prefix, error) {
 }
 
 func acquireWindowsNetworkLock() (windows.Handle, bool, error) {
-	name, err := windows.UTF16PtrFromString(windowsNetworkLockName)
+	return acquireNamedWindowsNetworkLock(windowsNetworkLockName)
+}
+
+// The named object's existence is the ownership lease. Do not acquire thread
+// ownership: preparation and cleanup may run on different Go scheduler threads.
+// Existing handles, including those held by older clients, still report InUse.
+func acquireNamedWindowsNetworkLock(lockName string) (windows.Handle, bool, error) {
+	name, err := windows.UTF16PtrFromString(lockName)
 	if err != nil {
 		return 0, false, err
 	}
-	handle, err := windows.CreateMutex(nil, true, name)
+	handle, err := windows.CreateMutex(nil, false, name)
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		return handle, true, nil
 	}
@@ -326,7 +332,6 @@ func uninstallEphemeralNetwork() (string, bool, error) {
 		return "InUse", true, errors.New("VNet network is in use")
 	}
 	defer windows.CloseHandle(lock)
-	defer windows.ReleaseMutex(lock)
 
 	removed, err := removeWindowsNetworkAdapter()
 	if err != nil {

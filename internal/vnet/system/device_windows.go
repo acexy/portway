@@ -79,7 +79,6 @@ func createWindowsDeviceFrom(dllPath string) (*windowsDevice, error) {
 	releaseNetworkLock := true
 	defer func() {
 		if releaseNetworkLock {
-			_ = windows.ReleaseMutex(networkLock)
 			_ = windows.CloseHandle(networkLock)
 		}
 	}()
@@ -279,9 +278,6 @@ func (device *windowsDevice) Close() error {
 			device.closeError = err
 		}
 		if err := device.api.dll.Release(); device.closeError == nil {
-			device.closeError = err
-		}
-		if err := windows.ReleaseMutex(device.networkLock); device.closeError == nil {
 			device.closeError = err
 		}
 		if err := windows.CloseHandle(device.networkLock); device.closeError == nil {

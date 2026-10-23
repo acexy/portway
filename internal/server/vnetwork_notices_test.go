@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/acexy/portway/internal/authentication"
@@ -166,4 +167,75 @@ func TestExpiredPeerReadyCannotBeatCleanupTick(t *testing.T) {
 	if pair.active || pair.retryAfter.IsZero() {
 		t.Fatal("late ready activated expired offer")
 	}
+}
+
+func TestPeerNotifierStopDrainsInFlightWriteAndPreservesStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newServerVNetRuntime(context.Background(), logging.New("test"), config.DefaultServer().VirtualNetwork, nil)
+		defer runtime.Close()
+		local, remote := net.Pipe()
+		defer local.Close()
+		defer remote.Close()
+		writer := control.NewWriter(local)
+		notifier := runtime.newPeerNotifier(writer)
+		if !notifier.enqueue(protocol.MessageCloseAck, protocol.CloseAck{SessionID: "in-flight"}) {
+			t.Fatal("notice rejected")
+		}
+		synctest.Wait()
+		stopped := make(chan struct{})
+		go func() { notifier.stop(); close(stopped) }()
+		synctest.Wait()
+		select {
+		case <-stopped:
+			t.Fatal("stop returned before the admitted write finished")
+		default:
+		}
+		if notifier.enqueue(protocol.MessageCloseAck, protocol.CloseAck{SessionID: "late"}) {
+			t.Fatal("stopped notifier accepted new work")
+		}
+		if _, err := protocol.ReadControl(remote); err != nil {
+			t.Fatalf("stop interrupted the admitted write: %v", err)
+		}
+		<-stopped
+		// A stale overflow callback must not abort the retired session.
+		notifier.abort()
+		written := make(chan error, 1)
+		go func() {
+			written <- writer.Write(protocol.MessageCloseAck, protocol.CloseAck{SessionID: "final"})
+		}()
+		envelope, err := protocol.ReadControl(remote)
+		if err != nil {
+			t.Fatalf("retired notifier closed the control stream: %v", err)
+		}
+		var acknowledgment protocol.CloseAck
+		if err := protocol.DecodePayload(envelope, &acknowledgment); err != nil || acknowledgment.SessionID != "final" {
+			t.Fatalf("unexpected acknowledgment: %+v error=%v", acknowledgment, err)
+		}
+		if err := <-written; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestPeerNotifierStopIsBoundedByWriteDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newServerVNetRuntime(context.Background(), logging.New("test"), config.DefaultServer().VirtualNetwork, nil)
+		defer runtime.Close()
+		local, remote := net.Pipe()
+		defer local.Close()
+		defer remote.Close()
+		notifier := runtime.newPeerNotifier(control.NewWriter(local))
+		if !notifier.enqueue(protocol.MessageCloseAck, protocol.CloseAck{SessionID: "blocked"}) {
+			t.Fatal("notice rejected")
+		}
+		synctest.Wait()
+		started := time.Now()
+		notifier.stop()
+		if elapsed := time.Since(started); elapsed != vnetPeerNoticeTimeout {
+			t.Fatalf("stop duration = %v", elapsed)
+		}
+		if _, err := remote.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+			t.Fatalf("failed write did not close the unhealthy stream: %v", err)
+		}
+	})
 }
