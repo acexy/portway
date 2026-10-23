@@ -37,7 +37,7 @@ func preparePlatformNetwork(ctx context.Context, spec NetworkSpec) (Device, erro
 
 func prepareWindowsNetwork(ctx context.Context, spec NetworkSpec, dllPath string) (Device, error) {
 	if !windowsProcessElevated() {
-		return nil, errors.New("Windows VNet requires portway to run as administrator")
+		return nil, ErrElevationRequired
 	}
 	networkLock, inUse, err := acquireWindowsNetworkLock()
 	if err != nil {
@@ -86,7 +86,7 @@ func prepareWindowsNetwork(ctx context.Context, spec NetworkSpec, dllPath string
 	}
 	if err := waitForWindowsNetworkConfiguration(ctx, spec); err != nil {
 		_ = device.Close()
-		return nil, fmt.Errorf("%w: Windows VNet interface configuration did not converge: %v", ErrStateMismatch, err)
+		return nil, fmt.Errorf("Windows VNet interface configuration did not converge: %w", err)
 	}
 	return device, nil
 }
@@ -111,25 +111,9 @@ func waitForWindowsNetworkRemoval(ctx context.Context) error {
 }
 
 func waitForWindowsNetworkConfiguration(ctx context.Context, spec NetworkSpec) error {
-	deadline := time.NewTimer(3 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	var lastError error
-	for {
-		if err := validateWindowsNetworkConfiguration(ctx, spec); err == nil {
-			return nil
-		} else {
-			lastError = err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return lastError
-		case <-ticker.C:
-		}
-	}
+	return waitForNetworkConfiguration(ctx, func(waitContext context.Context) error {
+		return validateWindowsNetworkConfiguration(waitContext, spec)
+	})
 }
 
 func configureWindowsNetwork(ctx context.Context, spec NetworkSpec) error {

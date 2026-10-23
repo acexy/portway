@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -149,12 +150,6 @@ func runClientCommand(
 		log.Error("failed to load client configuration", err)
 		return 1
 	}
-	if exitCode, relaunched, err := system.ElevateCurrentProcess(); err != nil {
-		log.Error("failed to obtain Windows administrator authorization", err)
-		return 1
-	} else if relaunched {
-		return exitCode
-	}
 	if err := logging.EnableConsole(configuration.LogLevel); err != nil {
 		log.Error("failed to configure logging", err)
 		return 1
@@ -176,8 +171,27 @@ func runClientCommand(
 	}
 
 	service := client.NewService(log, configuration)
-	if err := lifecycle.Run(service); err != nil {
-		log.Error("client exited", err)
+	return finishClientRun(lifecycle.Run(service), log, system.ElevateCurrentProcess)
+}
+
+// finishClientRun requests UAC only after an enabled VNet assignment has caused
+// the unprivileged runtime to stop and release its connections and listeners.
+func finishClientRun(runError error, log *logging.Logger, elevate func() (int, bool, error)) int {
+	if errors.Is(runError, system.ErrElevationRequired) {
+		log.Info("VNet requires administrator authorization; requesting Windows elevation")
+		exitCode, relaunched, err := elevate()
+		if err != nil {
+			log.Error("failed to obtain Windows administrator authorization", err)
+			return 1
+		}
+		if relaunched {
+			return exitCode
+		}
+		log.Error("Windows elevation did not restart the client", runError)
+		return 1
+	}
+	if runError != nil {
+		log.Error("client exited", runError)
 		return 1
 	}
 	return 0

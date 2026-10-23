@@ -19,8 +19,10 @@ const (
 )
 
 var (
-	ErrForeignResource = errors.New("foreign VNet resource")
-	ErrStateMismatch   = errors.New("VNet state does not match its ownership manifest")
+	ErrForeignResource   = errors.New("foreign VNet resource")
+	ErrStateMismatch     = errors.New("VNet state does not match its ownership manifest")
+	ErrNetworkNotReady   = errors.New("VNet network configuration is not ready")
+	ErrElevationRequired = errors.New("Windows VNet requires administrator authorization")
 )
 
 type NetworkRole string

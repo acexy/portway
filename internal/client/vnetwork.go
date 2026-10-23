@@ -302,6 +302,24 @@ func (manager *clientVNetManager) prepareDevice(ctx context.Context, assignment 
 		return
 	}
 	if err != nil {
+		if errors.Is(err, system.ErrElevationRequired) {
+			// Return to the CLI only after runtime cleanup; UAC must not run
+			// while an unprivileged copy still owns the control session.
+			select {
+			case manager.failures <- transport.Permanent(err):
+			default:
+			}
+			return
+		}
+		if errors.Is(err, system.ErrNetworkNotReady) {
+			manager.logger.WarnWithFields("VNet network is not ready; requesting assignment retry", err, map[string]any{
+				"event": "vnet_network_not_ready", "vnet_cidr": assignment.CIDR,
+			})
+			// Failed status reuses server-coordinated recovery without terminating
+			// the control session or misreporting a permanent network conflict.
+			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "device_unavailable")
+			return
+		}
 		if errors.Is(err, system.ErrForeignResource) || errors.Is(err, system.ErrStateMismatch) {
 			_ = manager.reportAssignmentStatus(assignment, protocol.VNetStateFailed, "network_conflict")
 			if !manager.exitOnConflict {

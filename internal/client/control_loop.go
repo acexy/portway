@@ -13,6 +13,7 @@ import (
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func (s *Service) runControlLoop(
@@ -107,6 +108,15 @@ func (s *Service) runControlLoop(
 			)
 			return nil
 		case err := <-vnetFailures(vnetManager):
+			if errors.Is(err, system.ErrElevationRequired) {
+				cancelSession()
+				<-heartbeatDone
+				if pendingManaged != nil {
+					pendingManaged.close()
+				}
+				linkManager.close()
+				s.closeControlSession(connection, messages, readErrors, sessionID, sessionLogger, writer)
+			}
 			return err
 		case err := <-readErrors:
 			return err

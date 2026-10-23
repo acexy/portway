@@ -9,6 +9,27 @@ import (
 const networkCleanupTimeout = 10 * time.Second
 const networkInspectionInterval = 50 * time.Millisecond
 
+const networkConfigurationTimeout = 10 * time.Second
+
+// waitForNetworkConfiguration bounds inspections as well as polling. A visible
+// address may not yet be bindable; exhaustion is not proof of a resource conflict.
+func waitForNetworkConfiguration(ctx context.Context, check func(context.Context) error) error {
+	waitContext, cancel := context.WithTimeout(ctx, networkConfigurationTimeout)
+	defer cancel()
+	var lastError error
+	err := waitForNetworkCondition(waitContext, func() (bool, error) {
+		lastError = check(waitContext)
+		return lastError == nil && waitContext.Err() == nil, nil
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return errors.Join(ErrNetworkNotReady, err, lastError)
+	}
+	return nil
+}
+
 // waitForNetworkCondition checks state immediately and bounds every subsequent
 // observation by the caller's context. It never changes foreign resources.
 func waitForNetworkCondition(ctx context.Context, check func() (bool, error)) error {

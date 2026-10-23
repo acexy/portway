@@ -72,3 +72,44 @@ func TestNetworkConflictWaitPreservesPersistentConflict(t *testing.T) {
 		t.Fatalf("persistent conflict lost its category or deadline: %v", err)
 	}
 }
+
+func TestNetworkConfigurationWaitRecovers(t *testing.T) {
+	calls := 0
+	err := waitForNetworkConfiguration(context.Background(), func(ctx context.Context) error {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("inspection has no deadline")
+		}
+		calls++
+		if calls == 1 {
+			return errors.New("address is not ready")
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("calls=%d error=%v", calls, err)
+	}
+}
+
+func TestNetworkConfigurationWaitTimeoutPreservesCause(t *testing.T) {
+	failure := errors.New("address cannot be bound")
+	err := waitForNetworkConfiguration(context.Background(), func(ctx context.Context) error {
+		<-ctx.Done()
+		return failure
+	})
+	if !errors.Is(err, ErrNetworkNotReady) || !errors.Is(err, context.DeadlineExceeded) ||
+		!errors.Is(err, failure) || errors.Is(err, ErrStateMismatch) {
+		t.Fatalf("unexpected timeout classification: %v", err)
+	}
+}
+
+func TestNetworkConfigurationWaitCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := waitForNetworkConfiguration(ctx, func(context.Context) error {
+		cancel()
+		return errors.New("inspection canceled")
+	})
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrNetworkNotReady) {
+		t.Fatalf("unexpected cancellation classification: %v", err)
+	}
+}

@@ -460,3 +460,69 @@ func TestVNetNetworkConflictReportsFailureWithoutStoppingClient(t *testing.T) {
 	default:
 	}
 }
+
+func TestWindowsVNetNotReadyPreservesControlSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var status bytes.Buffer
+	manager := &clientVNetManager{
+		context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
+		writer: control.NewWriter(&status), failures: make(chan error, 1), exitOnConflict: true,
+		prepareNetwork: func(context.Context, system.NetworkSpec) (system.Device, error) {
+			return nil, errors.Join(system.ErrNetworkNotReady, context.DeadlineExceeded)
+		},
+	}
+	defer manager.close()
+	manager.assignment = lifecycleVNetAssignment()
+	manager.prepareDevice(ctx, manager.assignment)
+	select {
+	case err := <-manager.failures:
+		t.Fatalf("readiness timeout terminated the control session: %v", err)
+	default:
+	}
+	if !bytes.Contains(status.Bytes(), []byte("device_unavailable")) ||
+		!bytes.Contains(status.Bytes(), []byte("failed")) ||
+		bytes.Contains(status.Bytes(), []byte("network_conflict")) ||
+		bytes.Contains(status.Bytes(), []byte("installation_required")) {
+		t.Fatalf("reported status = %q", status.String())
+	}
+}
+
+func TestVNetAssignmentRequestsElevationOnlyWhenEnabled(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			var status bytes.Buffer
+			calls := 0
+			manager := &clientVNetManager{
+				context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
+				writer: control.NewWriter(&status), failures: make(chan error, 1),
+				prepareNetwork: func(context.Context, system.NetworkSpec) (system.Device, error) {
+					calls++
+					return nil, system.ErrElevationRequired
+				},
+			}
+			defer manager.close()
+			assignment := lifecycleVNetAssignment()
+			if !enabled {
+				assignment.State = protocol.VNetStateDisabled
+			}
+			if err := manager.applyAssignment(assignment); err != nil {
+				t.Fatal(err)
+			}
+			manager.waitGroup.Wait()
+			select {
+			case err := <-manager.failures:
+				if !enabled || !errors.Is(err, system.ErrElevationRequired) || !transport.IsPermanent(err) {
+					t.Fatalf("unexpected elevation signal: %v", err)
+				}
+			default:
+				if enabled {
+					t.Fatal("enabled assignment did not request elevation")
+				}
+			}
+			if enabled && calls != 1 || !enabled && calls != 0 {
+				t.Fatalf("unexpected preparation calls: %d", calls)
+			}
+		})
+	}
+}
