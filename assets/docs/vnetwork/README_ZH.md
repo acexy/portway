@@ -155,7 +155,8 @@ Windows amd64 发布包内置官方签名的 `wintun.dll`，无需单独安装�
 VNet 权限的命令会通过 UAC 申请管理员授权；用户确认后，命令在重新启动的提升权限进程中
 继续执行，保留原终端、标准流重定向和退出码，Ctrl+C 可让提升权限的命令优雅退出。
 隐藏引导进程会先连接原控制台再启动命令；UAC 授权弹窗仍会显示。
-客户端只能在认证后得知是否启用 VNet，因此 `portway run` 在启动前申请授权；
+客户端以普通权限启动，仅在收到 Enabled VNet Assignment 后申请 UAC；先关闭当前会话，
+再以提升权限重启并重新连接。拒绝授权时明确报错退出，仅使用 Proxy/Forward 时不申请 UAC；
 `portwayd run` 仅在 `virtual_network.enabled` 为 true 时申请。Portway 仅在实际激活
 VNet 时加载 Wintun 并创建临时 `portway0` Adapter，持有进程关闭后移除 Adapter。
 Windows 不支持 install 或 repair，但提供只读的 `vnetwork status` 和 `vnetwork uninstall`，

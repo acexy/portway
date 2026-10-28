@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/vnet/internal/flowcontrol"
+	"github.com/acexy/portway/internal/vnet/internal/testpacket"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func BenchmarkVNetPacketFrame(b *testing.B) {
-	packet := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
+	packet := testpacket.IPv4(packetdata.ProtocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
 	buffer := make([]byte, packetFrameHeaderSize+len(packet))
 	writer := fixedBufferWriter{buffer: buffer}
 	b.ReportAllocs()
@@ -28,7 +31,7 @@ func BenchmarkVNetPoolParallelFlows(b *testing.B) {
 	for _, channelCount := range []int{1, 2, 4, 8} {
 		b.Run(string(rune('0'+channelCount))+"Channels", func(b *testing.B) {
 			pool, peers := benchmarkPool(b, channelCount)
-			packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 443)
+			packet := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 443)
 			b.ReportAllocs()
 			b.SetBytes(int64(len(packet)))
 			b.RunParallel(func(parallel *testing.PB) {
@@ -63,7 +66,7 @@ func BenchmarkVNetRouterDispatch(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	packet := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
+	packet := testpacket.IPv4(packetdata.ProtocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
 	now := time.Now()
 	b.ReportAllocs()
 	b.SetBytes(int64(len(packet)))
@@ -110,7 +113,7 @@ func BenchmarkVNetRouterParallelEstablished(b *testing.B) {
 	now := time.Now()
 	packets := make([][]byte, 64)
 	for index := range packets {
-		packets[index] = testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, uint16(10000+index), [4]byte{172, 20, 0, 3}, 8080)
+		packets[index] = testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, uint16(10000+index), [4]byte{172, 20, 0, 3}, 8080)
 		if _, err := router.RouteClientPacket("client-a", packets[index], now); err != nil {
 			b.Fatal(err)
 		}
@@ -131,9 +134,9 @@ func BenchmarkVNetRouterParallelEstablished(b *testing.B) {
 }
 
 func BenchmarkVNetFlowAdmissionChurn(b *testing.B) {
-	var admission flowAdmission
-	packet := testIPv4Packet(protocolTCP, [4]byte{172, 20, 0, 2}, 10000, [4]byte{172, 20, 0, 3}, 8080)
-	flow, err := ParseIPv4(packet)
+	var admission flowcontrol.Admission
+	packet := testpacket.IPv4(packetdata.ProtocolTCP, [4]byte{172, 20, 0, 2}, 10000, [4]byte{172, 20, 0, 3}, 8080)
+	flow, err := packetdata.ParseIPv4(packet)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -141,9 +144,9 @@ func BenchmarkVNetFlowAdmissionChurn(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		now = now.Add(10 * time.Millisecond)
-		if err := admission.admit(flow, now, 65536); err != nil {
+		if err := admission.Admit(flow, now, 65536); err != nil {
 			b.Fatal(err)
 		}
-		admission.release(flow.SourceIP, flow.DestinationIP)
+		admission.Release(flow.SourceIP, flow.DestinationIP)
 	}
 }

@@ -15,7 +15,7 @@ import (
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func (s *Service) runControlSession(
@@ -85,7 +85,7 @@ func (s *Service) runControlSession(
 		protocol.CapabilityTCPForward,
 		protocol.CapabilityUDPForward,
 	}
-	if vnet.PlatformSupported() {
+	if system.PlatformSupported() {
 		capabilities = append(capabilities,
 			protocol.CapabilityVNetIPv4,
 			protocol.CapabilityVNetLoopback,

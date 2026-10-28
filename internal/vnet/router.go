@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/config"
+	"github.com/acexy/portway/internal/vnet/internal/flowcontrol"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 const routerCleanupBatchSize = 256
@@ -21,9 +23,9 @@ var (
 	// ErrFlowRejected indicates that a packet does not belong to an authorized flow.
 	ErrFlowRejected = errors.New("VNet flow rejected")
 	// ErrFlowCapacity indicates that the bounded flow table is full.
-	ErrFlowCapacity = errors.New("VNet flow capacity reached")
+	ErrFlowCapacity = flowcontrol.ErrFlowCapacity
 	// ErrFlowRate indicates that a node pair exhausted its new-flow budget.
-	ErrFlowRate = errors.New("VNet new flow rate reached")
+	ErrFlowRate = flowcontrol.ErrFlowRate
 )
 
 // DestinationKind identifies the owner of one routed packet.
@@ -57,14 +59,6 @@ type routingPolicy struct {
 	byClientID     map[string]netip.Addr
 }
 
-type flowKey struct {
-	protocol   uint8
-	firstIP    [4]byte
-	firstPort  uint16
-	secondIP   [4]byte
-	secondPort uint16
-}
-
 type flowState struct {
 	serviceIP   netip.Addr
 	servicePort uint16
@@ -76,12 +70,12 @@ type flowState struct {
 type Router struct {
 	policyGeneration    uint64
 	mutex               sync.Mutex
-	admission           flowAdmission
+	admission           flowcontrol.Admission
 	capacityRejected    uint64
 	rateRejected        uint64
 	policyRejected      uint64
 	policy              routingPolicy
-	flows               map[flowKey]flowState
+	flows               map[packetdata.Key]flowState
 	nodeFlows           map[netip.Addr]int
 	maxFlows            int
 	tcpIdle             time.Duration
@@ -101,11 +95,11 @@ func NewRouter(configuration config.VirtualNetworkConfig, maxFlows int) (*Router
 	}
 	return &Router{
 		policy:    policy,
-		flows:     make(map[flowKey]flowState),
+		flows:     make(map[packetdata.Key]flowState),
 		nodeFlows: make(map[netip.Addr]int),
 		maxFlows:  maxFlows,
-		tcpIdle:   tcpFlowIdle,
-		udpIdle:   udpFlowIdle,
+		tcpIdle:   flowcontrol.TCPFlowIdle,
+		udpIdle:   flowcontrol.UDPFlowIdle,
 	}, nil
 }
 
@@ -120,7 +114,7 @@ func (router *Router) ApplyPolicy(configuration config.VirtualNetworkConfig) err
 	router.policy = policy
 	router.policyGeneration++
 	for key, state := range router.flows {
-		firstIP, secondIP := netip.AddrFrom4(key.firstIP), netip.AddrFrom4(key.secondIP)
+		firstIP, secondIP := netip.AddrFrom4(key.FirstIP), netip.AddrFrom4(key.SecondIP)
 		first, firstExists := policy.byIP[firstIP]
 		second, secondExists := policy.byIP[secondIP]
 		if !policy.enabled || !firstExists || !secondExists ||
@@ -144,7 +138,7 @@ func (router *Router) RemoveClient(clientID string) {
 	router.policyGeneration++
 	address := clientIP.As4()
 	for key := range router.flows {
-		if key.firstIP == address || key.secondIP == address {
+		if key.FirstIP == address || key.SecondIP == address {
 			router.removeFlowLocked(key)
 		}
 	}
@@ -156,7 +150,7 @@ func (router *Router) RouteClientPacket(
 	packet []byte,
 	now time.Time,
 ) (Destination, error) {
-	flow, err := ParseIPv4(packet)
+	flow, err := packetdata.ParseIPv4(packet)
 	if err != nil {
 		return Destination{}, err
 	}
@@ -172,10 +166,10 @@ func (router *Router) RouteClientPacket(
 
 // AuthorizePeerFlow validates and records the first packet metadata of a direct flow.
 // The resulting state allows the same flow to fall back through the center router.
-func (router *Router) AuthorizePeerFlow(clientID string, flow Flow, now time.Time) (Destination, error) {
+func (router *Router) AuthorizePeerFlow(clientID string, flow packetdata.Flow, now time.Time) (Destination, error) {
 	if !flow.SourceIP.Is4() || !flow.DestinationIP.Is4() ||
-		(flow.Protocol != protocolTCP && flow.Protocol != protocolUDP) {
-		return Destination{}, ErrInvalidPacket
+		(flow.Protocol != packetdata.ProtocolTCP && flow.Protocol != packetdata.ProtocolUDP) {
+		return Destination{}, packetdata.ErrInvalidPacket
 	}
 	router.mutex.Lock()
 	defer router.mutex.Unlock()
@@ -189,7 +183,7 @@ func (router *Router) AuthorizePeerFlow(clientID string, flow Flow, now time.Tim
 
 // RouteServerPacket validates and routes one packet read from the server TUN.
 func (router *Router) RouteServerPacket(packet []byte, now time.Time) (Destination, error) {
-	flow, err := ParseIPv4(packet)
+	flow, err := packetdata.ParseIPv4(packet)
 	if err != nil {
 		return Destination{}, err
 	}
@@ -202,7 +196,7 @@ func (router *Router) RouteServerPacket(packet []byte, now time.Time) (Destinati
 	return router.routeLocked(flow, now)
 }
 
-func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error) {
+func (router *Router) routeLocked(flow packetdata.Flow, now time.Time) (Destination, error) {
 	if !router.policy.enabled {
 		router.policyRejected++
 		return Destination{}, ErrFlowRejected
@@ -216,7 +210,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 		router.removeExpiredLocked(now, routerCleanupBatchSize)
 		router.nextCleanup = now.Add(time.Second)
 	}
-	key := makeFlowKey(flow)
+	key := packetdata.MakeKey(flow)
 	state, active := router.flows[key]
 	if active && (!now.Before(state.expiresAt) ||
 		!router.policy.serviceAllowed(state.serviceIP, state.protocol, state.servicePort)) {
@@ -224,7 +218,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 		active = false
 	}
 	if !active {
-		if flow.Protocol == protocolTCP && !flow.IsTCPStart() {
+		if flow.Protocol == packetdata.ProtocolTCP && !flow.IsTCPStart() {
 			router.policyRejected++
 			return Destination{}, ErrFlowRejected
 		}
@@ -236,7 +230,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 			return len(router.flows) >= router.maxFlows ||
 				router.nodeFlows[flow.SourceIP] >= routerMaximumNodeFlows ||
 				router.nodeFlows[flow.DestinationIP] >= routerMaximumNodeFlows ||
-				router.admission.pairs[makeNodePair(flow.SourceIP, flow.DestinationIP)].count >= maximumPairFlows
+				router.admission.Count(flow.SourceIP, flow.DestinationIP) >= flowcontrol.MaximumPairFlows
 		}
 		if atCapacity() {
 			if !now.Before(router.nextCapacityCleanup) {
@@ -248,7 +242,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 				return Destination{}, ErrFlowCapacity
 			}
 		}
-		if err := router.admission.admit(flow, now, router.maxFlows); err != nil {
+		if err := router.admission.Admit(flow, now, router.maxFlows); err != nil {
 			if errors.Is(err, ErrFlowRate) {
 				router.rateRejected++
 			} else {
@@ -267,7 +261,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 		}
 		router.flows[key] = state
 	}
-	if flow.Protocol == protocolTCP {
+	if flow.Protocol == packetdata.ProtocolTCP {
 		state.expiresAt = now.Add(router.tcpIdle)
 	} else {
 		state.expiresAt = now.Add(router.udpIdle)
@@ -277,7 +271,7 @@ func (router *Router) routeLocked(flow Flow, now time.Time) (Destination, error)
 	} else {
 		router.flows[key] = state
 	}
-	channelIndex, err := ChannelIndex(flow, router.policy.packetChannels)
+	channelIndex, err := packetdata.ChannelIndex(flow, router.policy.packetChannels)
 	if err != nil {
 		return Destination{}, err
 	}
@@ -311,13 +305,13 @@ func (router *Router) removeExpiredLocked(now time.Time, limit int) {
 	}
 }
 
-func (router *Router) removeFlowLocked(key flowKey) {
+func (router *Router) removeFlowLocked(key packetdata.Key) {
 	if _, exists := router.flows[key]; !exists {
 		return
 	}
 	delete(router.flows, key)
-	first, second := netip.AddrFrom4(key.firstIP), netip.AddrFrom4(key.secondIP)
-	router.admission.release(first, second)
+	first, second := netip.AddrFrom4(key.FirstIP), netip.AddrFrom4(key.SecondIP)
+	router.admission.Release(first, second)
 	for index, address := range []netip.Addr{first, second} {
 		if index == 1 && address == first {
 			continue
@@ -375,29 +369,13 @@ func (policy routingPolicy) serviceAllowed(address netip.Addr, protocol uint8, p
 
 func (policy endpointPolicy) allows(protocol uint8, port uint16) bool {
 	ranges := policy.udp
-	if protocol == protocolTCP {
+	if protocol == packetdata.ProtocolTCP {
 		ranges = policy.tcp
-	} else if protocol != protocolUDP {
+	} else if protocol != packetdata.ProtocolUDP {
 		return false
 	}
 	index := sort.Search(len(ranges), func(index int) bool {
 		return ranges[index].End >= port
 	})
 	return index < len(ranges) && port >= ranges[index].Start
-}
-
-func makeFlowKey(flow Flow) flowKey {
-	firstIP, firstPort := flow.SourceIP, flow.SourcePort
-	secondIP, secondPort := flow.DestinationIP, flow.DestinationPort
-	if endpointLess(secondIP, secondPort, firstIP, firstPort) {
-		firstIP, secondIP = secondIP, firstIP
-		firstPort, secondPort = secondPort, firstPort
-	}
-	return flowKey{
-		protocol:   flow.Protocol,
-		firstIP:    firstIP.As4(),
-		firstPort:  firstPort,
-		secondIP:   secondIP.As4(),
-		secondPort: secondPort,
-	}
 }

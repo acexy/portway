@@ -15,6 +15,7 @@ import (
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 type pausedPeerNotice struct {
@@ -67,7 +68,7 @@ func TestVNetReloadPublishesPolicyBeforePeerNotices(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("reload did not reach the peer notice")
 	}
-	_, err := runtime.router.AuthorizePeerFlow("client-a", vnet.Flow{
+	_, err := runtime.router.AuthorizePeerFlow("client-a", packetdata.Flow{
 		Protocol: 6, SourceIP: netip.MustParseAddr("172.20.0.2"), SourcePort: 50000,
 		DestinationIP: netip.MustParseAddr("172.20.0.3"), DestinationPort: 8080, TCPFlags: 2,
 	}, time.Now())

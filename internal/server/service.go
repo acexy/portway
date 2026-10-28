@@ -23,7 +23,7 @@ import (
 	"github.com/acexy/portway/internal/session"
 	"github.com/acexy/portway/internal/transport"
 	transportfactory "github.com/acexy/portway/internal/transport/factory"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 var errProxyRegistrationRejected = errors.New("proxy registration rejected")
@@ -133,10 +133,10 @@ func (s *Service) Run(ctx context.Context) error {
 	sessionContext, cancelSessions := context.WithCancel(ctx)
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
-	var vnetDevice vnet.Device
+	var vnetDevice system.Device
 	if configuration.VirtualNetwork.Enabled {
-		vnetDevice, err = vnet.PrepareNetwork(vnet.NetworkSpec{
-			Role: vnet.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
+		vnetDevice, err = system.PrepareNetwork(system.NetworkSpec{
+			Role: system.NetworkRoleServer, CIDR: configuration.VirtualNetwork.CIDR,
 			LocalIP: configuration.VirtualNetwork.ServerIP, ServerIP: configuration.VirtualNetwork.ServerIP,
 			MTU: vnetMTU, OwnerUID: -1,
 		})

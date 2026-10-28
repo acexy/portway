@@ -19,6 +19,7 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func TestVNetPeerPortConflictPreservesRelayPreparation(t *testing.T) {
@@ -33,7 +34,7 @@ func TestVNetPeerPortConflictPreservesRelayPreparation(t *testing.T) {
 	manager := &clientVNetManager{context: ctx, cancel: cancel, clientID: "managed-a",
 		logger: logging.New("test"), writer: control.NewWriter(&bytes.Buffer{}),
 		serverAddress: fmt.Sprintf("127.0.0.1:%d", port-1),
-		prepareNetwork: func(context.Context, vnet.NetworkSpec) (vnet.Device, error) {
+		prepareNetwork: func(context.Context, system.NetworkSpec) (system.Device, error) {
 			close(prepared)
 			return nil, errors.New("test device is unavailable")
 		},
@@ -57,7 +58,7 @@ type pausedMigratingVNetDevice struct {
 	resume  chan struct{}
 }
 
-func (device *pausedMigratingVNetDevice) MigrateNetwork(ctx context.Context, _, _ vnet.NetworkSpec) error {
+func (device *pausedMigratingVNetDevice) MigrateNetwork(ctx context.Context, _, _ system.NetworkSpec) error {
 	close(device.started)
 	select {
 	case <-device.resume:
@@ -102,8 +103,8 @@ func TestWindowsVNetNetworkConflictReportsFailureAndStopsClient(t *testing.T) {
 	manager := &clientVNetManager{
 		context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
 		writer: control.NewWriter(&status), failures: make(chan error, 1), exitOnConflict: true,
-		prepareNetwork: func(context.Context, vnet.NetworkSpec) (vnet.Device, error) {
-			return nil, fmt.Errorf("%w: VNet CIDR overlaps an existing route", vnet.ErrForeignResource)
+		prepareNetwork: func(context.Context, system.NetworkSpec) (system.Device, error) {
+			return nil, fmt.Errorf("%w: VNet CIDR overlaps an existing route", system.ErrForeignResource)
 		},
 	}
 	defer manager.close()
@@ -112,7 +113,7 @@ func TestWindowsVNetNetworkConflictReportsFailureAndStopsClient(t *testing.T) {
 	}
 	select {
 	case err := <-manager.failures:
-		if !transport.IsPermanent(err) || !errors.Is(err, vnet.ErrForeignResource) {
+		if !transport.IsPermanent(err) || !errors.Is(err, system.ErrForeignResource) {
 			t.Fatalf("conflict error = %v", err)
 		}
 	case <-time.After(time.Second):
@@ -160,7 +161,7 @@ func TestVNetDeviceSurvivesControlSessionRebind(t *testing.T) {
 		t.Fatal("control-session rebind replaced the VNet manager")
 	}
 	prepared := atomic.Int32{}
-	manager.prepareNetwork = func(context.Context, vnet.NetworkSpec) (vnet.Device, error) {
+	manager.prepareNetwork = func(context.Context, system.NetworkSpec) (system.Device, error) {
 		prepared.Add(1)
 		return nil, errors.New("unexpected VNet device preparation")
 	}
@@ -188,8 +189,8 @@ func TestVNetAddressChangeClosesOldDeviceBeforeInstallation(t *testing.T) {
 		assignment: lifecycleVNetAssignment(), device: oldDevice,
 		logger: logging.New("test"), writer: control.NewWriter(&bytes.Buffer{})}
 	defer manager.close()
-	prepared := make(chan vnet.NetworkSpec, 1)
-	manager.prepareNetwork = func(ctx context.Context, spec vnet.NetworkSpec) (vnet.Device, error) {
+	prepared := make(chan system.NetworkSpec, 1)
+	manager.prepareNetwork = func(ctx context.Context, spec system.NetworkSpec) (system.Device, error) {
 		if oldDevice.closeCount.Load() != 1 {
 			t.Error("old device was still held when migration started")
 		}
@@ -214,13 +215,13 @@ func TestVNetAddressChangeClosesOldDeviceBeforeInstallation(t *testing.T) {
 
 type migratingClientVNetDevice struct {
 	countingVNetDevice
-	migrations chan vnet.NetworkSpec
+	migrations chan system.NetworkSpec
 }
 
 func (device *migratingClientVNetDevice) MigrateNetwork(
 	_ context.Context,
-	_ vnet.NetworkSpec,
-	next vnet.NetworkSpec,
+	_ system.NetworkSpec,
+	next system.NetworkSpec,
 ) error {
 	device.migrations <- next
 	return nil
@@ -228,7 +229,7 @@ func (device *migratingClientVNetDevice) MigrateNetwork(
 
 func TestVNetAddressChangeMigratesSupportedDeviceInPlace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	device := &migratingClientVNetDevice{migrations: make(chan vnet.NetworkSpec, 1)}
+	device := &migratingClientVNetDevice{migrations: make(chan system.NetworkSpec, 1)}
 	manager := &clientVNetManager{context: ctx, cancel: cancel, clientID: "managed-a",
 		assignment: lifecycleVNetAssignment(), device: device,
 		logger: logging.New("test"), writer: control.NewWriter(&bytes.Buffer{})}
@@ -260,7 +261,7 @@ func TestVNetPreparationIsAsyncAndDiscardsCancelledDevice(t *testing.T) {
 	manager := &clientVNetManager{context: ctx, cancel: cancel, clientID: "managed-a", writer: control.NewWriter(&bytes.Buffer{})}
 	device := &countingVNetDevice{}
 	started := make(chan struct{})
-	manager.prepareNetwork = func(ctx context.Context, _ vnet.NetworkSpec) (vnet.Device, error) {
+	manager.prepareNetwork = func(ctx context.Context, _ system.NetworkSpec) (system.Device, error) {
 		close(started)
 		<-ctx.Done()
 		return device, nil
@@ -433,4 +434,95 @@ type cleanupVNetStream struct {
 func (stream *cleanupVNetStream) Close() error {
 	stream.onClose()
 	return stream.Conn.Close()
+}
+
+func TestVNetNetworkConflictReportsFailureWithoutStoppingClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var status bytes.Buffer
+	manager := &clientVNetManager{
+		context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
+		writer: control.NewWriter(&status), failures: make(chan error, 1),
+		prepareNetwork: func(context.Context, system.NetworkSpec) (system.Device, error) {
+			return nil, fmt.Errorf("%w: route conflict", system.ErrForeignResource)
+		},
+	}
+	defer manager.close()
+	assignment := lifecycleVNetAssignment()
+	manager.assignment = assignment
+	manager.prepareDevice(ctx, assignment)
+	if !bytes.Contains(status.Bytes(), []byte("network_conflict")) ||
+		bytes.Contains(status.Bytes(), []byte("device_unavailable")) {
+		t.Fatalf("incorrect conflict status: %q", status.String())
+	}
+	select {
+	case err := <-manager.failures:
+		t.Fatalf("conflict stopped the client: %v", err)
+	default:
+	}
+}
+
+func TestWindowsVNetNotReadyPreservesControlSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var status bytes.Buffer
+	manager := &clientVNetManager{
+		context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
+		writer: control.NewWriter(&status), failures: make(chan error, 1), exitOnConflict: true,
+		prepareNetwork: func(context.Context, system.NetworkSpec) (system.Device, error) {
+			return nil, errors.Join(system.ErrNetworkNotReady, context.DeadlineExceeded)
+		},
+	}
+	defer manager.close()
+	manager.assignment = lifecycleVNetAssignment()
+	manager.prepareDevice(ctx, manager.assignment)
+	select {
+	case err := <-manager.failures:
+		t.Fatalf("readiness timeout terminated the control session: %v", err)
+	default:
+	}
+	if !bytes.Contains(status.Bytes(), []byte("device_unavailable")) ||
+		!bytes.Contains(status.Bytes(), []byte("failed")) ||
+		bytes.Contains(status.Bytes(), []byte("network_conflict")) ||
+		bytes.Contains(status.Bytes(), []byte("installation_required")) {
+		t.Fatalf("reported status = %q", status.String())
+	}
+}
+
+func TestVNetAssignmentRequestsElevationOnlyWhenEnabled(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			var status bytes.Buffer
+			calls := 0
+			manager := &clientVNetManager{
+				context: ctx, cancel: cancel, clientID: "managed-a", logger: logging.New("test"),
+				writer: control.NewWriter(&status), failures: make(chan error, 1),
+				prepareNetwork: func(context.Context, system.NetworkSpec) (system.Device, error) {
+					calls++
+					return nil, system.ErrElevationRequired
+				},
+			}
+			defer manager.close()
+			assignment := lifecycleVNetAssignment()
+			if !enabled {
+				assignment.State = protocol.VNetStateDisabled
+			}
+			if err := manager.applyAssignment(assignment); err != nil {
+				t.Fatal(err)
+			}
+			manager.waitGroup.Wait()
+			select {
+			case err := <-manager.failures:
+				if !enabled || !errors.Is(err, system.ErrElevationRequired) || !transport.IsPermanent(err) {
+					t.Fatalf("unexpected elevation signal: %v", err)
+				}
+			default:
+				if enabled {
+					t.Fatal("enabled assignment did not request elevation")
+				}
+			}
+			if enabled && calls != 1 || !enabled && calls != 0 {
+				t.Fatalf("unexpected preparation calls: %d", calls)
+			}
+		})
+	}
 }

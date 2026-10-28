@@ -26,12 +26,14 @@ type vnetPeerNotifier struct {
 	writer  *control.Writer
 	queue   chan vnetPeerNotice
 	once    sync.Once
+	done    chan struct{}
 }
 
 func (runtime *serverVNetRuntime) newPeerNotifier(writer *control.Writer) *vnetPeerNotifier {
 	ctx, cancel := context.WithCancel(runtime.context)
-	notifier := &vnetPeerNotifier{context: ctx, cancel: cancel, writer: writer, queue: make(chan vnetPeerNotice, vnetPeerNoticeCapacity)}
+	notifier := &vnetPeerNotifier{context: ctx, cancel: cancel, writer: writer, queue: make(chan vnetPeerNotice, vnetPeerNoticeCapacity), done: make(chan struct{})}
 	runtime.waitGroup.Go(func() {
+		defer close(notifier.done)
 		for {
 			select {
 			case <-ctx.Done():
@@ -61,6 +63,16 @@ func (notifier *vnetPeerNotifier) enqueue(message protocol.MessageType, payload 
 	default:
 		notifier.abort()
 		return false
+	}
+}
+
+// stop retires a normal session without closing its shared control stream.
+// An admitted write finishes within its existing deadline before CloseAck is sent.
+// Actual write failures still close the unhealthy stream through control.Writer.
+func (notifier *vnetPeerNotifier) stop() {
+	notifier.once.Do(notifier.cancel)
+	if notifier.done != nil {
+		<-notifier.done
 	}
 }
 

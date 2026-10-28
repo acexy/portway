@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/acexy/portway/internal/protocol"
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/vnet/peer"
 )
 
 func TestUserspaceOutputUsesBidirectionalDirectPath(t *testing.T) {
@@ -18,7 +18,7 @@ func TestUserspaceOutputUsesBidirectionalDirectPath(t *testing.T) {
 	ready := make(chan protocol.VNetPeerStatus, 8)
 	received := make(chan []byte, 2)
 	addresses := make([]string, 2)
-	endpoints := make([]*vnet.PeerEndpoint, 2)
+	endpoints := make([]*peer.PeerEndpoint, 2)
 	identities := []string{"client-a", "client-b"}
 	ips := []string{"172.20.0.2", "172.20.0.3"}
 	for index := range endpoints {
@@ -28,7 +28,7 @@ func TestUserspaceOutputUsesBidirectionalDirectPath(t *testing.T) {
 		}
 		addresses[index] = reservation.LocalAddr().String()
 		_ = reservation.Close()
-		endpoints[index], err = vnet.NewPeerEndpoint(ctx, addresses[index], identities[index], identities[index], ips[index], 1150,
+		endpoints[index], err = peer.NewPeerEndpoint(ctx, addresses[index], identities[index], identities[index], ips[index], 1150,
 			func(status protocol.VNetPeerStatus) error { ready <- status; return nil },
 			func(packet []byte) error { received <- packet; return nil })
 		if err != nil {
@@ -46,8 +46,8 @@ func TestUserspaceOutputUsesBidirectionalDirectPath(t *testing.T) {
 		if err := endpoints[index].ApplyOffer(protocol.VNetPeerOffer{
 			PeerGeneration: 1, PeerClientID: identities[other], PeerVirtualIP: ips[other],
 			PeerFingerprint: endpoints[other].Fingerprint(), PairTicket: ticket, Role: role,
-			Candidates: []protocol.VNetPeerCandidate{{Type: "host", Address: addresses[other]}},
-			InboundUDP: []protocol.VNetPeerPortRange{{Start: 53, End: 53}},
+			Candidates:      []protocol.VNetPeerCandidate{{Type: "host", Address: addresses[other]}},
+			InboundUDP:      []protocol.VNetPeerPortRange{{Start: 53, End: 53}},
 			ExpiresAtUnixMS: time.Now().Add(9 * time.Second).UnixMilli(),
 		}); err != nil {
 			t.Fatal(err)

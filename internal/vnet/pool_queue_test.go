@@ -6,6 +6,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/acexy/portway/internal/vnet/internal/testpacket"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 type observedPacketConnection struct {
@@ -34,7 +37,7 @@ func queuedTestPool(t *testing.T) (*Pool, net.Conn, <-chan struct{}) {
 func TestQueuedPoolBoundsMemoryAndIsolatesSlowDestination(t *testing.T) {
 	slow, _, started := queuedTestPool(t)
 	fast, peer, _ := queuedTestPool(t)
-	packet := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
+	packet := testpacket.IPv4(packetdata.ProtocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
 	if err := slow.Enqueue(packet, 0, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +71,7 @@ func TestQueuedPoolBoundsMemoryAndIsolatesSlowDestination(t *testing.T) {
 
 func TestQueuedPoolRechecksAuthorization(t *testing.T) {
 	pool, peer, started := queuedTestPool(t)
-	packet := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
+	packet := testpacket.IPv4(packetdata.ProtocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
 	if err := pool.Enqueue(packet, 0, nil); err != nil {
 		t.Fatal(err)
 	}

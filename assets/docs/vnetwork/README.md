@@ -178,8 +178,10 @@ request administrator authorization through UAC and continue in a relaunched
 elevated process after approval. The command keeps the original console, standard
 stream redirection, and exit code; Ctrl+C stops the elevated command gracefully.
 A hidden bootstrap connects the console before starting the command. The UAC
-prompt remains visible. Because a client learns whether VNet is enabled
-only after authentication, `portway run` requests authorization before startup;
+prompt remains visible. The client starts without elevation and requests UAC only
+after receiving an enabled VNet assignment. It closes its current session before
+restarting with elevated privileges; rejecting UAC exits with an error. Proxy/Forward-only
+clients do not request UAC;
 `portwayd run` does so only when `virtual_network.enabled` is true. Portway loads
 Wintun and creates its temporary `portway0` adapter only when VNet is actually
 activated, then removes the adapter when the owning process closes it. Windows

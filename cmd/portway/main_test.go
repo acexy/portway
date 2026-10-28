@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/acexy/portway/internal/vnet"
+	"github.com/acexy/portway/internal/logging"
+	"github.com/acexy/portway/internal/transport"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func TestRunWithoutArgumentsPrintsClientHelp(t *testing.T) {
@@ -50,11 +53,11 @@ func TestRunShowsOnlySupportedClientVNetworkCommands(t *testing.T) {
 		t.Fatalf("run() exit code = %d", exitCode)
 	}
 	hasVNetwork := strings.Contains(stdout.String(), "vnetwork uninstall")
-	if hasVNetwork != vnet.NetworkUninstallSupported() {
+	if hasVNetwork != system.NetworkUninstallSupported() {
 		t.Fatalf("stdout = %q, vnetwork visibility = %t", stdout.String(), hasVNetwork)
 	}
 	hasStatus := strings.Contains(stdout.String(), "vnetwork status")
-	if hasStatus != vnet.NetworkStatusSupported() {
+	if hasStatus != system.NetworkStatusSupported() {
 		t.Fatalf("stdout = %q, status visibility = %t", stdout.String(), hasStatus)
 	}
 	if strings.Contains(stdout.String(), "vnetwork install") || strings.Contains(stdout.String(), "vnetwork repair") {
@@ -153,5 +156,34 @@ func TestRunClientUsesDefaultConfigurationFile(t *testing.T) {
 	exitCode := run([]string{"run"}, io.Discard, io.Discard)
 	if exitCode != 1 {
 		t.Fatalf("run() exit code = %d, want configuration load failure", exitCode)
+	}
+}
+
+func TestFinishClientRunElevatesOnlyForVNetAuthorization(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		runError   error
+		relaunched bool
+		childCode  int
+		elevateErr error
+		wantCode   int
+		wantCalls  int
+	}{
+		{name: "normal shutdown"},
+		{name: "ordinary failure", runError: errors.New("connection failed"), wantCode: 1},
+		{name: "VNet authorization", runError: transport.Permanent(system.ErrElevationRequired), relaunched: true, childCode: 7, wantCode: 7, wantCalls: 1},
+		{name: "UAC rejected", runError: system.ErrElevationRequired, elevateErr: errors.New("authorization canceled"), wantCode: 1, wantCalls: 1},
+		{name: "no restart", runError: system.ErrElevationRequired, wantCode: 1, wantCalls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			code := finishClientRun(test.runError, logging.New("test"), func() (int, bool, error) {
+				calls++
+				return test.childCode, test.relaunched, test.elevateErr
+			})
+			if code != test.wantCode || calls != test.wantCalls {
+				t.Fatalf("exit=%d calls=%d, want exit=%d calls=%d", code, calls, test.wantCode, test.wantCalls)
+			}
+		})
 	}
 }

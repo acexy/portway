@@ -8,6 +8,8 @@ import (
 
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
+	"github.com/acexy/portway/internal/vnet/internal/testpacket"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func TestPoolBrokerActivatesCompletePoolAndTransfersPacket(t *testing.T) {
@@ -67,7 +69,7 @@ func TestPoolBrokerActivatesCompletePoolAndTransfersPacket(t *testing.T) {
 	if stats := broker.Statistics(); stats.Pending != 0 || stats.Active != 1 || stats.ActiveChannels != 2 {
 		t.Fatalf("activated pool statistics: %+v", stats)
 	}
-	packet := testIPv4Packet(protocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
+	packet := testpacket.IPv4(packetdata.ProtocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
 	sendError := make(chan error, 1)
 	go func() { sendError <- pool.Send(packet, 0) }()
 	received, err := ReadPacket(peers[0], spec.MTU)

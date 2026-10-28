@@ -19,6 +19,7 @@ import (
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func operationsMetrics(t *testing.T, service *Service) string {
@@ -107,7 +108,7 @@ func TestOperationsVNetSnapshotsAndConcurrentCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := router.AuthorizePeerFlow("unknown-node", vnet.Flow{
+	if _, err := router.AuthorizePeerFlow("unknown-node", packetdata.Flow{
 		SourceIP: netip.MustParseAddr("172.20.0.9"), DestinationIP: netip.MustParseAddr("172.20.0.2"), Protocol: 17,
 	}, time.Now()); err == nil {
 		t.Fatal("unregistered peer flow was authorized")
@@ -117,7 +118,7 @@ func TestOperationsVNetSnapshotsAndConcurrentCollection(t *testing.T) {
 	// No device preparation or real network changes are needed for snapshots.
 	runtime := &serverVNetRuntime{
 		configuration: configuration, router: router, broker: broker,
-		sessions: map[string]serverVNetSession{"private-node": {sessionID: "private-session"}},
+		sessions:  map[string]serverVNetSession{"private-node": {sessionID: "private-session"}},
 		peerPairs: map[string]*serverVNetPeerPair{"private-pair": {active: true}},
 	}
 	runtime.configGeneration.Store(7)

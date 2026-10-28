@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"time"
 
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
+	"github.com/acexy/portway/internal/vnet/system"
 )
 
 func (s *Service) runControlLoop(
@@ -105,6 +108,15 @@ func (s *Service) runControlLoop(
 			)
 			return nil
 		case err := <-vnetFailures(vnetManager):
+			if errors.Is(err, system.ErrElevationRequired) {
+				cancelSession()
+				<-heartbeatDone
+				if pendingManaged != nil {
+					pendingManaged.close()
+				}
+				linkManager.close()
+				s.closeControlSession(connection, messages, readErrors, sessionID, sessionLogger, writer)
+			}
 			return err
 		case err := <-readErrors:
 			return err
@@ -347,38 +359,72 @@ func (s *Service) closeControlSession(
 	}
 	sessionLogger.Trace("close session sent")
 
+	envelope, err := waitCloseAcknowledgment(messages, readErrors, deadline)
+	if err != nil {
+		reason := "read_failed"
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			reason = "timeout"
+		}
+		sessionLogger.WarnWithFields("control session close unconfirmed", err, map[string]any{"reason": reason})
+		return
+	}
+	var acknowledgment protocol.CloseAck
+	if err := protocol.DecodePayload(envelope, &acknowledgment); err != nil {
+		sessionLogger.Error("failed to decode close acknowledgment", err)
+		return
+	}
+	if acknowledgment.SessionID != sessionID {
+		sessionLogger.Error(
+			"close acknowledgment contained an unexpected session ID",
+			errors.New("session ID mismatch"),
+		)
+		return
+	}
+	sessionLogger.Info("control session close acknowledged")
+}
+
+func waitCloseAcknowledgment(
+	messages <-chan protocol.Envelope,
+	readErrors <-chan error,
+	deadline time.Time,
+) (protocol.Envelope, error) {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
+	// The sole reader publishes messages before its terminal error. Drain only
+	// the current queue snapshot so unrelated traffic cannot extend the deadline.
+	queuedAcknowledgment := func() (protocol.Envelope, bool) {
+		for range len(messages) {
+			envelope := <-messages
+			if envelope.Type == protocol.MessageCloseAck {
+				return envelope, true
+			}
+		}
+		return protocol.Envelope{}, false
+	}
 	for {
 		select {
 		case envelope, ok := <-messages:
 			if !ok {
-				sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "reader_stopped"})
-				return
+				select {
+				case err := <-readErrors:
+					return protocol.Envelope{}, err
+				default:
+					return protocol.Envelope{}, io.EOF
+				}
 			}
-			if envelope.Type != protocol.MessageCloseAck {
-				continue
+			if envelope.Type == protocol.MessageCloseAck {
+				return envelope, nil
 			}
-			var acknowledgment protocol.CloseAck
-			if err := protocol.DecodePayload(envelope, &acknowledgment); err != nil {
-				sessionLogger.Error("failed to decode close acknowledgment", err)
-				return
+		case err := <-readErrors:
+			if envelope, ok := queuedAcknowledgment(); ok {
+				return envelope, nil
 			}
-			if acknowledgment.SessionID != sessionID {
-				sessionLogger.Error(
-					"close acknowledgment contained an unexpected session ID",
-					errors.New("session ID mismatch"),
-				)
-				return
-			}
-			sessionLogger.Info("control session close acknowledged")
-			return
-		case <-readErrors:
-			sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "read_failed"})
-			return
+			return protocol.Envelope{}, err
 		case <-timer.C:
-			sessionLogger.WarnWithFields("control session close unconfirmed", nil, map[string]any{"reason": "timeout"})
-			return
+			if envelope, ok := queuedAcknowledgment(); ok {
+				return envelope, nil
+			}
+			return protocol.Envelope{}, os.ErrDeadlineExceeded
 		}
 	}
 }

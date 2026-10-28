@@ -20,6 +20,9 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/transport"
 	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
+	"github.com/acexy/portway/internal/vnet/system"
+	"github.com/acexy/portway/internal/vnet/userspace"
 )
 
 const (
@@ -78,14 +81,14 @@ type serverVNetRuntime struct {
 	sessions          map[string]serverVNetSession
 	router            *vnet.Router
 	broker            *vnet.PoolBroker
-	device            vnet.Device
-	userspaceTCP      *vnet.UserspaceTCP
+	device            system.Device
+	userspaceTCP      *userspace.UserspaceTCP
 	deviceWrite       sync.Mutex
 	poolGeneration    atomic.Uint64
 	configGeneration  atomic.Uint64
 	preparingDevice   atomic.Bool
 	prepareCancel     context.CancelFunc
-	prepareNetwork    func(context.Context, vnet.NetworkSpec) (vnet.Device, error)
+	prepareNetwork    func(context.Context, system.NetworkSpec) (system.Device, error)
 	waitGroup         sync.WaitGroup
 	peerConnection    *net.UDPConn
 	peerListenAddress string
@@ -97,7 +100,7 @@ func newServerVNetRuntime(
 	parent context.Context,
 	logger *logging.Logger,
 	configuration config.VirtualNetworkConfig,
-	device vnet.Device,
+	device system.Device,
 ) *serverVNetRuntime {
 	ctx, cancel := context.WithCancel(parent)
 	router, err := vnet.NewRouter(configuration, vnetMaximumTrackedFlows)
@@ -109,7 +112,7 @@ func newServerVNetRuntime(
 		configuration: configuration, sessions: make(map[string]serverVNetSession),
 		router: router, broker: vnet.NewPoolBroker(), device: device,
 		peerPairs:      make(map[string]*serverVNetPeerPair),
-		prepareNetwork: vnet.PrepareNetworkContext,
+		prepareNetwork: system.PrepareNetworkContext,
 	}
 	runtime.configGeneration.Store(1)
 	if device != nil && router != nil {
@@ -136,7 +139,7 @@ func (runtime *serverVNetRuntime) prepareUserspaceTCPLocked(configuration config
 	if err != nil {
 		return
 	}
-	userspaceTCP, err := vnet.NewUserspaceTCP(
+	userspaceTCP, err := userspace.NewUserspaceTCP(
 		runtime.context,
 		netip.MustParseAddr(configuration.ServerIP),
 		prefix.Bits(),
@@ -388,7 +391,7 @@ func (runtime *serverVNetRuntime) applyConfiguration(configuration config.Virtua
 	userspaceTCP := runtime.userspaceTCP
 	networkChanged := previous.CIDR != configuration.CIDR || previous.ServerIP != configuration.ServerIP
 	canMigrateDevice := configuration.Enabled && networkChanged && device != nil &&
-		vnet.NetworkMigrationSupported(device)
+		system.NetworkMigrationSupported(device)
 	if !configuration.Enabled || networkChanged {
 		if runtime.prepareCancel != nil {
 			runtime.prepareCancel()
@@ -577,7 +580,7 @@ func (runtime *serverVNetRuntime) poolIsCurrent(clientID string, sessionID strin
 func (runtime *serverVNetRuntime) routeClientPacket(clientID string, packet []byte) error {
 	destination, err := runtime.router.RouteClientPacket(clientID, packet, time.Now())
 	if err != nil {
-		if errors.Is(err, vnet.ErrInvalidPacket) {
+		if errors.Is(err, packetdata.ErrInvalidPacket) {
 			return err
 		}
 		return nil
@@ -590,7 +593,7 @@ func (runtime *serverVNetRuntime) routeClientPacket(clientID string, packet []by
 	return nil
 }
 
-func (runtime *serverVNetRuntime) readDevice(device vnet.Device) {
+func (runtime *serverVNetRuntime) readDevice(device system.Device) {
 	buffer := make([]byte, vnetMTU)
 	for {
 		length, err := device.ReadPacket(buffer)
@@ -599,7 +602,7 @@ func (runtime *serverVNetRuntime) readDevice(device vnet.Device) {
 				runtime.logger.Error("VNet device reader stopped", err)
 			}
 			runtime.mutex.Lock()
-			var userspaceTCP *vnet.UserspaceTCP
+			var userspaceTCP *userspace.UserspaceTCP
 			if runtime.device == device {
 				runtime.device = nil
 				userspaceTCP = runtime.userspaceTCP
@@ -669,9 +672,6 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	session, exists := runtime.sessions[clientID]
 	if exists && session.sessionID == sessionID {
 		delete(runtime.sessions, clientID)
-		if session.peerNotifier != nil {
-			session.peerNotifier.abort()
-		}
 		if runtime.router != nil {
 			runtime.router.RemoveClient(clientID)
 		}
@@ -679,6 +679,10 @@ func (runtime *serverVNetRuntime) detach(clientID string, sessionID string) {
 	runtime.mutex.Unlock()
 	if !exists || session.sessionID != sessionID {
 		return
+	}
+	// Wait outside the runtime lock so other sessions can continue routing.
+	if session.peerNotifier != nil {
+		session.peerNotifier.stop()
 	}
 	runtime.revokeClientPeers(clientID, "session_closed")
 	runtime.broker.Remove(clientID, sessionID)

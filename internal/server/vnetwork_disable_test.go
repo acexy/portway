@@ -13,6 +13,7 @@ import (
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/vnet"
+	packetdata "github.com/acexy/portway/internal/vnet/packet"
 )
 
 func TestVNetDisableRevokesBeforeBlockedNotice(t *testing.T) {
@@ -70,7 +71,7 @@ func TestVNetDisableRevokesBeforeBlockedNotice(t *testing.T) {
 	if _, exists := runtime.broker.Active("client-a"); exists {
 		t.Fatal("blocked notice retained local pool")
 	}
-	_, err = router.AuthorizePeerFlow("client-a", vnet.Flow{Protocol: 6,
+	_, err = router.AuthorizePeerFlow("client-a", packetdata.Flow{Protocol: 6,
 		SourceIP: netip.MustParseAddr("172.20.0.2"), SourcePort: 50000,
 		DestinationIP: netip.MustParseAddr("172.20.0.3"), DestinationPort: 80, TCPFlags: 2}, time.Now())
 	if !errors.Is(err, vnet.ErrFlowRejected) {
