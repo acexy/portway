@@ -8,6 +8,23 @@ import (
 	proxyregistry "github.com/acexy/portway/internal/proxy/registry"
 )
 
+func TestGovernedForwardLimitsAcceptBoundaryAndRejectMissingClient(t *testing.T) {
+	declarations := []protocol.ForwardDeclaration{{Type: protocol.ForwardTypeTCP}, {Type: protocol.ForwardTypeUDP}}
+	for _, limits := range []config.ForwardPermissionLimits{{}, {MaxTotal: 2, MaxTCP: 1, MaxUDP: 1}} {
+		service := &Service{configuration: newConfigurationManager(config.ServerConfig{
+			GovernedClients: map[string]config.GovernedClientConfig{"client": {Permissions: config.GovernedPermissions{
+				Forwards: config.GovernedForwardPermissions{Limits: limits},
+			}}},
+		})}
+		if rejection := service.validateGovernedForwardLimits("client", declarations); rejection != nil {
+			t.Fatalf("valid boundary rejected: %+v", rejection)
+		}
+		if rejection := service.validateGovernedForwardLimits("missing", declarations); rejection == nil || rejection.Code != protocol.ConfigurationErrorCode(protocol.ForwardErrorInvalidRequest) {
+			t.Fatalf("missing client accepted: %+v", rejection)
+		}
+	}
+}
+
 func TestValidateGovernedProxiesAppliesTypePortAndDomainPermissions(t *testing.T) {
 	service := &Service{
 		configuration: newConfigurationManager(config.ServerConfig{

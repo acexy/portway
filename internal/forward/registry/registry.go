@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/acexy/portway/internal/control"
 	forwardtcp "github.com/acexy/portway/internal/forward/tcp"
 	forwardudp "github.com/acexy/portway/internal/forward/udp"
+	"github.com/acexy/portway/internal/limits"
 	"github.com/acexy/portway/internal/link"
 	"github.com/acexy/portway/internal/protocol"
 	proxyudp "github.com/acexy/portway/internal/proxy/udp"
@@ -37,10 +39,21 @@ type binding struct {
 	active         bool
 }
 
+type sessionKey struct {
+	clientID  string
+	sessionID string
+}
+
+// A set's identity is its publication generation, including an empty set.
+// Membership is immutable after publication; policy updates only change bindings.
+type bindingSet struct {
+	bindings map[string]*binding
+}
+
 // Registry owns active Forward Bindings.
 type Registry struct {
 	mutex         sync.RWMutex
-	bindings      map[string]*binding
+	sessions      map[sessionKey]*bindingSet
 	broker        *link.Broker
 	policy        Policy
 	sessionActive func(string, string) bool
@@ -61,15 +74,18 @@ type Stats struct {
 // SnapshotStats returns separate snapshots of Forward bindings and UDP resources.
 func (registry *Registry) SnapshotStats() Stats {
 	registry.mutex.RLock()
-	stats := Stats{Bindings: len(registry.bindings)}
-	for _, current := range registry.bindings {
-		if current.active {
-			stats.ActiveBindings++
-		}
-		if current.declaration.Type == protocol.ForwardTypeTCP {
-			stats.TCPBindings++
-		} else if current.declaration.Type == protocol.ForwardTypeUDP {
-			stats.UDPBindings++
+	var stats Stats
+	for _, session := range registry.sessions {
+		stats.Bindings += len(session.bindings)
+		for _, current := range session.bindings {
+			if current.active {
+				stats.ActiveBindings++
+			}
+			if current.declaration.Type == protocol.ForwardTypeTCP {
+				stats.TCPBindings++
+			} else if current.declaration.Type == protocol.ForwardTypeUDP {
+				stats.UDPBindings++
+			}
 		}
 	}
 	registry.mutex.RUnlock()
@@ -80,7 +96,7 @@ func (registry *Registry) SnapshotStats() Stats {
 // New creates a Forward Registry.
 func New(broker *link.Broker, policy Policy, udpConfig func() config.UDPConfig, sessionActive func(string, string) bool) *Registry {
 	return &Registry{
-		bindings:      make(map[string]*binding),
+		sessions:      make(map[sessionKey]*bindingSet),
 		broker:        broker,
 		policy:        policy,
 		sessionActive: sessionActive,
@@ -125,9 +141,14 @@ func (registry *Registry) Validate(
 	authenticationContext authentication.Context,
 	declarations []protocol.ForwardDeclaration,
 ) *protocol.ForwardError {
+	if len(declarations) > limits.HardMaxBindingsPerClient {
+		return forwardError(protocol.ForwardErrorLimitExceeded, "", "client Forward limit exceeded")
+	}
 	names := make(map[string]struct{}, len(declarations))
 	for _, declaration := range declarations {
-		if declaration.Name == "" || declaration.TargetPort == 0 {
+		address, addressError := netip.ParseAddr(declaration.TargetIP)
+		if config.ValidateResourceName(declaration.Name) != nil || declaration.TargetPort == 0 ||
+			addressError != nil || address.String() != declaration.TargetIP {
 			return forwardError(protocol.ForwardErrorInvalidForward, declaration.Name, "invalid Forward declaration")
 		}
 		switch declaration.Type {
@@ -157,7 +178,7 @@ func (registry *Registry) Offer(
 		return rejectedOffer(request, protocol.ForwardErrorSessionInactive, "Forward Session is inactive")
 	}
 	registry.mutex.RLock()
-	current := registry.bindings[bindingKey(clientID, sessionID, request.Name)]
+	current := registry.bindingLocked(clientID, sessionID, request.Name)
 	if current == nil || !current.active || current.bindingID != request.BindingID ||
 		current.declaration.Type != request.Type {
 		registry.mutex.RUnlock()
@@ -224,7 +245,7 @@ func (registry *Registry) handlerFactory(current binding) link.StreamHandlerFact
 		}
 		registry.mutex.RLock()
 		defer registry.mutex.RUnlock()
-		registered := registry.bindings[bindingKey(current.clientID, current.sessionID, current.declaration.Name)]
+		registered := registry.bindingLocked(current.clientID, current.sessionID, current.declaration.Name)
 		if registry.closed || registered == nil || !registered.active || registered.bindingID != current.bindingID {
 			return false
 		}
@@ -253,16 +274,14 @@ func (registry *Registry) handlerFactory(current binding) link.StreamHandlerFact
 // Remove closes all Bindings owned by one Session.
 func (registry *Registry) Remove(clientID string, sessionID string) {
 	registry.mutex.Lock()
-	removed := make([]*binding, 0)
-	for key, current := range registry.bindings {
-		if current.clientID == clientID && current.sessionID == sessionID {
-			removed = append(removed, current)
-			delete(registry.bindings, key)
-		}
-	}
+	key := sessionKey{clientID: clientID, sessionID: sessionID}
+	removed := registry.sessions[key]
+	delete(registry.sessions, key)
 	registry.mutex.Unlock()
-	for _, current := range removed {
-		registry.broker.CancelBinding(current.bindingID)
+	if removed != nil {
+		for _, current := range removed.bindings {
+			registry.broker.CancelBinding(current.bindingID)
+		}
 	}
 }
 
@@ -277,29 +296,31 @@ func (registry *Registry) ApplyPolicy(
 	registry.udpLimiter.UpdateConfiguration(configuration)
 	affected := make([]string, 0)
 	notifications := &PolicyNotifications{sessions: make(map[*control.Writer][]policyNotice)}
-	for _, current := range registry.bindings {
-		_, active := registry.policy(current.authentication, current.declaration)
-		changed := affectedPolicy(current.authentication, current.declaration)
-		wasActive := current.active
-		current.active = active
-		if changed || !active {
-			affected = append(affected, current.bindingID)
-		}
-		if wasActive && (!active || changed) {
-			notifications.add(current.writer, protocol.MessageForwardBindingRevoked, protocol.ForwardBindingRevoked{
-				Name: current.declaration.Name, Type: current.declaration.Type,
-				BindingID: current.bindingID, Generation: generation, Reason: "policy_changed",
-			})
-		}
-		if active && (!wasActive || changed) {
-			activation := protocol.ForwardBindingActivated{
-				Name: current.declaration.Name, Type: current.declaration.Type,
-				BindingID: current.bindingID, Generation: generation,
+	for _, session := range registry.sessions {
+		for _, current := range session.bindings {
+			_, active := registry.policy(current.authentication, current.declaration)
+			changed := affectedPolicy(current.authentication, current.declaration)
+			wasActive := current.active
+			current.active = active
+			if changed || !active {
+				affected = append(affected, current.bindingID)
 			}
-			if current.declaration.Type == protocol.ForwardTypeUDP {
-				activation.UDP = config.ForwardUDPProtocolConfig(configuration)
+			if wasActive && (!active || changed) {
+				notifications.add(current.writer, protocol.MessageForwardBindingRevoked, protocol.ForwardBindingRevoked{
+					Name: current.declaration.Name, Type: current.declaration.Type,
+					BindingID: current.bindingID, Generation: generation, Reason: "policy_changed",
+				})
 			}
-			notifications.add(current.writer, protocol.MessageForwardBindingActivated, activation)
+			if active && (!wasActive || changed) {
+				activation := protocol.ForwardBindingActivated{
+					Name: current.declaration.Name, Type: current.declaration.Type,
+					BindingID: current.bindingID, Generation: generation,
+				}
+				if current.declaration.Type == protocol.ForwardTypeUDP {
+					activation.UDP = config.ForwardUDPProtocolConfig(configuration)
+				}
+				notifications.add(current.writer, protocol.MessageForwardBindingActivated, activation)
+			}
 		}
 	}
 	registry.mutex.Unlock()
@@ -313,19 +334,22 @@ func (registry *Registry) ApplyPolicy(
 func (registry *Registry) Close() {
 	registry.mutex.Lock()
 	registry.closed = true
-	bindings := make([]*binding, 0, len(registry.bindings))
-	for _, current := range registry.bindings {
-		bindings = append(bindings, current)
-	}
-	registry.bindings = make(map[string]*binding)
+	sessions := registry.sessions
+	registry.sessions = nil
 	registry.mutex.Unlock()
-	for _, current := range bindings {
-		registry.broker.CancelBinding(current.bindingID)
+	for _, session := range sessions {
+		for _, current := range session.bindings {
+			registry.broker.CancelBinding(current.bindingID)
+		}
 	}
 }
 
-func bindingKey(clientID string, sessionID string, name string) string {
-	return clientID + "\x00" + sessionID + "\x00" + name
+// bindingLocked requires the Registry read or write lock.
+func (registry *Registry) bindingLocked(clientID, sessionID, name string) *binding {
+	if session := registry.sessions[sessionKey{clientID: clientID, sessionID: sessionID}]; session != nil {
+		return session.bindings[name]
+	}
+	return nil
 }
 
 func newBindingID() (string, error) {

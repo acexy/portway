@@ -10,23 +10,21 @@ import (
 // idleTimeoutConnection closes an upgraded connection after a full-duplex idle period.
 type idleTimeoutConnection struct {
 	net.Conn
-	timeout time.Duration
-	timer   *time.Timer
-	mutex   sync.Mutex
-	closed  bool
+	timeout  time.Duration
+	timer    *time.Timer
+	mutex    sync.Mutex
+	closed   bool
+	deadline time.Time
 }
 
 func newIdleTimeoutConnection(connection net.Conn, timeout time.Duration) net.Conn {
 	if timeout <= 0 {
 		return connection
 	}
-	wrapper := &idleTimeoutConnection{Conn: connection, timeout: timeout}
-	initialized := make(chan struct{})
-	wrapper.timer = time.AfterFunc(timeout, func() {
-		<-initialized
-		_ = wrapper.Close()
-	})
-	close(initialized)
+	wrapper := &idleTimeoutConnection{Conn: connection, timeout: timeout, deadline: time.Now().Add(timeout)}
+	wrapper.mutex.Lock()
+	wrapper.timer = time.AfterFunc(timeout, wrapper.expire)
+	wrapper.mutex.Unlock()
 	return wrapper
 }
 
@@ -50,8 +48,26 @@ func (connection *idleTimeoutConnection) touch() {
 	connection.mutex.Lock()
 	defer connection.mutex.Unlock()
 	if !connection.closed {
-		connection.timer.Reset(connection.timeout)
+		connection.deadline = time.Now().Add(connection.timeout)
 	}
+}
+
+// expire rechecks activity because an already running timer cannot be revoked.
+func (connection *idleTimeoutConnection) expire() {
+	connection.mutex.Lock()
+	if connection.closed {
+		connection.mutex.Unlock()
+		return
+	}
+	if remaining := time.Until(connection.deadline); remaining > 0 {
+		connection.timer.Reset(remaining)
+		connection.mutex.Unlock()
+		return
+	}
+	connection.closed = true
+	connection.timer.Stop()
+	connection.mutex.Unlock()
+	_ = connection.Conn.Close()
 }
 
 func (connection *idleTimeoutConnection) Close() error {

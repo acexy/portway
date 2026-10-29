@@ -44,6 +44,9 @@ func ReadPacket(reader io.Reader, mtu uint16) ([]byte, error) {
 	}
 	packet := make([]byte, int(length))
 	if _, err := io.ReadFull(reader, packet); err != nil {
+		if err == io.EOF {
+			return nil, io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
 	return packet, nil

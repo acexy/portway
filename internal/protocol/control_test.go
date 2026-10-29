@@ -2,10 +2,72 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 )
+
+func TestReadControlRejectsInvalidHeaderBeforeReadingBody(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{"version", func(header []byte) { header[4]++ }},
+		{"encoding", func(header []byte) { header[5]++ }},
+		{"flags", func(header []byte) { header[7] = 1 }},
+		{"empty", func(header []byte) { binary.BigEndian.PutUint32(header[8:], 0) }},
+		{"oversized", func(header []byte) { binary.BigEndian.PutUint32(header[8:], maxControlPayloadBytes+1) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			header := make([]byte, controlHeaderSize)
+			copy(header, Magic)
+			header[4], header[5] = CoreVersion, controlEncodingJSON
+			binary.BigEndian.PutUint32(header[8:], 1)
+			test.mutate(header)
+			// No body is supplied: invalid headers must fail before body I/O.
+			if _, err := ReadControl(bytes.NewReader(header)); !errors.Is(err, ErrInvalidControlMessage) {
+				t.Fatalf("invalid header error = %v", err)
+			}
+		})
+	}
+}
+
+func TestControlJSONAndTruncatedFrameBoundaries(t *testing.T) {
+	for _, body := range []string{
+		`{"type":"ping","payload":{},"unknown":1}`,
+		`{"type":"ping","payload":{}} {}`,
+		`{"type":"ping","payload":{}} garbage`,
+		`{"payload":{}}`,
+		`{"type":"ping","request_id":"invalid id","payload":{}}`,
+	} {
+		var frame bytes.Buffer
+		if err := WriteControl(&frame, MessagePing, Heartbeat{Sequence: 1}); err != nil {
+			t.Fatal(err)
+		}
+		header := append([]byte(nil), frame.Bytes()[:controlHeaderSize]...)
+		binary.BigEndian.PutUint32(header[8:], uint32(len(body)))
+		if _, err := ReadControl(bytes.NewReader(append(header, body...))); !errors.Is(err, ErrInvalidControlMessage) {
+			t.Fatalf("invalid envelope accepted: %v", err)
+		}
+	}
+	for _, payload := range []string{`{"sequence":1} {}`, `{"sequence":1} garbage`, ""} {
+		var heartbeat Heartbeat
+		if err := DecodePayload(Envelope{Type: MessagePing, Payload: []byte(payload)}, &heartbeat); !errors.Is(err, ErrInvalidControlMessage) {
+			t.Fatalf("invalid payload accepted: %v", err)
+		}
+	}
+	var frame bytes.Buffer
+	if err := WriteControl(&frame, MessagePing, Heartbeat{Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, length := range []int{controlHeaderSize - 1, frame.Len() - 1} {
+		if _, err := ReadControl(bytes.NewReader(frame.Bytes()[:length])); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("truncated frame error = %v", err)
+		}
+	}
+}
 
 func TestControlFrameRoundTrip(t *testing.T) {
 	t.Parallel()

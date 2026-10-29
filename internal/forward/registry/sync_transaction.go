@@ -11,13 +11,12 @@ import (
 // observed generation under the Registry publication barrier; Rollback only
 // discards the unpublished candidate. Both operations are idempotent.
 type SyncTransaction struct {
-	registry  *Registry
-	clientID  string
-	sessionID string
-	next      map[string]*binding
-	previous  []*binding
-	results   []protocol.ForwardResult
-	retire    func()
+	registry *Registry
+	session  sessionKey
+	next     *bindingSet
+	previous *bindingSet
+	results  []protocol.ForwardResult
+	retire   func()
 }
 
 // BeginSync validates and prepares a complete Forward generation without
@@ -40,17 +39,19 @@ func (registry *Registry) BeginSync(
 		return nil, forwardError(protocol.ForwardErrorSessionInactive, "", "Forward Registry is closed")
 	}
 
-	transaction := &SyncTransaction{
-		registry:  registry,
-		clientID:  clientID,
-		sessionID: sessionID,
-		next:      make(map[string]*binding, len(declarations)),
-		results:   make([]protocol.ForwardResult, 0, len(declarations)),
+	key := sessionKey{clientID: clientID, sessionID: sessionID}
+	previous := registry.sessions[key]
+	if previous == nil {
+		// Reserve ownership before preparation so Remove also invalidates empty sessions.
+		previous = &bindingSet{}
+		registry.sessions[key] = previous
 	}
-	for _, existing := range registry.bindings {
-		if existing.clientID == clientID && existing.sessionID == sessionID {
-			transaction.previous = append(transaction.previous, existing)
-		}
+	transaction := &SyncTransaction{
+		registry: registry,
+		session:  key,
+		next:     &bindingSet{bindings: make(map[string]*binding, len(declarations))},
+		previous: previous,
+		results:  make([]protocol.ForwardResult, 0, len(declarations)),
 	}
 	for _, declaration := range declarations {
 		bindingID, err := newBindingID()
@@ -69,7 +70,7 @@ func (registry *Registry) BeginSync(
 			declaration: declaration, writer: writer,
 			authentication: authenticationContext, maxActiveLinks: maxActiveLinks, active: active,
 		}
-		transaction.next[bindingKey(clientID, sessionID, declaration.Name)] = current
+		transaction.next.bindings[declaration.Name] = current
 		result := protocol.ForwardResult{
 			Name: declaration.Name, Type: declaration.Type, BindingID: bindingID, Active: active,
 		}
@@ -114,7 +115,7 @@ func (transaction *SyncTransaction) CommitWith(companion func() bool) bool {
 		registry.mutex.Unlock()
 		return false
 	}
-	for _, current := range transaction.next {
+	for _, current := range transaction.next.bindings {
 		configured, active := registry.policy(current.authentication, current.declaration)
 		if !configured || active != current.active {
 			transaction.registry = nil
@@ -126,17 +127,10 @@ func (transaction *SyncTransaction) CommitWith(companion func() bool) bool {
 		registry.mutex.Unlock()
 		return false
 	}
-	for key, existing := range registry.bindings {
-		if existing.clientID == transaction.clientID && existing.sessionID == transaction.sessionID {
-			delete(registry.bindings, key)
-		}
-	}
-	for key, current := range transaction.next {
-		registry.bindings[key] = current
-	}
+	registry.sessions[transaction.session] = transaction.next
 	transaction.registry = nil
 	transaction.retire = func() {
-		for _, previous := range transaction.previous {
+		for _, previous := range transaction.previous.bindings {
 			registry.broker.CancelBinding(previous.bindingID)
 		}
 	}
@@ -154,21 +148,7 @@ func (transaction *SyncTransaction) Retire() {
 }
 
 func (transaction *SyncTransaction) matchesPreviousLocked() bool {
-	previous := make(map[*binding]struct{}, len(transaction.previous))
-	for _, current := range transaction.previous {
-		previous[current] = struct{}{}
-	}
-	matched := 0
-	for _, current := range transaction.registry.bindings {
-		if current.clientID != transaction.clientID || current.sessionID != transaction.sessionID {
-			continue
-		}
-		if _, exists := previous[current]; !exists {
-			return false
-		}
-		matched++
-	}
-	return matched == len(previous)
+	return transaction.registry.sessions[transaction.session] == transaction.previous
 }
 
 // Rollback discards the unpublished generation.

@@ -14,6 +14,35 @@ import (
 	"github.com/acexy/portway/internal/protocol"
 )
 
+func TestAssociationIdleDecisionRechecksActivityAndPreservesReplacement(t *testing.T) {
+	source := netip.MustParseAddrPort("192.0.2.1:1234")
+	binding := &Binding{context: context.Background(), configuration: config.DefaultUDPConfig(),
+		associations: make(map[netip.AddrPort]*association)}
+	current := newAssociation(binding, source, link.Target{}, nil)
+	defer current.Close()
+	binding.associations[source] = current
+	cutoff := time.Now().Add(-time.Second)
+	current.lastActivity = cutoff.Add(-time.Second)
+	// Activity arrives after the sweep took its candidate snapshot.
+	current.touch()
+	current.closeIfIdle(cutoff)
+	if current.context.Err() != nil || binding.associations[source] != current {
+		t.Fatal("stale sweep closed a refreshed association")
+	}
+	current.lastActivity = cutoff
+	replacement := newAssociation(binding, source, link.Target{}, nil)
+	defer replacement.Close()
+	binding.associations[source] = replacement
+	current.closeIfIdle(cutoff)
+	if current.context.Err() == nil || binding.associations[source] != replacement {
+		t.Fatal("idle retirement failed or removed a replacement")
+	}
+	current.touch()
+	if !current.closing || !current.lastActivity.Equal(cutoff) {
+		t.Fatal("late activity revived the closed association")
+	}
+}
+
 func TestAssociationCopiesOnlyAdmittedPayload(t *testing.T) {
 	configuration := config.DefaultUDPConfig()
 	configuration.MaxQueuedDatagramsPerAssociation = 1

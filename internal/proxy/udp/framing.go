@@ -39,6 +39,9 @@ func ReadDatagram(reader io.Reader, maxSize int) ([]byte, error) {
 	}
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(reader, payload); err != nil {
+		if err == io.EOF {
+			return nil, io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
 	return payload, nil
@@ -60,6 +63,9 @@ func ReadDatagramInto(reader io.Reader, buffer []byte, maxSize int) ([]byte, err
 	}
 	payload := buffer[:length]
 	if _, err := io.ReadFull(reader, payload); err != nil {
+		if err == io.EOF {
+			return nil, io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
 	return payload, nil

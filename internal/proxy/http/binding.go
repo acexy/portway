@@ -2,6 +2,7 @@
 package http
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -36,7 +37,7 @@ type statusResponseWriter struct {
 }
 
 func (writer *statusResponseWriter) WriteHeader(statusCode int) {
-	if writer.statusCode == 0 {
+	if writer.statusCode == 0 && (statusCode >= 200 || statusCode == stdhttp.StatusSwitchingProtocols) {
 		writer.statusCode = statusCode
 	}
 	writer.ResponseWriter.WriteHeader(statusCode)
@@ -51,6 +52,15 @@ func (writer *statusResponseWriter) Write(content []byte) (int, error) {
 
 func (writer *statusResponseWriter) Unwrap() stdhttp.ResponseWriter {
 	return writer.ResponseWriter
+}
+
+// ReverseProxy writes a successful Upgrade directly to the hijacked connection.
+func (writer *statusResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	connection, buffer, err := stdhttp.NewResponseController(writer.ResponseWriter).Hijack()
+	if err == nil && writer.statusCode == 0 {
+		writer.statusCode = stdhttp.StatusSwitchingProtocols
+	}
+	return connection, buffer, err
 }
 
 // Binding owns one HTTP reverse proxy, its connection pool, and local limits.
@@ -124,6 +134,9 @@ func NewBinding(
 			upgrade: binding.upgradeTransport,
 		},
 		Rewrite: func(request *httputil.ProxyRequest) {
+			// Incoming trailers are populated only when Body reaches EOF. Clone's
+			// initial snapshot would lose their values before the upstream sends them.
+			request.Out.Trailer = request.In.Trailer
 			request.Out.Header.Del("Forwarded")
 			request.Out.Header.Del("X-Forwarded-For")
 			request.Out.Header.Del("X-Forwarded-Host")

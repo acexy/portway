@@ -49,6 +49,9 @@ func (s *Service) synchronizeConfiguration(
 		s.logConfigurationSyncApplied(session, request, *cachedResult, true)
 		return *cachedResult, nil
 	}
+	if rejection := validateConfigurationNames(request); rejection != nil {
+		return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, rejection)
+	}
 	if rejection := validateConfigurationCapabilities(
 		request,
 		session.capabilities,
@@ -60,6 +63,9 @@ func (s *Service) synchronizeConfiguration(
 		Proxies:  request.Proxies,
 	}
 	if session.mode == authentication.ModeGoverned {
+		if rejection := s.validateGovernedForwardLimits(session.clientID, request.Forwards); rejection != nil {
+			return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, rejection)
+		}
 		if result := s.validateGovernedProxies(session.clientID, proxyRequest); result != nil {
 			rejection := configurationProxyError(result.Error)
 			return s.rejectConfigurationSync(session, envelope.RequestID, request.Revision, rejection)
@@ -168,6 +174,25 @@ func (s *Service) logConfigurationSyncApplied(
 			"udp_forwards": forwardCounts[protocol.ForwardTypeUDP],
 		},
 	)
+}
+
+func validateConfigurationNames(request protocol.SyncConfiguration) *protocol.ConfigurationError {
+	if len(request.Forwards) == 0 || len(request.Proxies) == 0 {
+		return nil
+	}
+	names := make(map[string]struct{}, len(request.Proxies))
+	for _, declaration := range request.Proxies {
+		names[declaration.Name] = struct{}{}
+	}
+	for _, declaration := range request.Forwards {
+		if _, exists := names[declaration.Name]; exists {
+			return configurationForwardError(&protocol.ForwardError{
+				Code: protocol.ForwardErrorInvalidForward, ForwardName: declaration.Name,
+				Message: "Forward name duplicates a proxy name",
+			})
+		}
+	}
+	return nil
 }
 
 func validateConfigurationCapabilities(

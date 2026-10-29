@@ -39,7 +39,7 @@ func BenchmarkUrgentControlWrite(b *testing.B) {
 		))
 		for b.Loop() {
 			connection, peer := net.Pipe()
-			observed := &firstWriteObserver{Writer: connection, started: make(chan struct{})}
+			observed := &firstWriteObserver{Conn: connection, started: make(chan struct{})}
 			writer := NewWriter(observed)
 			largeResult := make(chan error, 1)
 			go func() {
@@ -72,14 +72,36 @@ func BenchmarkUrgentControlWrite(b *testing.B) {
 }
 
 type firstWriteObserver struct {
-	io.Writer
+	net.Conn
 	once    sync.Once
 	started chan struct{}
 }
 
 func (observer *firstWriteObserver) Write(data []byte) (int, error) {
 	observer.once.Do(func() { close(observer.started) })
-	return observer.Writer.Write(data)
+	return observer.Conn.Write(data)
+}
+
+func BenchmarkControlWriterSteadyState(b *testing.B) {
+	connection, peer := net.Pipe()
+	finished := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, peer)
+		close(finished)
+	}()
+	b.Cleanup(func() {
+		connection.Close()
+		peer.Close()
+		<-finished
+	})
+	writer := NewWriter(connection)
+	payload := benchmarkOpenLink()
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := writer.Write(protocol.MessageOpenLink, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func benchmarkOpenLink() protocol.OpenLink {

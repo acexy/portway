@@ -9,9 +9,69 @@ import (
 	"testing"
 
 	"github.com/acexy/portway/internal/authentication"
+	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
+
+func TestConfigurationRejectsForwardBoundaryBeforeRegistryWork(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		mode      authentication.Mode
+		limits    config.ForwardPermissionLimits
+		collision bool
+		code      protocol.ForwardErrorCode
+	}{
+		{"shared_name_collision", authentication.ModeShared, config.ForwardPermissionLimits{}, true, protocol.ForwardErrorInvalidForward},
+		{"governed_name_collision", authentication.ModeGoverned, config.ForwardPermissionLimits{}, true, protocol.ForwardErrorInvalidForward},
+		{"total_limit", authentication.ModeGoverned, config.ForwardPermissionLimits{MaxTotal: 1}, false, protocol.ForwardErrorLimitExceeded},
+		{"tcp_limit", authentication.ModeGoverned, config.ForwardPermissionLimits{MaxTCP: 1}, false, protocol.ForwardErrorLimitExceeded},
+		{"udp_limit", authentication.ModeGoverned, config.ForwardPermissionLimits{MaxUDP: 1}, false, protocol.ForwardErrorLimitExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := protocol.SyncConfiguration{Revision: 1, Forwards: []protocol.ForwardDeclaration{
+				{Name: "tcp-one", Type: protocol.ForwardTypeTCP, TargetIP: "127.0.0.1", TargetPort: 80},
+				{Name: "tcp-two", Type: protocol.ForwardTypeTCP, TargetIP: "127.0.0.1", TargetPort: 80},
+				{Name: "udp-one", Type: protocol.ForwardTypeUDP, TargetIP: "127.0.0.1", TargetPort: 53},
+				{Name: "udp-two", Type: protocol.ForwardTypeUDP, TargetIP: "127.0.0.1", TargetPort: 53},
+			}}
+			if test.collision {
+				request.Proxies = []protocol.ProxyDeclaration{{Name: "tcp-one", Type: protocol.ProxyTypeTCP, RemotePort: 8080}}
+			}
+			service := &Service{configuration: newConfigurationManager(config.ServerConfig{
+				GovernedClients: map[string]config.GovernedClientConfig{"client": {Permissions: config.GovernedPermissions{
+					Forwards: config.GovernedForwardPermissions{Limits: test.limits},
+				}}},
+			})}
+			payload, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			_, err = service.synchronizeConfiguration(configurationSyncSession{
+				clientID: "client", sessionID: "session", mode: test.mode, writer: control.NewWriter(&output),
+				capabilities: []protocol.Capability{protocol.CapabilityTCP, protocol.CapabilityTCPForward, protocol.CapabilityUDPForward},
+			}, protocol.Envelope{RequestID: "request", Payload: payload})
+			if !errors.Is(err, errProxyRegistrationRejected) {
+				t.Fatalf("unexpected rejection: %v", err)
+			}
+			envelope, err := protocol.ReadControl(&output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result protocol.SyncConfigurationResult
+			if err := protocol.DecodePayload(envelope, &result); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.RequestID != "request" || result.Revision != 1 || result.Status != protocol.ConfigurationSyncStatusRejected || result.Error == nil || result.Error.Code != protocol.ConfigurationErrorCode(test.code) || result.Error.ResourceKind != protocol.ConfigurationResourceForward || result.Error.Retryable {
+				t.Fatalf("unexpected rejection response: %+v", result)
+			}
+			if len(service.configurationSyncStates) != 0 {
+				t.Fatal("rejection published cache state")
+			}
+		})
+	}
+}
 
 func TestSynchronizeConfigurationReplaysCompleteResultBeforeRegistryWork(t *testing.T) {
 	service := &Service{}
