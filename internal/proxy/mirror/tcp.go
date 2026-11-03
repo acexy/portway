@@ -148,6 +148,11 @@ waitInitial:
 
 	buffer := make([]byte, mirrorTCPChunkSize)
 	for {
+		// Cancellation may release queue backpressure before the asynchronous
+		// visitor close runs. Do not keep consuming input during that window.
+		if ctx.Err() != nil {
+			return
+		}
 		length, err := visitor.Read(buffer)
 		if length != 0 {
 			members := session.snapshotMembers()
