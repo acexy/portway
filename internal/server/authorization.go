@@ -213,6 +213,33 @@ func (s *Service) validateGovernedProxies(
 	return nil
 }
 
+func (s *Service) validateGovernedForwardLimits(clientID string, declarations []protocol.ForwardDeclaration) *protocol.ConfigurationError {
+	client, exists := s.configuration.governedClient(clientID)
+	if !exists {
+		return configurationForwardError(&protocol.ForwardError{
+			Code: protocol.ForwardErrorInvalidRequest, Message: "governed client configuration is unavailable",
+		})
+	}
+	var tcpCount, udpCount int
+	for _, declaration := range declarations {
+		switch declaration.Type {
+		case protocol.ForwardTypeTCP:
+			tcpCount++
+		case protocol.ForwardTypeUDP:
+			udpCount++
+		}
+	}
+	limits := client.Permissions.Forwards.Limits
+	if (limits.MaxTotal > 0 && len(declarations) > limits.MaxTotal) ||
+		(limits.MaxTCP > 0 && tcpCount > limits.MaxTCP) ||
+		(limits.MaxUDP > 0 && udpCount > limits.MaxUDP) {
+		return configurationForwardError(&protocol.ForwardError{
+			Code: protocol.ForwardErrorLimitExceeded, Message: "client Forward limit exceeded",
+		})
+	}
+	return nil
+}
+
 func publicSchemeAllowed(
 	requested protocol.HTTPPublicScheme,
 	allowed []protocol.HTTPPublicScheme,

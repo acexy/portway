@@ -259,6 +259,7 @@ func (s *Service) runControlSession(
 		"event":   "control_session_established",
 		"resumed": serverHello.Resumed,
 	})
+	s.logServerVersion(serverIdentification.Version)
 	heartbeat := newHeartbeatState(time.Now())
 	loopError := s.runControlLoop(
 		ctx,

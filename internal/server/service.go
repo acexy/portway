@@ -131,6 +131,8 @@ func (s *Service) Run(ctx context.Context) error {
 	var sessions sync.WaitGroup
 	defer sessions.Wait()
 	sessionContext, cancelSessions := context.WithCancel(ctx)
+	// Cover setup failures before the normal shutdown ordering is installed.
+	defer cancelSessions()
 	s.linkBroker = link.NewBroker(sessionContext)
 	defer s.linkBroker.Close()
 	var vnetDevice system.Device

@@ -8,6 +8,14 @@ import (
 	"github.com/acexy/portway/internal/config"
 )
 
+func BenchmarkAssociationActivity(b *testing.B) {
+	current := &association{}
+	b.ReportAllocs()
+	for b.Loop() {
+		current.touch()
+	}
+}
+
 func BenchmarkAssociationLifecycle(b *testing.B) {
 	configuration := config.DefaultUDPConfig()
 	configuration.MaxAssociations = 4096

@@ -69,6 +69,30 @@ func TestQueuedPoolBoundsMemoryAndIsolatesSlowDestination(t *testing.T) {
 	}
 }
 
+func TestQueuedPoolRejectsInvalidInputWithoutClosing(t *testing.T) {
+	pool, peer, _ := queuedTestPool(t)
+	for _, input := range []struct {
+		packet []byte
+		index  uint8
+	}{
+		{nil, 0}, {make([]byte, 1151), 0}, {[]byte{1}, 1},
+	} {
+		if err := pool.Enqueue(input.packet, input.index, nil); !errors.Is(err, packetdata.ErrInvalidPacket) {
+			t.Fatalf("invalid input accepted: %v", err)
+		}
+	}
+	packet := testpacket.IPv4(packetdata.ProtocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)
+	if err := pool.Enqueue(packet, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPacket(peer, 1150); err != nil {
+		t.Fatalf("invalid input disrupted healthy pool: %v", err)
+	}
+}
+
 func TestQueuedPoolRechecksAuthorization(t *testing.T) {
 	pool, peer, started := queuedTestPool(t)
 	packet := testpacket.IPv4(packetdata.ProtocolUDP, [4]byte{172, 20, 0, 2}, 50000, [4]byte{172, 20, 0, 3}, 53)

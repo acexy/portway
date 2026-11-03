@@ -82,6 +82,7 @@ func (binding *Binding) HandleDatagram(source netip.AddrPort, payload []byte) {
 	}
 	target, err := binding.resolveTarget()
 	if err != nil {
+		binding.recordRejection()
 		binding.mutex.Unlock()
 		return
 	}
@@ -94,6 +95,7 @@ func (binding *Binding) HandleDatagram(source netip.AddrPort, payload []byte) {
 		time.Now(),
 	)
 	if !allowed {
+		binding.recordRejection()
 		binding.mutex.Unlock()
 		return
 	}
@@ -105,13 +107,18 @@ func (binding *Binding) HandleDatagram(source netip.AddrPort, payload []byte) {
 		return binding.filter.RegisterFor(source.Addr(), "udp_proxy", association.Close)
 	}()
 	if !sourceAllowed {
+		binding.recordRejection()
 		binding.mutex.Unlock()
+		association.cancel()
 		lease.Close()
 		return
 	}
 	association.releaseSource = releaseSource
 	binding.waitGroup.Add(1)
 	binding.associations[source] = association
+	if association.traffic != nil {
+		association.traffic.created.Add(1)
+	}
 	binding.mutex.Unlock()
 
 	if !association.enqueue(payload) {
@@ -131,6 +138,12 @@ func (binding *Binding) remove(candidate *association) {
 	binding.mutex.Unlock()
 }
 
+func (binding *Binding) recordRejection() {
+	if binding.endpoint != nil {
+		binding.endpoint.traffic.rejected.Add(1)
+	}
+}
+
 func (binding *Binding) sweep() {
 	interval := binding.configuration.AssociationIdleTimeout / 2
 	if interval > time.Second {
@@ -143,14 +156,12 @@ func (binding *Binding) sweep() {
 		case <-binding.context.Done():
 			return
 		case now := <-ticker.C:
-			cutoff := now.Add(-binding.configuration.AssociationIdleTimeout).UnixNano()
+			cutoff := now.Add(-binding.configuration.AssociationIdleTimeout)
 			binding.mutex.Lock()
-			expired := coll.MapFilterToSlice(binding.associations, func(_ netip.AddrPort, candidate *association) (*association, bool) {
-				return candidate, candidate.lastActivity.Load() <= cutoff
-			})
+			candidates := coll.MapValues(binding.associations)
 			binding.mutex.Unlock()
-			for _, candidate := range expired {
-				candidate.Close()
+			for _, candidate := range candidates {
+				candidate.closeIfIdle(cutoff)
 			}
 		}
 	}
@@ -181,6 +192,7 @@ func (binding *Binding) Close() {
 }
 
 type association struct {
+	traffic         *trafficCounters
 	binding         *Binding
 	source          netip.AddrPort
 	target          link.Target
@@ -188,7 +200,9 @@ type association struct {
 	context         context.Context
 	cancel          context.CancelFunc
 	queue           chan []byte
-	lastActivity    atomic.Int64
+	activityMutex   sync.Mutex
+	lastActivity    time.Time
+	closing         bool
 	releaseSource   func()
 	closeOnce       sync.Once
 	finishOnce      sync.Once
@@ -217,11 +231,17 @@ func newAssociation(
 		done:          make(chan struct{}),
 	}
 	candidate.touch()
+	if binding.endpoint != nil {
+		candidate.traffic = &binding.endpoint.traffic
+	}
 	return candidate
 }
 
 func (association *association) enqueue(payload []byte) bool {
 	if len(association.queue) == cap(association.queue) || !association.lease.ReserveQueue(len(payload)) {
+		if association.traffic != nil {
+			association.traffic.queueDropped.Add(1)
+		}
 		return false
 	}
 	payload = append([]byte(nil), payload...)
@@ -231,6 +251,9 @@ func (association *association) enqueue(payload []byte) bool {
 		return true
 	default:
 		association.lease.ReleaseQueue(len(payload))
+		if association.traffic != nil {
+			association.traffic.queueDropped.Add(1)
+		}
 		return false
 	}
 }
@@ -282,6 +305,7 @@ func (association *association) forward(
 		defer close(writerDone)
 		frameBuffer := make([]byte, frameHeaderSize+association.binding.configuration.MaxDatagramSize)
 		fail := func(err error) {
+			association.recordWriteTimeout(err)
 			writeErrors <- err
 			stream.Close()
 		}
@@ -308,6 +332,10 @@ func (association *association) forward(
 					return
 				}
 				association.touch()
+				if association.traffic != nil {
+					association.traffic.uplinkDatagrams.Add(1)
+					association.traffic.uplinkBytes.Add(uint64(len(payload)))
+				}
 			}
 		}
 	}()
@@ -322,8 +350,13 @@ func (association *association) forward(
 		if err != nil {
 			return errors.Join(err, receiveWriteError(writeErrors))
 		}
+		if association.traffic != nil {
+			association.traffic.downlinkDatagrams.Add(1)
+			association.traffic.downlinkBytes.Add(uint64(len(payload)))
+		}
 		if association.binding.responseEnabled.Load() {
 			if err := association.binding.endpoint.WriteTo(association.context, payload, association.source, association.binding.configuration.LinkWriteTimeout); err != nil {
+				association.recordWriteTimeout(err)
 				return err
 			}
 		}
@@ -371,12 +404,41 @@ func receiveWriteError(errors <-chan error) error {
 }
 
 func (association *association) touch() {
-	association.lastActivity.Store(time.Now().UnixNano())
+	association.activityMutex.Lock()
+	if !association.closing {
+		association.lastActivity = time.Now()
+	}
+	association.activityMutex.Unlock()
+}
+
+func (association *association) recordWriteTimeout(err error) {
+	var networkError net.Error
+	if association.traffic != nil && (errors.Is(err, context.DeadlineExceeded) ||
+		(errors.As(err, &networkError) && networkError.Timeout())) {
+		association.traffic.writeTimeouts.Add(1)
+	}
+}
+
+func (association *association) closeIfIdle(cutoff time.Time) {
+	association.activityMutex.Lock()
+	if association.closing || association.lastActivity.After(cutoff) {
+		association.activityMutex.Unlock()
+		return
+	}
+	association.closing = true
+	association.activityMutex.Unlock()
+	if association.traffic != nil {
+		association.traffic.expired.Add(1)
+	}
+	association.Close()
 }
 
 // Close releases one association exactly once.
 func (association *association) Close() {
 	association.closeOnce.Do(func() {
+		association.activityMutex.Lock()
+		association.closing = true
+		association.activityMutex.Unlock()
 		association.cancel()
 		association.binding.remove(association)
 		association.releaseSource()

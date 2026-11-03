@@ -55,13 +55,18 @@ func (writer *Writer) writeUntil(deadline time.Time, messageType protocol.Messag
 	if !ok {
 		return errors.New("control stream does not support bounded writes")
 	}
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
 	select {
 	case writer.gate <- struct{}{}:
-	case <-timer.C:
-		_ = connection.Close()
-		return os.ErrDeadlineExceeded
+	default:
+		// Only contended admission needs a timer; network I/O uses its deadline.
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case writer.gate <- struct{}{}:
+		case <-timer.C:
+			_ = connection.Close()
+			return os.ErrDeadlineExceeded
+		}
 	}
 	defer func() { <-writer.gate }()
 	if !time.Now().Before(deadline) {

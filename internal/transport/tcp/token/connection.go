@@ -29,6 +29,8 @@ type secureConnection struct {
 	writeMutex           sync.Mutex
 	readSequence         uint64
 	writeSequence        uint64
+	readError            error
+	writeError           error
 	readBuffer           []byte
 	readCiphertextBuffer []byte
 	readPlaintextBuffer  []byte
@@ -69,6 +71,9 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 func (connection *secureConnection) CloseWrite() error {
 	connection.writeMutex.Lock()
 	defer connection.writeMutex.Unlock()
+	if connection.writeError != nil {
+		return connection.writeError
+	}
 	halfCloser, ok := connection.Conn.(interface{ CloseWrite() error })
 	if !ok {
 		return errors.New("underlying transport does not support CloseWrite")
@@ -81,6 +86,9 @@ func (connection *secureConnection) Read(destination []byte) (int, error) {
 	defer connection.readMutex.Unlock()
 	if len(destination) == 0 {
 		return 0, nil
+	}
+	if connection.readError != nil {
+		return 0, connection.readError
 	}
 	if len(connection.readBuffer) == 0 {
 		if err := connection.readRecord(); err != nil {
@@ -95,10 +103,16 @@ func (connection *secureConnection) Read(destination []byte) (int, error) {
 func (connection *secureConnection) Write(source []byte) (int, error) {
 	connection.writeMutex.Lock()
 	defer connection.writeMutex.Unlock()
+	if connection.writeError != nil {
+		return 0, connection.writeError
+	}
 	written := 0
 	for len(source) > 0 {
 		chunkSize := min(len(source), maxRecordPlaintext)
 		if err := connection.writeRecord(source[:chunkSize]); err != nil {
+			// A partial record cannot be retried: its nonce has already been used.
+			connection.writeError = err
+			_ = connection.Conn.Close()
 			return written, err
 		}
 		written += chunkSize
@@ -107,9 +121,19 @@ func (connection *secureConnection) Write(source []byte) (int, error) {
 	return written, nil
 }
 
-func (connection *secureConnection) readRecord() error {
+func (connection *secureConnection) readRecord() (err error) {
+	consumed := false
+	defer func() {
+		if err != nil && consumed {
+			// Only untouched record boundaries permit EOF or timeout recovery.
+			connection.readError = err
+			_ = connection.Conn.Close()
+		}
+	}()
 	var header [recordHeaderSize]byte
-	if _, err := io.ReadFull(connection.Conn, header[:]); err != nil {
+	read, err := io.ReadFull(connection.Conn, header[:])
+	consumed = read > 0
+	if err != nil {
 		return err
 	}
 	ciphertextLength := binary.BigEndian.Uint32(header[:4])
@@ -128,6 +152,9 @@ func (connection *secureConnection) readRecord() error {
 	)
 	ciphertext := connection.readCiphertextBuffer
 	if _, err := io.ReadFull(connection.Conn, ciphertext); err != nil {
+		if err == io.EOF {
+			return io.ErrUnexpectedEOF
+		}
 		return err
 	}
 	nonce := recordNonce(connection.readSequence)

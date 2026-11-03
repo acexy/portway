@@ -23,6 +23,7 @@ import (
 type failingManagedActivationExchange struct {
 	writer     *control.Writer
 	activation protocol.ManagedConfigActivate
+	applied    bool
 }
 
 func (exchange *failingManagedActivationExchange) prepare(
@@ -38,6 +39,9 @@ func (exchange *failingManagedActivationExchange) activate(
 	activation protocol.ManagedConfigActivate,
 ) error {
 	exchange.activation = activation
+	if exchange.applied {
+		return nil
+	}
 	return errors.New("activation failed")
 }
 
@@ -267,6 +271,15 @@ func TestManagedConfigurationRolloutRejectsMismatchedPreparedStatus(t *testing.T
 }
 
 func TestManagedConfigurationActivationFailurePreservesForwardGeneration(t *testing.T) {
+	testManagedFailedGenerationPreservesForward(t, false)
+}
+
+func TestManagedProxyPreparationFailureAfterAppliedPreservesForwardGeneration(t *testing.T) {
+	testManagedFailedGenerationPreservesForward(t, true)
+}
+
+func testManagedFailedGenerationPreservesForward(t *testing.T, applied bool) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	broker := link.NewBroker(ctx)
@@ -308,7 +321,18 @@ func TestManagedConfigurationActivationFailurePreservesForwardGeneration(t *test
 	if forwardError != nil {
 		t.Fatal(forwardError)
 	}
-	exchange := &failingManagedActivationExchange{writer: writer}
+	exchange := &failingManagedActivationExchange{writer: writer, applied: applied}
+	proxies := []protocol.ProxyDeclaration{}
+	expectedError := "activation failed"
+	if applied {
+		occupied, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer occupied.Close()
+		proxies = append(proxies, protocol.ProxyDeclaration{Name: "occupied", Type: protocol.ProxyTypeTCP, RemotePort: uint16(occupied.Addr().(*net.TCPAddr).Port)})
+		expectedError = "apply managed proxy configuration"
+	}
 	service := &Service{proxyRegistry: proxyRegistry, forwardRegistry: forwardRegistry}
 	err := service.applyManagedGeneration(
 		ctx,
@@ -317,7 +341,7 @@ func TestManagedConfigurationActivationFailurePreservesForwardGeneration(t *test
 		protocol.ManagedConfigPrepare{Revision: 2, Digest: "candidate"},
 		protocol.SyncConfiguration{
 			Revision: 2,
-			Proxies:  []protocol.ProxyDeclaration{},
+			Proxies:  proxies,
 			Forwards: []protocol.ForwardDeclaration{{
 				Name: "database", Type: protocol.ForwardTypeTCP,
 				TargetIP: "127.0.0.1", TargetPort: 6432,
@@ -327,7 +351,7 @@ func TestManagedConfigurationActivationFailurePreservesForwardGeneration(t *test
 		exchange,
 		true,
 	)
-	if err == nil || !strings.Contains(err.Error(), "activation failed") {
+	if err == nil || !strings.Contains(err.Error(), expectedError) {
 		t.Fatalf("activation failure = %v", err)
 	}
 	oldOffer := forwardRegistry.Offer(

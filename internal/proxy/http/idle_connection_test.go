@@ -6,6 +6,42 @@ import (
 	"time"
 )
 
+func TestIdleTimeoutCallbackRechecksActivityAndClosedState(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	connection := newIdleTimeoutConnection(server, time.Hour).(*idleTimeoutConnection)
+	defer connection.Close()
+	// Simulate an old timer callback dispatched before a successful I/O refresh.
+	connection.mutex.Lock()
+	connection.deadline = time.Now().Add(-time.Second)
+	connection.mutex.Unlock()
+	connection.touch()
+	connection.expire()
+	connection.mutex.Lock()
+	closed := connection.closed
+	connection.mutex.Unlock()
+	if closed {
+		t.Fatal("stale timer callback closed an active connection")
+	}
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	connection.mutex.Lock()
+	connection.deadline = time.Now().Add(-time.Second)
+	connection.mutex.Unlock()
+	connection.expire()
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expired connection remained open")
+	}
+	connection.touch()
+	connection.expire()
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	if !connection.closed {
+		t.Fatal("late activity revived a closed connection")
+	}
+}
+
 func TestIdleTimeoutConnectionClosesAfterInactivity(t *testing.T) {
 	server, client := net.Pipe()
 	connection := newIdleTimeoutConnection(server, 20*time.Millisecond)

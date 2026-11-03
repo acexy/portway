@@ -7,6 +7,37 @@ import (
 	"testing"
 )
 
+func TestDatagramReadDistinguishesBoundaryEOFFromTruncation(t *testing.T) {
+	for _, reader := range []struct {
+		name string
+		read func(io.Reader) ([]byte, error)
+	}{
+		{"allocated", func(source io.Reader) ([]byte, error) { return ReadDatagram(source, 64) }},
+		{"reused", func(source io.Reader) ([]byte, error) { return ReadDatagramInto(source, make([]byte, 64), 64) }},
+	} {
+		t.Run(reader.name, func(t *testing.T) {
+			for _, test := range []struct {
+				name     string
+				data     []byte
+				expected error
+			}{
+				{"boundary", nil, io.EOF},
+				{"partial_header", []byte{0, 0}, io.ErrUnexpectedEOF},
+				{"missing_payload", []byte{0, 0, 0, 2}, io.ErrUnexpectedEOF},
+				{"partial_payload", []byte{0, 0, 0, 2, 1}, io.ErrUnexpectedEOF},
+				{"empty_datagram", []byte{0, 0, 0, 0}, nil},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					_, err := reader.read(bytes.NewReader(test.data))
+					if !errors.Is(err, test.expected) {
+						t.Fatalf("error = %v, want %v", err, test.expected)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestDatagramFrameRoundTrip(t *testing.T) {
 	for _, payload := range [][]byte{nil, []byte("portway udp")} {
 		var buffer bytes.Buffer

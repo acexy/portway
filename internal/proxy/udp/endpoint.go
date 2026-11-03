@@ -36,6 +36,7 @@ type Endpoint struct {
 	receivedDatagrams  atomic.Uint64
 	deniedDatagrams    atomic.Uint64
 	oversizedDatagrams atomic.Uint64
+	traffic            trafficCounters
 }
 
 // Listen creates a UDP endpoint without starting its read loop.
@@ -123,19 +124,19 @@ func (endpoint *Endpoint) summaryLoop() {
 			received := endpoint.receivedDatagrams.Swap(0)
 			denied := endpoint.deniedDatagrams.Swap(0)
 			oversized := endpoint.oversizedDatagrams.Swap(0)
-			if received == 0 && denied == 0 && oversized == 0 {
+			fields, trafficActive := endpoint.traffic.drain()
+			if received == 0 && denied == 0 && oversized == 0 && !trafficActive {
 				continue
 			}
+			fields["event"] = "udp_endpoint_summary"
+			fields["local_address"] = endpoint.connection.LocalAddr().String()
+			fields["interval_ms"] = summaryInterval.Milliseconds()
+			fields["received_datagrams"] = received
+			fields["denied_datagrams"] = denied
+			fields["oversized_datagrams"] = oversized
 			endpoint.logger.WithComponent("proxy_udp").InfoWithFields(
 				"UDP endpoint traffic summary",
-				map[string]any{
-					"event":               "udp_endpoint_summary",
-					"local_address":       endpoint.connection.LocalAddr().String(),
-					"interval_ms":         summaryInterval.Milliseconds(),
-					"received_datagrams":  received,
-					"denied_datagrams":    denied,
-					"oversized_datagrams": oversized,
-				},
+				fields,
 			)
 		}
 	}

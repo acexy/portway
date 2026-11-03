@@ -97,7 +97,7 @@ func (pool *Pool) Enqueue(packet []byte, index uint8, authorized func() bool) er
 		return net.ErrClosed
 	default:
 	}
-	if int(index) >= len(pool.queues) || len(packet) > int(pool.spec.MTU) {
+	if int(index) >= len(pool.queues) || len(packet) == 0 || len(packet) > int(pool.spec.MTU) {
 		return packetdata.ErrInvalidPacket
 	}
 	queue := pool.queues[index]

@@ -86,6 +86,46 @@ func TestPrimaryBackpressurePreservesBurstAndCancellation(t *testing.T) {
 	}
 }
 
+// A read already in flight may return data as cancellation happens. Keep the
+// next read observable regardless of when the asynchronous Close callback runs.
+type cancelOnReadConnection struct {
+	net.Conn
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (connection *cancelOnReadConnection) Read(buffer []byte) (int, error) {
+	connection.reads++
+	if connection.reads == 1 {
+		connection.cancel()
+		buffer[0] = 'x'
+		return 1, nil
+	}
+	return 0, io.EOF
+}
+
+func TestTCPSessionStopsReadingAfterCancellation(t *testing.T) {
+	for _, alreadyCanceled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "during_read", true: "before_serve"}[alreadyCanceled], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			visitor, peer := net.Pipe()
+			defer peer.Close()
+			connection := &cancelOnReadConnection{Conn: visitor, cancel: cancel}
+			session := NewTCPSession(ctx, connection, nil, nil)
+			expectedReads := 1
+			if alreadyCanceled {
+				cancel()
+				expectedReads = 0
+			}
+			session.Serve(nil)
+			if connection.reads != expectedReads {
+				t.Fatalf("visitor reads = %d, want %d; input continued after cancellation", connection.reads, expectedReads)
+			}
+		})
+	}
+}
+
 func TestBlockedPrimaryResponseDoesNotBlockReplicaConsumption(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		visitor, peer := net.Pipe()

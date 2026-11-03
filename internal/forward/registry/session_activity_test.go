@@ -106,7 +106,7 @@ func TestForwardTargetFactoryRejectsSuspendedSession(t *testing.T) {
 	if syncError != nil {
 		t.Fatal(syncError)
 	}
-	factory := registry.handlerFactory(*registry.bindings[bindingKey("client", "session", "database")])
+	factory := registry.handlerFactory(*registry.bindingLocked("client", "session", "database"))
 	active = false
 	handler, cleanup, err := factory(context.Background())
 	if cleanup != nil {
