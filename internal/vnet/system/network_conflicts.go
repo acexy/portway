@@ -45,7 +45,9 @@ func validateNetworkConflicts(candidate netip.Prefix, addresses, routes []netip.
 		}
 	}
 	for _, prefix := range routes {
-		if prefix.Bits() != 0 && candidate.Overlaps(prefix) {
+		// Broader routes can coexist: longest-prefix matching directs the
+		// candidate network to VNet without modifying those external routes.
+		if prefix.Bits() >= candidate.Bits() && candidate.Overlaps(prefix) {
 			return fmt.Errorf("%w: VNet CIDR %s overlaps existing route %s", ErrForeignResource, candidate, prefix)
 		}
 	}

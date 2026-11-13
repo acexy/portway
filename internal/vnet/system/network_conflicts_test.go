@@ -16,7 +16,10 @@ func TestNetworkConflictBoundaries(t *testing.T) {
 	}{
 		{"default route", "192.168.1.2/24", "0.0.0.0/0", false},
 		{"address overlap", "172.20.1.2/24", "0.0.0.0/0", true},
-		{"containing route", "192.168.1.2/24", "172.16.0.0/12", true},
+		{"containing address", "172.16.1.2/12", "128.0.0.0/1", true},
+		{"VPN catch-all route", "198.18.0.1/30", "128.0.0.0/1", false},
+		{"containing route", "192.168.1.2/24", "172.16.0.0/12", false},
+		{"equal route", "192.168.1.2/24", "172.20.0.0/16", true},
 		{"contained route", "192.168.1.2/24", "172.20.1.0/24", true},
 		{"host route", "192.168.1.2/24", "172.20.1.2/32", true},
 		{"adjacent route", "192.168.1.2/24", "172.21.0.0/16", false},
