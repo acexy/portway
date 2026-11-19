@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
@@ -279,10 +280,7 @@ func mirrorConfigurationAllows(
 }
 
 func mirrorPublicIncludesPort(public config.ProxyMirrorPublicConfig, port uint16) bool {
-	for _, portRange := range public.PortRanges {
-		if port >= portRange.Start && port <= portRange.End {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContainsBy(public.PortRanges, func(portRange config.PortRange) bool {
+		return port >= portRange.Start && port <= portRange.End
+	})
 }

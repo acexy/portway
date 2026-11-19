@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/link"
 )
 
@@ -335,11 +336,7 @@ func (session *TCPSession) runWorker(worker, previous *tcpWorker) {
 func (session *TCPSession) snapshotMembers() []*tcpMember {
 	session.mutex.Lock()
 	defer session.mutex.Unlock()
-	members := make([]*tcpMember, 0, len(session.members))
-	for _, member := range session.members {
-		members = append(members, member)
-	}
-	return members
+	return coll.MapValues(session.members)
 }
 
 func (session *TCPSession) closeInput() []*tcpMember {

@@ -5,8 +5,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
+	stdjson "encoding/json"
 	"errors"
+
+	"github.com/acexy/golang-toolkit/util/json"
 )
 
 const (
@@ -44,7 +46,7 @@ func EncodePeerSignal(signal PeerSignal, secret []byte) ([]byte, error) {
 	if len(secret) < 16 || signal.ClientID == "" || signal.Kind < PeerSignalRegister || signal.Kind > PeerSignalProbeAck {
 		return nil, errors.New("invalid VNet peer signal")
 	}
-	payload, err := json.Marshal(signal)
+	payload, err := json.ToBytesError(signal)
 	if err != nil || len(payload) == 0 || len(payload) > peerSignalMaximumSize-peerSignalHeaderSize-peerSignalMACSize {
 		return nil, errors.New("VNet peer signal payload is too large")
 	}
@@ -71,7 +73,7 @@ func ParsePeerSignal(data []byte) (PeerSignal, error) {
 		return PeerSignal{}, errors.New("invalid VNet peer signal length")
 	}
 	var signal PeerSignal
-	decoder := json.NewDecoder(bytes.NewReader(data[peerSignalHeaderSize : peerSignalHeaderSize+length]))
+	decoder := stdjson.NewDecoder(bytes.NewReader(data[peerSignalHeaderSize : peerSignalHeaderSize+length]))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&signal); err != nil || signal.Kind != PeerSignalKind(data[5]) || signal.ClientID == "" {
 		return PeerSignal{}, errors.New("invalid VNet peer signal payload")

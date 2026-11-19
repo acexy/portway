@@ -3,10 +3,12 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/acexy/golang-toolkit/util/json"
 )
 
 const (
@@ -148,9 +150,9 @@ const (
 
 // Envelope is the common control message container.
 type Envelope struct {
-	Type      MessageType     `json:"type"`
-	RequestID string          `json:"request_id,omitempty"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
+	Type      MessageType        `json:"type"`
+	RequestID string             `json:"request_id,omitempty"`
+	Payload   stdjson.RawMessage `json:"payload,omitempty"`
 }
 
 // ClientHello advertises capabilities supported by the client.
@@ -217,11 +219,11 @@ func WriteControlWithRequestID(
 			return err
 		}
 	}
-	payloadBytes, err := json.Marshal(payload)
+	payloadBytes, err := json.ToBytesError(payload)
 	if err != nil {
 		return fmt.Errorf("encode control payload: %w", err)
 	}
-	envelopeBytes, err := json.Marshal(Envelope{
+	envelopeBytes, err := json.ToBytesError(Envelope{
 		Type:      messageType,
 		RequestID: requestID,
 		Payload:   payloadBytes,
@@ -291,7 +293,7 @@ func ReadControl(reader io.Reader) (Envelope, error) {
 	}
 
 	var envelope Envelope
-	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder := stdjson.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&envelope); err != nil {
 		return Envelope{}, fmt.Errorf(
@@ -358,7 +360,7 @@ func DecodePayload(envelope Envelope, destination any) error {
 			ErrInvalidControlMessage,
 		)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(envelope.Payload))
+	decoder := stdjson.NewDecoder(bytes.NewReader(envelope.Payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return fmt.Errorf(

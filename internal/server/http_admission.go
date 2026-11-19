@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/acexy/golang-toolkit/util/coll"
 )
 
 const maxPublicHTTPConnections = 4096
@@ -117,10 +119,7 @@ func (connection *publicHTTPConnection) CloseRead() error {
 func (admission *publicHTTPAdmission) close() {
 	admission.mutex.Lock()
 	admission.closed = true
-	connections := make([]*publicHTTPConnection, 0, len(admission.connections))
-	for connection := range admission.connections {
-		connections = append(connections, connection)
-	}
+	connections := coll.MapKeys(admission.connections)
 	admission.mutex.Unlock()
 	for _, connection := range connections {
 		_ = connection.Close()

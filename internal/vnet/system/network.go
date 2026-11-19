@@ -3,7 +3,6 @@ package system
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/acexy/golang-toolkit/util/json"
 )
 
 const (
@@ -218,7 +219,7 @@ func OpenInstalledNetwork() (Device, error) {
 func installManifest(ctx context.Context, spec NetworkSpec, interfaceName, identifier string) error {
 	manifest := ownershipManifest{manifestSchema, identifier, spec.Role,
 		LogicalInterfaceName, interfaceName, spec.CIDR, spec.LocalIP, spec.ServerIP, spec.MTU}
-	data, err := json.Marshal(manifest)
+	data, err := json.ToBytesError(manifest)
 	if err != nil {
 		return err
 	}
@@ -260,7 +261,7 @@ func readManifest() (ownershipManifest, error) {
 		return ownershipManifest{}, err
 	}
 	var manifest ownershipManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	if err := json.ParseBytesError(data, &manifest); err != nil {
 		return ownershipManifest{}, fmt.Errorf("%w: invalid ownership manifest", ErrStateMismatch)
 	}
 	if manifest.SchemaVersion != manifestSchema || manifest.LogicalName != LogicalInterfaceName ||

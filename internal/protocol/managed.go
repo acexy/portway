@@ -3,8 +3,9 @@ package protocol
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+
+	"github.com/acexy/golang-toolkit/util/json"
 )
 
 // ManagedProxy contains the complete server-owned client proxy configuration.
@@ -55,7 +56,7 @@ func ManagedConfigurationDigest(
 	forwardSets ...[]ManagedForward,
 ) (string, error) {
 	if len(forwardSets) == 0 {
-		encoded, err := json.Marshal(proxies)
+		encoded, err := json.ToBytesError(proxies)
 		if err != nil {
 			return "", fmt.Errorf("encode managed configuration: %w", err)
 		}
@@ -66,7 +67,7 @@ func ManagedConfigurationDigest(
 	if len(forwardSets) != 0 && forwardSets[0] != nil {
 		forwards = forwardSets[0]
 	}
-	encoded, err := json.Marshal(struct {
+	encoded, err := json.ToBytesError(struct {
 		Proxies  []ManagedProxy   `json:"proxies"`
 		Forwards []ManagedForward `json:"forwards"`
 	}{Proxies: proxies, Forwards: forwards})
