@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 )
@@ -217,14 +218,8 @@ func (broker *PoolBroker) Close() {
 		return
 	}
 	broker.closed = true
-	pending := make([]*pendingPool, 0, len(broker.pending))
-	for _, pool := range broker.pending {
-		pending = append(pending, pool)
-	}
-	active := make([]*Pool, 0, len(broker.active))
-	for _, pool := range broker.active {
-		active = append(active, pool)
-	}
+	pending := coll.MapValues(broker.pending)
+	active := coll.MapValues(broker.active)
 	broker.pending = make(map[string]*pendingPool)
 	broker.active = make(map[string]*Pool)
 	broker.mutex.Unlock()

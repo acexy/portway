@@ -4,7 +4,6 @@ package system
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
@@ -78,12 +78,12 @@ func TestValidateDarwinHelperSocket(t *testing.T) {
 
 func TestDarwinHelperPreservesNetworkConflict(t *testing.T) {
 	response := darwinHelperResponse{Error: "route conflict", ForeignResource: true}
-	encoded, err := json.Marshal(response)
+	encoded, err := json.ToBytesError(response)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var decoded darwinHelperResponse
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
+	if err := json.ParseBytesError(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if !errors.Is(decoded.networkError(), ErrForeignResource) {

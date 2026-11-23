@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
 	forwardtcp "github.com/acexy/portway/internal/forward/tcp"
@@ -505,10 +506,7 @@ func (manager *forwardManager) reportForwardFailure(linkID string, code protocol
 func (manager *forwardManager) close() {
 	manager.cancel()
 	manager.mutex.Lock()
-	runtimes := make([]*forwardRuntime, 0, len(manager.runtimes))
-	for _, runtime := range manager.runtimes {
-		runtimes = append(runtimes, runtime)
-	}
+	runtimes := coll.MapValues(manager.runtimes)
 	for _, link := range manager.links {
 		link.cancel()
 	}

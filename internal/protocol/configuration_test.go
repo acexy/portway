@@ -2,12 +2,13 @@ package protocol
 
 import (
 	"bytes"
-	"encoding/json"
 	"testing"
+
+	"github.com/acexy/golang-toolkit/util/json"
 )
 
 func TestConfigurationAndForwardErrorsUseOwnedFields(t *testing.T) {
-	configurationPayload, err := json.Marshal(ConfigurationError{
+	configurationPayload, err := json.ToBytesError(ConfigurationError{
 		Code:         ConfigurationErrorForwardTypeNotAllowed,
 		ResourceKind: ConfigurationResourceForward,
 		ResourceName: "database",
@@ -20,7 +21,7 @@ func TestConfigurationAndForwardErrorsUseOwnedFields(t *testing.T) {
 		t.Fatalf("configuration error payload = %s", configurationPayload)
 	}
 
-	forwardPayload, err := json.Marshal(ForwardError{
+	forwardPayload, err := json.ToBytesError(ForwardError{
 		Code: ForwardErrorBindingInvalid, ForwardName: "database",
 	})
 	if err != nil {

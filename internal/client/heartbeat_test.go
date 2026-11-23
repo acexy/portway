@@ -2,17 +2,17 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
 )
 
 func heartbeatEnvelope(sequence uint64) protocol.Envelope {
-	payload, _ := json.Marshal(protocol.Heartbeat{Sequence: sequence})
+	payload, _ := json.ToBytesError(protocol.Heartbeat{Sequence: sequence})
 	return protocol.Envelope{Type: protocol.MessagePong, Payload: payload}
 }
 

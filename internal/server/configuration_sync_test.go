@@ -3,11 +3,11 @@ package server
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/control"
@@ -43,7 +43,7 @@ func TestConfigurationRejectsForwardBoundaryBeforeRegistryWork(t *testing.T) {
 					Forwards: config.GovernedForwardPermissions{Limits: test.limits},
 				}}},
 			})}
-			payload, err := json.Marshal(request)
+			payload, err := json.ToBytesError(request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +87,7 @@ func TestSynchronizeConfigurationReplaysCompleteResultBeforeRegistryWork(t *test
 		Forwards: []protocol.ForwardResult{{Name: "database"}},
 	}
 	service.cacheConfigurationSync("client", "session", "request_one", request.Revision, configurationTestFingerprint(t, request), expected)
-	payload, err := json.Marshal(request)
+	payload, err := json.ToBytesError(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestSynchronizeConfigurationRejectsUnnegotiatedForwardBeforeRegistryWork(t 
 			TargetIP: "10.0.0.1", TargetPort: 5432,
 		}},
 	}
-	payload, err := json.Marshal(request)
+	payload, err := json.ToBytesError(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestConfigurationSyncCacheRejectsChangedRequestIDPayload(t *testing.T) {
 
 func configurationTestFingerprint(t *testing.T, request protocol.SyncConfiguration) [sha256.Size]byte {
 	t.Helper()
-	payload, err := json.Marshal(request)
+	payload, err := json.ToBytesError(request)
 	if err != nil {
 		t.Fatal(err)
 	}

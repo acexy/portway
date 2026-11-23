@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +14,8 @@ import (
 	"os/exec"
 	"strconv"
 	"time"
+
+	"github.com/acexy/golang-toolkit/util/json"
 )
 
 func preparePlatformNetwork(ctx context.Context, spec NetworkSpec) (Device, error) {
@@ -260,7 +261,7 @@ func parseLinuxNetworkRoutesExcluding(data []byte, ownedInterface string) ([]net
 		Device      string `json:"dev"`
 		Protocol    string `json:"protocol"`
 	}
-	if err := json.Unmarshal(data, &entries); err != nil {
+	if err := json.ParseBytesError(data, &entries); err != nil {
 		return nil, err
 	}
 	var routes []netip.Prefix
@@ -305,7 +306,7 @@ func linuxIdentityCanBeInstalled(data []byte, manifest ownershipManifest) bool {
 
 func linuxIdentityValid(data []byte, manifest ownershipManifest, allowLegacy bool) bool {
 	var entries []linuxInterfaceIdentity
-	return json.Unmarshal(data, &entries) == nil && len(entries) == 1 &&
+	return json.ParseBytesError(data, &entries) == nil && len(entries) == 1 &&
 		entries[0].Name == LogicalInterfaceName && manifest.PlatformInterface == LogicalInterfaceName &&
 		(entries[0].Alias == "portway:"+manifest.InstallationID || allowLegacy && entries[0].Alias == "") &&
 		entries[0].LinkInfo.Kind == "tun" &&

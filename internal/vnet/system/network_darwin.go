@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
@@ -162,7 +162,7 @@ func requestDarwinHelper(ctx context.Context, spec NetworkSpec) (Device, error) 
 		return nil, err
 	}
 	nonce := hex.EncodeToString(nonceBytes)
-	encodedSpec, err := json.Marshal(spec)
+	encodedSpec, err := json.ToBytesError(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +291,7 @@ func receiveDarwinDevice(connection *net.UnixConn, nonce string) (Device, error)
 		return nil, fmt.Errorf("receive macOS VNet helper response: %w", err)
 	}
 	var response darwinHelperResponse
-	if err := json.Unmarshal(data[:dataLength], &response); err != nil || response.Nonce != nonce {
+	if err := json.ParseBytesError(data[:dataLength], &response); err != nil || response.Nonce != nonce {
 		return nil, errors.New("invalid macOS VNet helper response")
 	}
 	if response.Error != "" {
@@ -329,7 +329,7 @@ func runPlatformHelper(arguments []string) (bool, error) {
 		return true, errors.New("invalid macOS VNet helper request")
 	}
 	var spec NetworkSpec
-	if err := json.Unmarshal(data, &spec); err != nil || validateNetworkSpec(spec) != nil ||
+	if err := json.ParseBytesError(data, &spec); err != nil || validateNetworkSpec(spec) != nil ||
 		spec.OwnerUID <= 0 || len(nonce) != 64 {
 		return true, errors.New("invalid macOS VNet helper request")
 	}
@@ -361,7 +361,7 @@ func runPlatformHelper(arguments []string) (bool, error) {
 		response.InterfaceName = device.Name()
 		rights = unix.UnixRights(device.(*darwinDevice).fileDescriptor)
 	}
-	responseData, _ := json.Marshal(response)
+	responseData, _ := json.ToBytesError(response)
 	_, _, writeError := connection.WriteMsgUnix(responseData, rights, nil)
 	if device != nil {
 		_ = device.Close()

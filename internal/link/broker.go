@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/control"
 	"github.com/acexy/portway/internal/protocol"
@@ -624,11 +625,8 @@ func (broker *Broker) Close() {
 	broker.closeOnce.Do(func() {
 		broker.mutex.Lock()
 		broker.closed = true
-		pendingIDs := make([]string, 0, len(broker.pending))
+		pendingIDs := coll.MapKeys(broker.pending)
 		active := make([]*managedLinkConnection, 0, len(broker.active))
-		for linkID := range broker.pending {
-			pendingIDs = append(pendingIDs, linkID)
-		}
 		for _, link := range broker.active {
 			active = append(active, link.connection)
 		}

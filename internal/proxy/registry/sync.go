@@ -3,8 +3,8 @@ package registry
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 	proxytcp "github.com/acexy/portway/internal/proxy/tcp"
@@ -54,7 +54,7 @@ func (manager *Registry) sync(
 			err.Error(),
 		)
 	}
-	fingerprintBytes, err := json.Marshal(request.Proxies)
+	fingerprintBytes, err := json.ToBytesError(request.Proxies)
 	if err != nil {
 		return rejectedSyncResult(request.Revision, ErrorInvalidRequest, "", "encode proxy declaration")
 	}

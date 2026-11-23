@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/logging"
 	"github.com/acexy/portway/internal/protocol"
@@ -163,7 +163,7 @@ func TestLocalProxyRequirementsFollowAuthenticatedManagementMode(t *testing.T) {
 }
 
 func TestDecodeAuthenticationFailureHidesSessionDetails(t *testing.T) {
-	payload, err := json.Marshal(protocol.SessionError{
+	payload, err := json.ToBytesError(protocol.SessionError{
 		Code:      protocol.SessionErrorAuthenticationFailed,
 		Message:   "credential or client identity mismatch",
 		Retryable: false,

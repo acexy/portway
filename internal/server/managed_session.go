@@ -130,15 +130,15 @@ func managedConfigurationPayload(
 		return protocol.ManagedConfigPrepare{}, protocol.SyncConfiguration{}, err
 	}
 	return protocol.ManagedConfigPrepare{
-			Revision: clientConfiguration.Configuration.Revision,
-			Digest:   digest,
-			Proxies:  managedProxies,
-			Forwards: managedForwards,
-		}, protocol.SyncConfiguration{
-			Revision: clientConfiguration.Configuration.Revision,
-			Proxies:  declarations,
-			Forwards: forwardDeclarations,
-		}, nil
+		Revision: clientConfiguration.Configuration.Revision,
+		Digest:   digest,
+		Proxies:  managedProxies,
+		Forwards: managedForwards,
+	}, protocol.SyncConfiguration{
+		Revision: clientConfiguration.Configuration.Revision,
+		Proxies:  declarations,
+		Forwards: forwardDeclarations,
+	}, nil
 }
 
 func (s *Service) rolloutManagedConfiguration(

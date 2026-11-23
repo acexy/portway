@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/protocol"
 	"github.com/acexy/portway/internal/vnet/internal/flowcontrol"
 	packetdata "github.com/acexy/portway/internal/vnet/packet"
@@ -153,12 +154,9 @@ func peerPortAllowed(offer protocol.VNetPeerOffer, networkProtocol uint8, port u
 	if networkProtocol == packetdata.ProtocolTCP {
 		ranges = offer.InboundTCP
 	}
-	for _, portRange := range ranges {
-		if port >= portRange.Start && port <= portRange.End {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContainsBy(ranges, func(portRange protocol.VNetPeerPortRange) bool {
+		return port >= portRange.Start && port <= portRange.End
+	})
 }
 
 func peerFlowKey(flow packetdata.Flow) ([13]byte, bool) {

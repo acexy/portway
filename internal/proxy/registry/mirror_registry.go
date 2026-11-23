@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/config"
 	"github.com/acexy/portway/internal/protocol"
@@ -259,12 +260,7 @@ func (group *mirrorGroup) allowsMode(clientID string, mode authentication.Mode) 
 	if group.mode != mode {
 		return false
 	}
-	for _, allowedClientID := range group.configuration.ClientIDs {
-		if allowedClientID == clientID {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContains(group.configuration.ClientIDs, clientID)
 }
 
 func (manager *Registry) mirrorGroupLocked(

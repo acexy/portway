@@ -1,9 +1,9 @@
 package config
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -17,7 +17,7 @@ func TestProxyDeclarationPreservesWireFieldsAndOwnsSchemes(t *testing.T) {
 		},
 	}
 	declaration := ProxyDeclaration(configuration)
-	encoded, err := json.Marshal(declaration)
+	encoded, err := json.ToBytesError(declaration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestForwardDeclarationExposesTargetWithoutLocalListener(t *testing.T) {
 		Listen: EndpointConfig{IP: "127.0.0.1", Port: 15432},
 		Target: EndpointConfig{IP: "10.0.0.2", Port: 5432},
 	})
-	encoded, err := json.Marshal(declaration)
+	encoded, err := json.ToBytesError(declaration)
 	if err != nil {
 		t.Fatal(err)
 	}

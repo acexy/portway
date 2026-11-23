@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/authentication"
 	"github.com/acexy/portway/internal/protocol"
 )
@@ -162,12 +163,9 @@ func validateProxyMirrorMember(
 }
 
 func portAllowed(port uint16, ranges []PortRange) bool {
-	for _, candidate := range ranges {
-		if port >= candidate.Start && port <= candidate.End {
-			return true
-		}
-	}
-	return false
+	return coll.SliceContainsBy(ranges, func(candidate PortRange) bool {
+		return port >= candidate.Start && port <= candidate.End
+	})
 }
 
 // ValidateProxyMirrorConfiguration validates mirror groups after authentication files load.

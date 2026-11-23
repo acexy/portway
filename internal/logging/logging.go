@@ -4,7 +4,6 @@ package logging
 import (
 	"bytes"
 	"fmt"
-	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/acexy/golang-toolkit/logger"
+	"github.com/acexy/golang-toolkit/util/coll"
 	"github.com/acexy/portway/internal/config"
 	"github.com/sirupsen/logrus"
 )
@@ -176,8 +176,8 @@ func (l *Logger) WithField(field string, value any) *Logger {
 // WithFields creates a logger that includes additional stable fields.
 func (l *Logger) WithFields(fields map[string]any) *Logger {
 	combinedFields := make(map[string]any, len(l.fields)+len(fields))
-	maps.Copy(combinedFields, l.fields)
-	maps.Copy(combinedFields, fields)
+	coll.MapMerge(combinedFields, l.fields)
+	coll.MapMerge(combinedFields, fields)
 	return &Logger{
 		component: l.component,
 		fields:    combinedFields,

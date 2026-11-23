@@ -3,8 +3,8 @@ package server
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 
+	"github.com/acexy/golang-toolkit/util/json"
 	"github.com/acexy/portway/internal/protocol"
 )
 
@@ -38,7 +38,7 @@ func (s *Service) checkConfigurationSync(
 	if err := protocol.ValidateRequestID(requestID); err != nil {
 		return nil, fingerprint, invalidConfigurationRequest(err.Error())
 	}
-	payload, err := json.Marshal(request)
+	payload, err := json.ToBytesError(request)
 	if err != nil {
 		return nil, fingerprint, invalidConfigurationRequest("encode complete configuration")
 	}
